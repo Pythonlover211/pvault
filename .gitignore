@@ -1,0 +1,7 @@
+# Local backup files contain real user data - never commit
+*.pvault
+backups/
+
+# OS
+Thumbs.db
+.DS_Store
