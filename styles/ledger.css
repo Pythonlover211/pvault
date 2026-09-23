@@ -121,3 +121,9 @@
 .stats-trend-svg .trend-label { fill: var(--text-3); font-size: var(--font-xs); }
 
 .stats-receivable { font-size: var(--font-sm); }
+
+/* 首页底部的备份提醒。它是一行「小字 + 可点」，不是错误也不是卡片：
+   超期只用警示色，不加底色/边框——一旦它长得像警报，用户会习惯性地无视它。
+   .link-like 的 font: inherit 会盖掉写在按钮上的字号，所以 muted/tiny 留在外层 div 上。 */
+.ledger-backup { padding-top: 4px; text-align: center; }
+.ledger-backup.overdue { color: var(--warning); }

@@ -20,6 +20,7 @@ import {
 } from '../vault-model.js';
 import { copyWithAutoClear } from './clipboard.js';
 import { openVaultEditor } from './vault-editor.js';
+import { openSheet } from './sheet.js';
 
 const MIN_PASSWORD = 8;
 const FAIL_THRESHOLD = 3;
@@ -447,6 +448,12 @@ async function renderList(root, seq) {
           // lock() 会广播 false，订阅回调把界面切回锁屏——这里不自己重渲染，
           // 手动上锁和空闲上锁走同一条路，避免两条路各自实现一遍而行为不一致。
           onclick: () => { vaultStore.lock(); }
+        }),
+        el('button', {
+          class: 'btn', type: 'button', text: '修改主密码',
+          // 不嵌套第二层 sheet：vault-view 自己就是页面（不是面板），
+          // 这个小面板是页面上唯一的一层，关掉它不会踩到别人。
+          onclick: () => { openPasswordChangeSheet(() => { renderVault(root).catch(err => console.error('密码箱重新渲染失败', err)); }); }
         })
       ])
     ]);
@@ -582,4 +589,81 @@ async function doCopy(btn, value) {
     btn.textContent = '复制失败';
   }
   setTimeout(() => { btn.textContent = '复制'; }, 1500);
+}
+
+// —— 修改主密码（列表页底部的入口）——
+//
+// 只换「包裹 DEK 的那把钥匙」，条目密文一个字节都不动（见 vault-store.changeMasterPassword），
+// 所以这个操作既快又安全：失败时旧密码照旧可用，没有任何中间状态。
+// 稿子里最要紧的一句是「恢复码仍然有效」——改密码的人多半正是因为觉得自己在用恢复码
+// 访问，他需要知道救生圈还在。
+function openPasswordChangeSheet(onChanged) {
+  const body = el('div', { class: 'stack' });
+  const sheet = openSheet({ title: '修改主密码', body });
+
+  let pw = '';
+  let pw2 = '';
+  let busy = false;
+
+  const errorNode = el('div', { class: 'vault-error', dataset: { role: 'pwchange-error' } });
+  const saveBtn = el('button', {
+    class: 'btn btn-primary', type: 'button', text: '确认修改', disabled: true,
+    onclick: () => { submit(); }
+  });
+  const pwInput = el('input', {
+    type: 'password', autocomplete: 'new-password', placeholder: '至少 8 位',
+    oninput: e => { pw = e.target.value; refresh(); }
+  });
+  const pw2Input = el('input', {
+    type: 'password', autocomplete: 'new-password', placeholder: '两次要一致',
+    oninput: e => { pw2 = e.target.value; refresh(); }
+  });
+
+  // 只切按钮禁用态，不整页重渲染：重建 input 会让正在输入的那个框丢焦点。
+  function refresh() {
+    saveBtn.disabled = busy || !(pw.length >= MIN_PASSWORD && pw === pw2);
+  }
+
+  async function submit() {
+    if (busy || saveBtn.disabled) return;
+    busy = true;
+    refresh();
+    errorNode.textContent = '';
+    try {
+      await vaultStore.changeMasterPassword(pw);
+    } catch (err) {
+      // 失败一般是会话已经过期（面板开着超过 5 分钟，空闲上锁把 DEK 清了）。
+      // 无论哪种，都把按钮还原，让用户能重试。
+      busy = false;
+      refresh();
+      errorNode.textContent = '修改失败：' + (err?.message || err);
+      console.error('修改主密码失败', err);
+      return;
+    }
+    busy = false;
+    // 新密码已经生效，两个输入框里的明文没有任何留下的理由。
+    pw = '';
+    pw2 = '';
+    pwInput.value = '';
+    pw2Input.value = '';
+    refresh();
+    // 不关面板：成功信息要留在原地让用户看见，尤其是「恢复码仍然有效」那句。
+    mount(body, el('div', { class: 'vault-hint' }, [
+      el('div', { text: '主密码已修改，恢复码仍然有效' }),
+      el('div', { class: 'form-actions' }, [
+        el('button', { class: 'btn btn-primary', type: 'button', text: '完成', onclick: () => { sheet.close(); } })
+      ])
+    ]));
+    if (onChanged) onChanged();
+  }
+
+  mount(body, el('div', { class: 'vault-pwchange' }, [
+    el('div', { class: 'vault-hint', text: '主密码只用来包裹密码箱的密钥，改它不会重新加密任何条目，也不需要重新输入恢复码。' }),
+    el('div', { class: 'field' }, [el('label', { text: '新主密码（至少 8 位）' }), pwInput]),
+    el('div', { class: 'field' }, [el('label', { text: '再输一次' }), pw2Input]),
+    errorNode,
+    saveBtn
+  ]));
+
+  return sheet;
 }

@@ -16,12 +16,18 @@ import * as store from '../store.js';
 import { openEntryPanel } from './entry-panel.js';
 import { openSettingsSheet } from './settings-sheet.js';
 import { openReceivableSheet } from './receivable-view.js';
+import { openBackupSheet, backupAge } from './backup-view.js';
+import { getLastBackupAt } from '../backup-store.js';
+
+// 超过这个天数没备份就把提醒染成警示色。默认 14 天：一次备份的「保鲜期」大约两周——
+// 更久不备份，一旦清掉浏览器数据，丢的就是半个月的账。
+const DEFAULT_BACKUP_REMINDER_DAYS = 14;
 
 export async function renderLedgerHome(root) {
   const now = Date.now();
   const { start, end } = monthRange(now);
   const day = dayRange(now);
-  const [monthTxns, todayTxns, accounts, categories, receivables, budgetTotal, hideAmounts] =
+  const [monthTxns, todayTxns, accounts, categories, receivables, budgetTotal, hideAmounts, lastBackupAt, reminderDays] =
     await Promise.all([
       store.listTransactionsInRange(start, end),
       store.listTransactionsInRange(day.start, day.end),
@@ -31,7 +37,11 @@ export async function renderLedgerHome(root) {
       store.listAllCategories(),
       store.listReceivables(),
       store.getSetting('budgetTotalCents', 0),
-      store.getSetting('hideAmounts', false)
+      store.getSetting('hideAmounts', false),
+      // 首页底部那行备份提醒要的三个值。全部走 getSetting 的兜底：备份时间可能刚从没有过（null），
+      // 提醒天数在老板本的数据里根本不存在（schema 的种子只在新库里写）。
+      getLastBackupAt(),
+      store.getSetting('backupReminderDays', DEFAULT_BACKUP_REMINDER_DAYS)
     ]);
 
   // 只有支出需要扣分摊；收入与转账原样透传（effectiveExpense 内部也判了 kind，这里显式写着更清楚）。
@@ -46,6 +56,14 @@ export async function renderLedgerHome(root) {
   const catOf = new Map(categories.map(c => [c.id, c]));
   const accOf = new Map(accounts.map(a => [a.id, a]));
   const amountClass = hideAmounts ? 'num hide-amount' : 'num';
+
+  // 底部备份提醒。文案与配色都从 backupAge() 走：同一个时间点在这行小字和备份面板里
+  // 必须显示成同一个天数，否则用户会开始怀疑到底哪个是真的。
+  // 「从未备份」时永远警示——这是最需要行动的状态，不该等满 14 天。
+  // Number(reminderDays) 兜住字符串/空值：设置项是从存储里读出来的，不假设它是数字。
+  const backup = backupAge(lastBackupAt, now);
+  const backupOverdue = backup.days === null || backup.days >= Number(reminderDays ?? DEFAULT_BACKUP_REMINDER_DAYS);
+  const backupText = backup.days === null ? '还没备份过，点这里导出' : `上次备份 ${backup.text}`;
 
   function signed(cents) {
     return `${cents >= 0 ? '+' : ''}${formatCents(cents, { symbol: true })}`;
@@ -117,7 +135,16 @@ export async function renderLedgerHome(root) {
               // 单笔显示交易原始金额（不扣分摊），分摊只体现在上面的月度汇总里。
               // 转账既不是收入也不是支出，用 ⇄ 标记，不加正负号。
               el('span', { class: amountClass, text: `${t.kind === 'income' ? '+' : t.kind === 'transfer' ? '⇄ ' : '-'}${formatCents(t.amountCents)}` })
-            ])))
+            ]))),
+      // 每次备份面板有改动都整页重渲染：导入会换掉全部数据，让这一行可能过期的提醒
+      // 是最省事也最不容易出错的做法（与上面应收入口同一套回调约定）。
+      el('div', { class: 'ledger-backup' + (backupOverdue ? ' overdue' : '') }, [
+        el('button', {
+          class: 'link-like', type: 'button', text: backupText,
+          dataset: { role: 'backup-reminder' },
+          onclick: () => openBackupSheet({ onChanged: () => renderLedgerHome(root) })
+        })
+      ])
     ]),
     el('button', {
       class: 'fab', type: 'button', text: '+',

@@ -17,6 +17,7 @@ import { openSheet } from './sheet.js';
 import { openAccountsSheet } from './accounts-view.js';
 import { openCategoriesSheet } from './categories-view.js';
 import { openBudgetSheet } from './budget-view.js';
+import { openBackupSheet } from './backup-view.js';
 
 // 与 sheet.js 内部摘除节点的延时保持一致，再加一点余量：早于它开下一层，
 // 就是两层同时挂在 DOM 上。
@@ -49,7 +50,11 @@ function dropActive() {
 export const SETTINGS_ENTRIES = [
   { id: 'accounts', label: '账户管理', open: openAccountsSheet },
   { id: 'categories', label: '分类管理', open: openCategoriesSheet },
-  { id: 'budget', label: '预算设置', open: openBudgetSheet }
+  { id: 'budget', label: '预算设置', open: openBudgetSheet },
+  // 备份放最后一行：它不属于「记账配置」，而是整个 app 的数据保险；
+  // 放前面会挤掉每天都要用的账户/分类入口。open 的签名与其它三个一致（都收 { onChanged }），
+  // 所以 swapTo 一行都不用改。
+  { id: 'backup', label: '备份与恢复', open: openBackupSheet }
 ];
 
 export function openSettingsSheet({ onChanged } = {}) {
