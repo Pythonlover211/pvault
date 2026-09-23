@@ -82,5 +82,22 @@
 .vault-actions { display: flex; gap: 8px; }
 .vault-actions .btn { flex: 1; }
 
-/* 手动上锁按钮：居中一行，与条目标题拉开距离，避免误触。 */
-.vault-foot { display: flex; justify-content: center; padding-top: 4px; }
+/* 列表底部：锁定 / 修改主密码并排居中，与条目标题拉开距离，避免误触。 */
+.vault-foot { display: flex; justify-content: center; gap: 8px; padding-top: 4px; }
+
+/* —— 条目编辑器（app/ui/vault-editor.js）—— */
+/* 表单行：label 在上、输入框在下，这是 .field 本来的形态；这里只补两件事——
+   密码类字段要让「显示」按钮和输入框同排，以及输入框的宽度。 */
+.vault-field-row .vault-field-inline { display: flex; align-items: center; gap: 8px; }
+.vault-field-row .vault-field-inline input { flex: 1; min-width: 0; }
+/* 卡号在等宽字体下逐位对齐，四位数一组才数得清（输入框里带空格，进库前会去掉）。 */
+.vault-field-row input.vault-input { font-variant-numeric: tabular-nums; }
+
+/* —— 备份与恢复（app/ui/backup-view.js）—— */
+/* 隐藏的文件输入框：display:none 仍然可以被脚本 .click() 唤起文件选择器，
+   而原生 file 控件在各平台上的外观差异太大（iOS 上还会显示「选择文件」英文），
+   统一用「选择备份文件」按钮代理。 */
+.vault-file-input { display: none; }
+
+/* —— 修改主密码（app/ui/vault-view.js）—— */
+.vault-pwchange { display: flex; flex-direction: column; gap: 10px; }
