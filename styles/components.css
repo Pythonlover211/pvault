@@ -1,0 +1,43 @@
+/* 通用组件样式：Tab 栏、卡片、按钮、进度条、FAB。
+   尺寸与颜色一律走 styles/base.css 里 :root 定义的令牌，方便暗色模式统一生效。 */
+
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  height: var(--bottom-inset);
+  padding-bottom: var(--safe-b);
+  display: flex; background: var(--surface);
+  border-top: 1px solid var(--border); z-index: 20;
+}
+.tabbar button {
+  flex: 1; border: 0; background: none; color: var(--text-3);
+  font: inherit; font-size: var(--font-xs); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+}
+.tabbar button[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.tabbar .tab-icon { font-size: 18px; line-height: 1; }
+
+.screen { padding: 16px 16px 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+.muted { color: var(--text-2); }
+.tiny { font-size: var(--font-sm); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.empty { padding: 40px 16px; text-align: center; color: var(--text-3); }
+.btn {
+  border: 0; border-radius: var(--radius-sm); padding: 10px 14px; font: inherit;
+  background: var(--surface-2); color: var(--text);
+}
+.btn-primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn-danger { background: transparent; color: var(--error); }
+.bar { height: 6px; border-radius: var(--radius-pill); background: var(--surface-2); overflow: hidden; }
+.bar > i { display: block; height: 100%; border-radius: var(--radius-pill); }
+.bar[data-level="ok"] > i { background: var(--success); }
+.bar[data-level="warn"] > i { background: var(--warning); }
+.bar[data-level="over"] > i { background: var(--error); }
+.fab {
+  position: fixed; right: 18px; z-index: 15;
+  bottom: calc(var(--bottom-inset) + 18px);
+  width: 54px; height: 54px; border-radius: 50%; border: 0;
+  background: var(--accent); color: var(--on-accent); font-size: 26px; line-height: 1;
+  box-shadow: var(--shadow);
+}

@@ -1,0 +1,5 @@
+/* 记账视图样式。本任务只需要外壳能跑起来，明细行与金额排版先占位，后续任务扩充。 */
+
+.ledger-amount { font-size: var(--font-display); font-weight: 600; letter-spacing: -.5px; }
+.ledger-txn-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.ledger-txn-row:last-child { border-bottom: 0; }
