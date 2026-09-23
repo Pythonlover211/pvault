@@ -78,6 +78,17 @@ export async function putAll(entries) {
   await txDone(tx);
 }
 
+// 在单个事务里清空若干仓库并写入若干记录。导入备份时用：
+// 「清空」与「写入」必须在同一个事务内，否则中途失败会留下一个空库。
+export async function replaceAll({ clears = [], puts = [] }) {
+  const db = await open();
+  const names = [...new Set([...clears, ...puts.map(e => e.store)])];
+  const tx = db.transaction(names, 'readwrite');
+  for (const name of clears) tx.objectStore(name).clear();
+  for (const e of puts) tx.objectStore(e.store).put(e.value);
+  await txDone(tx);
+}
+
 export async function get(store, key) {
   const db = await open();
   return new Promise((resolve, reject) => {
