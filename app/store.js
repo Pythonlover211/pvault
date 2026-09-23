@@ -62,6 +62,12 @@ export async function updateTransaction(txn) {
 }
 
 export async function deleteTransaction(id) {
+  const receivables = await db.getAll('receivables');
+  for (const r of receivables) {
+    if (r.sourceTxnId === id && !r.settledAt) {
+      await db.remove('receivables', r.id);
+    }
+  }
   await db.remove('txns', id);
 }
 

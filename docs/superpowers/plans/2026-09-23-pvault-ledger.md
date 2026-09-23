@@ -1615,6 +1615,12 @@ export async function updateTransaction(txn) {
 }
 
 export async function deleteTransaction(id) {
+  const receivables = await db.getAll('receivables');
+  for (const r of receivables) {
+    if (r.sourceTxnId === id && !r.settledAt) {
+      await db.remove('receivables', r.id);
+    }
+  }
   await db.remove('txns', id);
 }
 
@@ -2213,6 +2219,7 @@ export async function openEntryPanel({ onSaved } = {}) {
 - [ ] 中午打开时分类默认高亮「餐饮」（先手动记几笔餐饮再测）
 - [ ] 输入金额 → 点完成 → 首页立即出现这一笔，且能核对到账户名
 - [ ] 3 秒内点「撤销」→ 该笔消失
+- [ ] 撤销一笔带分摊的交易后，首页的应收金额同步减少
 - [ ] 切到「转账」→ 出现两个账户选择器，分类消失；目标账户与来源相同时完成按钮禁用
 - [ ] 切到「收入」→ 分类换成收入类
 - [ ] 勾「有人分摊」→ 填金额超过总额时完成按钮禁用并显示提示
@@ -2376,7 +2383,7 @@ git commit -m "feat: 预算设置与固定支出提示"
 
 - [ ] 带分摊记账后，应收里出现对应条目且金额正确
 - [ ] 标记已收回后，首页应收小字金额减少
-- [ ] 删掉来源交易后，应收条目的处理符合预期（**保留**，因为它代表真实债权）
+- [ ] 删掉来源交易后，它派生出的**未结清**应收一并消失；已结清的历史应收保留
 
 - [ ] **步骤 3：Commit**
 
