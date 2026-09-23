@@ -15,19 +15,32 @@ export function open() {
     };
     req.onsuccess = async () => {
       const db = req.result;
-      try { await ensureSeeded(db); } catch (e) { reject(e); return; }
+      try {
+        await ensureSeeded(db);
+      } catch (e) {
+        db.close();
+        reject(e);
+        return;
+      }
       resolve(db);
     };
     req.onerror = () => reject(req.error);
+  }).catch(err => {
+    // 失败的连接不能永久缓存：否则本次页面生命周期内数据层彻底不可用，只能刷新。
+    // 置回 null 让下一次调用重新尝试打开。
+    dbPromise = null;
+    throw err;
   });
   return dbPromise;
 }
 
+// 请求级错误会自然冒泡并中止事务，所以只认 oncomplete / onabort。
+// 注意不能在 onerror 里 reject(tx.error)：规范里 tx.error 要等到「中止事务」步骤才赋值，
+// 此刻它还是 null，抛出 null 会让调用方读 err.message 时反过来抛 TypeError。
 function txDone(tx) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务被中止'));
   });
 }
 
@@ -53,6 +66,16 @@ export async function put(store, value) {
   tx.objectStore(store).put(value);
   await txDone(tx);
   return value;
+}
+
+// 批量写入：一个事务里可以访问多个仓库，让「交易 + 派生应收」这类跨仓库的写入
+// 要么全成、要么全不成。entries 形如 [{ store, value }]。
+export async function putAll(entries) {
+  const db = await open();
+  const names = [...new Set(entries.map(e => e.store))];
+  const tx = db.transaction(names, 'readwrite');
+  for (const e of entries) tx.objectStore(e.store).put(e.value);
+  await txDone(tx);
 }
 
 export async function get(store, key) {
@@ -89,5 +112,14 @@ export async function remove(store, key) {
   const db = await open();
   const tx = db.transaction(store, 'readwrite');
   tx.objectStore(store).delete(key);
+  await txDone(tx);
+}
+
+// 批量删除：与 putAll 对称，同样在一个事务里跨仓库删除。entries 形如 [{ store, key }]。
+export async function removeAll(entries) {
+  const db = await open();
+  const names = [...new Set(entries.map(e => e.store))];
+  const tx = db.transaction(names, 'readwrite');
+  for (const e of entries) tx.objectStore(e.store).delete(e.key);
   await txDone(tx);
 }

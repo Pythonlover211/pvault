@@ -30,12 +30,18 @@ export function openSheet({ title, body, onClose }) {
   // 面板打开时锁住背景滚动，关闭时恢复。
   document.body.style.overflow = 'hidden';
 
+  // 点遮罩后节点还要在 DOM 里留 180ms（等滑出动画走完），这期间再点一次「关闭」
+  // （或把「完成」按钮双击）会二次触发 onClose，所以 close 必须幂等。
+  let closed = false;
+
   function close() {
+    if (closed) return;
+    closed = true;
     overlay.classList.remove('open');
     document.body.style.overflow = '';
     // 等过渡（.18s）走完再摘节点，否则面板会瞬间消失、没有滑出动画。
     setTimeout(() => overlay.remove(), 180);
-    onClose?.();
+    if (onClose) onClose();
   }
 
   return { close, panel, overlay };

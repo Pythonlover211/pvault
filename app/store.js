@@ -40,20 +40,26 @@ export async function addTransaction(input) {
     createdAt: now,
     updatedAt: now
   };
-  await db.put('txns', txn);
+  // 交易与它派生的应收必须同一个事务写入：分次写一旦中途失败（配额满、标签页被杀），
+  // 会留下「钱记上了、别人欠我的却少了」的半截数据，而用户重试还会插入第二笔交易。
+  const entries = [{ store: 'txns', value: txn }];
   for (const share of txn.shares) {
-    await db.put('receivables', {
-      id: uid(),
-      personName: share.personName,
-      direction: 'owedToMe',
-      amountCents: share.amountCents,
-      occurredAt: txn.occurredAt,
-      dueAt: null,
-      settledAt: null,
-      note: txn.note,
-      sourceTxnId: txn.id
+    entries.push({
+      store: 'receivables',
+      value: {
+        id: uid(),
+        personName: share.personName,
+        direction: 'owedToMe',
+        amountCents: share.amountCents,
+        occurredAt: txn.occurredAt,
+        dueAt: null,
+        settledAt: null,
+        note: txn.note,
+        sourceTxnId: txn.id
+      }
     });
   }
+  await db.putAll(entries);
   return txn;
 }
 
@@ -63,14 +69,15 @@ export async function updateTransaction(txn) {
 
 export async function deleteTransaction(id) {
   const receivables = await db.getAll('receivables');
-  for (const r of receivables) {
-    if (r.sourceTxnId === id && !r.settledAt) {
-      await db.remove('receivables', r.id);
-    }
-  }
-  await db.remove('txns', id);
+  // 只删未结清的派生应收：已结清的是真实发生过的债权历史，删除交易不该抹掉它。
+  const entries = receivables
+    .filter(r => r.sourceTxnId === id && !r.settledAt)
+    .map(r => ({ store: 'receivables', key: r.id }));
+  entries.push({ store: 'txns', key: id });
+  await db.removeAll(entries);
 }
 
+// end 为开上界，调用方应传「下月/次日 0 点」（与 dates.js 的 monthRange/dayRange 的 end 一致）
 export async function listTransactionsInRange(start, end) {
   return db.getByRange('txns', 'by_occurredAt', start, end);
 }
