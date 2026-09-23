@@ -25,7 +25,9 @@ export async function renderLedgerHome(root) {
     await Promise.all([
       store.listTransactionsInRange(start, end),
       store.listTransactionsInRange(day.start, day.end),
-      store.listAccounts(),
+      // 必须用 listAllAccounts 而不是 listAccounts：归档账户仍要能查到名字，供历史流水显示
+      // （用过滤归档的 listAccounts，归档后那些历史交易的账户名会变成空白）。
+      store.listAllAccounts(),
       store.listAllCategories(),
       store.listReceivables(),
       store.getSetting('budgetTotalCents', 0),

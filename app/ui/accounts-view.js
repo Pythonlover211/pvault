@@ -7,6 +7,10 @@
 // 归档代替删除：账户被历史交易引用，物理删除会让统计断裂（流水里的账户名变空、
 // 按账户汇总对不上）。归档即隐藏，录入面板的账户下拉不会再出现它，因为 store.listAccounts()
 // 过滤 archived —— 本视图用的是 store.listAllAccounts()，它不过滤，所以已归档项仍能看见并恢复。
+//
+// trackBalance 字段保留但 V1 界面不提供开关：项目里没有任何余额计算逻辑（没有 balanceCents，
+// 也不显示余额、更不能校准），勾了它不会有任何效果，只会误导用户。字段仍按原值透传
+// （formOf 读入、buildAccount 写回），将来实现余额追踪时数据基础还在。
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import * as store from '../store.js';
@@ -187,15 +191,9 @@ export function openAccountsSheet({ onChanged } = {}) {
       el('div', { class: 'field' }, [el('label', { text: '名称' }), nameInput]),
       el('div', { class: 'field' }, [el('label', { text: '图标' }), iconInput, quickRow]),
       el('div', { class: 'field' }, [el('label', { text: '类型' }), kindSelect]),
-      el('label', { class: 'split-toggle' }, [
-        el('input', {
-          type: 'checkbox',
-          checked: form.trackBalance,
-          onchange: e => { form.trackBalance = e.target.checked; }
-        }),
-        el('span', { text: '追踪余额' })
-      ]),
-      el('div', { class: 'muted tiny', text: '储蓄类账户一般只当标签用，不必追踪余额；信用卡建议开启，方便对账单。' })
+      // 原「追踪余额」勾选框已移除：本版没有余额展示与校准，勾了没有任何效果（见文件头说明）。
+      // trackBalance 字段本身仍在 formOf / buildAccount 里原样透传，不会把既有账户重置成 false。
+      el('div', { class: 'muted tiny', text: '账户余额追踪将在后续版本提供' })
     ];
 
     // 账单日 / 还款日只在信用卡下出现。留空表示不设（存 null），不是 0。
