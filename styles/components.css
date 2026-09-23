@@ -119,3 +119,23 @@
 /* 注意：这里只写 padding / font-size，不写 background / color——
    与「后代 + 类」同特异性的规则会静默吃掉 .btn-primary / .btn-danger 的配色（任务 17 的教训）。 */
 .recurring-row .btn { padding: 6px 10px; font-size: var(--font-sm); }
+
+/* —— 应收与应付（app/ui/receivable-view.js）—— */
+/* 首页「应收 ¥xx」那行小字改成按钮后仍然要像一行文字：透明背景、无边框、
+   字号与颜色都继承外层（所以 muted/tiny 留在外层 div 上，见 ledger-home.js）。 */
+.link-like {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  text-align: left; cursor: pointer;
+}
+.link-like:active { opacity: .6; }
+.recv-summary { display: flex; gap: 16px; font-size: var(--font-sm); }
+.recv-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.recv-row:last-child { border-bottom: 0; }
+.recv-main { flex: 1; min-width: 0; }
+.recv-name { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.recv-meta { color: var(--text-3); font-size: var(--font-xs); margin-top: 2px; }
+.recv-row.settled { opacity: .55; }
+.recv-empty { color: var(--text-3); font-size: var(--font-sm); padding: 6px 0; }
+/* 同上：只收窄行内按钮的尺寸，不写 background / color，否则会静默吃掉
+   .btn-primary / .btn-danger 的配色（任务 17 的教训）。 */
+.recv-row .btn { padding: 6px 10px; font-size: var(--font-sm); }

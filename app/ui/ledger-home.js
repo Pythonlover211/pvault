@@ -15,6 +15,7 @@ import { budgetProgress, budgetLevel, dailyAllowance } from '../budget.js';
 import * as store from '../store.js';
 import { openEntryPanel } from './entry-panel.js';
 import { openSettingsSheet } from './settings-sheet.js';
+import { openReceivableSheet } from './receivable-view.js';
 
 export async function renderLedgerHome(root) {
   const now = Date.now();
@@ -86,7 +87,17 @@ export async function renderLedgerHome(root) {
         ]),
         el('div', { class: 'muted tiny', text: `还剩 ${formatCents(Math.max(0, remaining), { symbol: true })} · 日均可用 ${formatCents(allowance || 0, { symbol: true })}` })
       ]) : null,
-      recv.owedToMe > 0 ? el('div', { class: 'muted tiny ledger-receivable', text: `应收 ${formatCents(recv.owedToMe, { symbol: true })}` }) : null,
+      // 这行仍是「一行小字」：外层 div 保留原来的 muted tiny ledger-receivable（字号/颜色/间距
+      // 全从它来），里面那个按钮只加 .link-like（透明背景、无边框、font: inherit）——
+      // 不能把 muted/tiny 挪到按钮上，.link-like 的 font: inherit 会盖掉 .tiny 的字号（同类特异性，后者在后）。
+      // 只显示别人欠我的：我欠别人的在应收面板里看（见 docs/手动验证清单.md）。
+      recv.owedToMe > 0 ? el('div', { class: 'muted tiny ledger-receivable' }, [
+        el('button', {
+          class: 'link-like', type: 'button',
+          text: `应收 ${formatCents(recv.owedToMe, { symbol: true })}`,
+          onclick: () => openReceivableSheet({ onChanged: () => renderLedgerHome(root) })
+        })
+      ]) : null,
       el('div', { class: 'muted tiny ledger-day', text: `${formatDayLabel(now, now)} · ${new Date(now).getMonth() + 1}月${new Date(now).getDate()}日` }),
       todayTxns.length === 0
         ? el('div', { class: 'empty', text: '今天还没有记账' })

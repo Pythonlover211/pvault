@@ -107,6 +107,22 @@ export async function settleReceivable(id) {
   return next;
 }
 
+export async function addReceivable(input) {
+  const record = {
+    id: uid(),
+    personName: input.personName,
+    direction: input.direction,
+    amountCents: input.amountCents,
+    occurredAt: input.occurredAt ?? Date.now(),
+    dueAt: input.dueAt ?? null,
+    settledAt: null,
+    note: input.note ?? '',
+    sourceTxnId: input.sourceTxnId ?? null
+  };
+  await db.put('receivables', record);
+  return record;
+}
+
 export async function getSetting(key, fallback = null) {
   const row = await db.get('settings', key);
   return row ? row.value : fallback;
