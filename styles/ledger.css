@@ -18,3 +18,55 @@
 .ledger-txn-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ledger-txn-name > span:last-child { flex: none; white-space: nowrap; }
 .ledger-txn-row > .num { flex: none; white-space: nowrap; }
+
+/* —— 录入面板（app/ui/entry-panel.js）—— */
+
+.kind-switch { display: flex; gap: 6px; }
+.kind-switch button {
+  flex: 1; border: 0; border-radius: var(--radius-sm); padding: 8px 0;
+  background: var(--surface-2); color: var(--text-2); font: inherit;
+}
+.kind-switch button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+.cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.cat-cell {
+  border: 0; border-radius: var(--radius-sm); background: var(--surface-2);
+  color: var(--text); font: inherit; font-size: var(--font-xs);
+  padding: 10px 2px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.cat-cell .cat-icon { font-size: 18px; line-height: 1; }
+.cat-cell.selected { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label { font-size: var(--font-xs); color: var(--text-2); }
+.field select, .field input {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font: inherit; padding: 8px 10px;
+}
+.share-row { display: flex; gap: 6px; align-items: center; }
+.share-row input[type="text"] { flex: 1; }
+.share-row input[type="text"]:last-of-type,
+.share-row input[inputmode="decimal"] { width: 96px; flex: none; }
+.form-error { color: var(--error); font-size: var(--font-sm); }
+
+.toast {
+  position: fixed; left: 16px; right: 16px; z-index: 40;
+  bottom: calc(var(--bottom-inset) + 16px);
+  background: var(--text); color: var(--bg);
+  border-radius: var(--radius-sm); padding: 10px 14px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  box-shadow: var(--shadow);
+  opacity: 0; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease;
+}
+.toast.open { opacity: 1; transform: translateY(0); }
+.toast button { background: none; border: 0; color: var(--accent); font: inherit; font-weight: 600; }
+
+/* 录入面板补齐的少量布局：控件撑满整行、转账时两个账户平分宽度、
+   分摊行末尾的删除键不被压缩。 */
+.field select, .field input { width: 100%; }
+.entry-accounts .field { flex: 1; min-width: 0; }
+.split-toggle { display: flex; align-items: center; gap: 8px; font-size: var(--font-sm); }
+.split-toggle input { width: 16px; height: 16px; flex: none; }
+.share-del { flex: none; padding: 8px 10px; color: var(--text-2); }
+/* 常驻一行高度：合计提示与超额红字互相切换时，下面的「完成」按钮不会跳一下。 */
+.share-note { min-height: calc(var(--font-sm) * 1.4); }
