@@ -11,7 +11,12 @@
 // 1. 锁屏状态下**一个条目字段都不许进 DOM**。列表分支是唯一调用 loadItems() 的地方，
 //    它只可能在 isUnlocked() 为真时进入——锁屏页里没有任何路径能读到条目数据。
 // 2. 同一时刻只允许存在一个 onLockChange 订阅，见 bindLockChange()。
+// 3. **恢复码未确认前优先级最高**：只要用户还没点过「进入密码箱」，任何一次 renderVault 都
+//    先画恢复码页，不管 isInitialized / isUnlocked 是什么，见 pendingRecoveryCode。
+// 4. **锁订阅只在 vault Tab 上动视图**：main.js 用同一个 view 元素渲染所有 Tab，
+//    切走之后收到上锁广播不能去改别人的页面，见 bindLockChange() 里的 currentTab() 判断。
 import { el, mount } from './dom.js';
+import { currentTab } from '../router.js';
 import * as vaultStore from '../vault-store.js';
 import { formatRecoveryCode } from '../recovery-code.js';
 import {
@@ -41,10 +46,45 @@ let lockFailCount = 0;
 // （那时候用户显然知道主密码，这条提醒就没有意义了）。页面刷新即回到初始值——会话本来也只活在内存里。
 let usingRecoveryCode = false;
 
+// 刚创建完、用户还没点过「进入密码箱」的那串恢复码。
+// 它必须是模块级的，不能只活在 renderIntro 的闭包里：initVault 成功时已经建立了会话，
+// 若这串码只存在于那一次 mount 的闭包中，用户在这一屏手滑点去别的 Tab（main.js 用同一个
+// view 元素渲染所有 Tab，切回来就是一次全新的 renderVault）就会直接看到条目列表——
+// 恢复码从此在任何渲染里都不存在了；而刷新又会把会话清空，只剩锁屏，连重新生成的机会都没有。
+// 非 null 时 renderVault 无条件优先渲染恢复码页；点「进入密码箱」才清掉。
+let pendingRecoveryCode = null;
+
+// 恢复码页停留期间挂着的 beforeunload 摘钩（见 guardUnload）。
+let unloadGuardOff = null;
+
 function releaseSubscription() {
   if (activeUnsub) {
     activeUnsub();
     activeUnsub = null;
+  }
+}
+
+// 恢复码页要拦一下刷新：刷新会把会话和这串码一起清掉，而恢复码再也拿不回来
+// （initVault 不把它写进任何可再读的地方）。只在 pendingRecoveryCode 非 null 时挂，
+// 离开这一屏就摘掉——否则用户此后每次关页面都会被问一句。
+function guardUnload() {
+  if (!pendingRecoveryCode) return null;
+  const warn = e => { e.preventDefault(); e.returnValue = ''; };
+  window.addEventListener('beforeunload', warn);
+  return () => window.removeEventListener('beforeunload', warn);
+}
+
+// 挂之前先摘掉上一根：恢复码页会被重渲染（切走再回来、空闲上锁的广播），
+// 不摘的话监听器会随重渲染次数堆积。
+function bindUnloadGuard() {
+  releaseUnloadGuard();
+  unloadGuardOff = guardUnload();
+}
+
+function releaseUnloadGuard() {
+  if (unloadGuardOff) {
+    unloadGuardOff();
+    unloadGuardOff = null;
   }
 }
 
@@ -54,6 +94,12 @@ function releaseSubscription() {
 function bindLockChange(root, seq) {
   releaseSubscription();
   const off = vaultStore.onLockChange(unlocked => {
+    // 第一句就是 Tab 判断：main.js 用**同一个 view 元素**渲染所有 Tab，而这条订阅只在
+    // 下一次 renderVault 时才会被摘掉。用户在密码箱解锁后切到「记账」并停留超过 5 分钟，
+    // 空闲上锁的广播照样会打到这里——没有这道判断，下面的 renderVault(root) 就会把
+    // 记账首页整个换成密码箱锁屏，而底部 Tab 还高亮在「记账」。
+    // 切走之后不去动别人的视图；用户切回 vault Tab 时 renderVault 会重新走三态判定，自然显示锁屏。
+    if (currentTab() !== 'vault') return;
     // 迟到的旧订阅：自己已经不是最后一次渲染了，什么都不做（正常情况下它早被取消）。
     if (seq !== activeSeq) return;
     // 解锁不在这里处理：解锁成功的那段代码自己会重渲染，它比这条通知更清楚接下来该显示什么。
@@ -75,6 +121,17 @@ export async function renderVault(root) {
   const seq = ++activeSeq;
   // 先断旧订阅再做任何 await：等待期间发生的任何通知都不该由一个即将被替换的视图处理。
   releaseSubscription();
+
+  // 恢复码优先于一切状态判定：只要它还挂在内存里（用户还没点过「进入密码箱」），
+  // 不管 isInitialized / isUnlocked 是什么、这一屏是被谁触发的重渲染，都必须先把它画出来。
+  if (pendingRecoveryCode) {
+    bindUnloadGuard();
+    mount(root, renderRecovery(root, seq, pendingRecoveryCode));
+    bindLockChange(root, seq);
+    return;
+  }
+  // 已经不在恢复码屏上：把刷新拦截摘掉。
+  releaseUnloadGuard();
 
   let initialized;
   try {
@@ -129,8 +186,11 @@ function renderIntro(root, seq) {
       const { recoveryCode } = await vaultStore.initVault(pw);
       if (seq !== activeSeq) return;
       // 恢复码只在这一个瞬间存在：initVault 不会把它写进任何可再读的地方，
-      // 所以这里必须当场展示，绝不能「稍后再显示」。
-      mount(root, renderRecovery(root, seq, recoveryCode));
+      // 所以这里必须当场记下并展示，绝不能「稍后再显示」。
+      // 先落到模块级状态、再交给 renderVault 渲染：这样这一屏就再也不怕被别的渲染挤掉
+      // （切走再回来、空闲上锁的广播都会先问 pendingRecoveryCode）。
+      pendingRecoveryCode = recoveryCode;
+      await renderVault(root);
     } catch (err) {
       // 失败必须把按钮还原，否则用户被卡在一个再也点不动的界面上。
       busy = false;
@@ -174,6 +234,10 @@ function renderRecovery(root, seq, code) {
     onclick: () => {
       // 禁用态在某些浏览器里仍可能被脚本触发，这里再兜一道。
       if (enterBtn.disabled) return;
+      // 用户确认抄好并主动进入，这串码的使命结束：从内存里清掉，同时摘掉刷新拦截
+      // （此后每次关页面都还被问一句才是新的骚扰）。
+      pendingRecoveryCode = null;
+      releaseUnloadGuard();
       renderVault(root).catch(err => console.error(err));
     }
   });

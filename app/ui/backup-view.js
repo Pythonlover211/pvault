@@ -15,6 +15,7 @@
 // 4. 不引依赖、不碰 crypto.subtle：加解密全在 backup-store 里，本文件只管界面与流程。
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
+import * as store from '../store.js';
 import {
   exportBackup, parseBackupFile, decryptBackupFile, importBackup,
   getLastBackupAt, markBackedUp
@@ -23,6 +24,12 @@ import {
 // 备份密码下限。与主密码一致取 8 位：同一个派生的密码学约束，没必要给两条路径两套规矩。
 const MIN_PASSWORD = 8;
 const MS_PER_DAY = 86400000;
+
+// 超过这个天数没备份就把提醒染成警示色。默认 14 天：一次备份的「保鲜期」大约两周——
+// 更久不备份，一旦清掉浏览器数据，丢的就是半个月的账。
+// 放在这里（而不是首页）是为了让首页那行小字与备份面板里那行状态**共用同一个判据**：
+// 同一个时间点在两处显示成两种颜色，用户会开始怀疑到底哪个是真的。
+export const DEFAULT_BACKUP_REMINDER_DAYS = 14;
 
 // 时间戳 → 「今天 / N 天前」，以及是否需要打警示色。
 // 天数用 floor（不满一天不算一天）：昨天傍晚备份的、今天早上打开时显示「今天」会让人
@@ -33,6 +40,15 @@ export function backupAge(ts, now = Date.now()) {
   if (!ts) return { days: null, text: '从未备份', warn: true };
   const days = Math.max(0, Math.floor((Number(now) - Number(ts)) / MS_PER_DAY));
   return { days, text: days === 0 ? '今天' : `${days} 天前`, warn: false };
+}
+
+// 「该不该警示」的唯一判据：从未备份永远警示（这是最需要行动的状态，不该等满 14 天），
+// 否则看天数有没有够到 backupReminderDays。首页与备份面板都调它。
+export function isBackupOverdue(age, reminderDays) {
+  const limit = Number(reminderDays ?? DEFAULT_BACKUP_REMINDER_DAYS);
+  if (age.days === null) return true;
+  // 天数读不出来（NaN）时按默认天数判：宁可提醒得保守一点，也不能永远不提醒。
+  return age.days >= (Number.isFinite(limit) ? limit : DEFAULT_BACKUP_REMINDER_DAYS);
 }
 
 function formatStamp(ts) {
@@ -81,10 +97,18 @@ export function openBackupSheet({ onChanged } = {}) {
   }
 
   async function refreshStatus() {
-    const ts = await getLastBackupAt();
+    // 提醒天数与首页读的是同一个设置项；读失败（老库没有这一行、存储报错）就落到默认 14，
+    // 不能因为没有设置项就把警示色关掉。
+    const [ts, reminderDays] = await Promise.all([
+      getLastBackupAt(),
+      store.getSetting('backupReminderDays', DEFAULT_BACKUP_REMINDER_DAYS)
+        .catch(() => DEFAULT_BACKUP_REMINDER_DAYS)
+    ]);
     const age = backupAge(ts);
     statusNode.textContent = `上次备份：${age.text}`;
-    statusNode.className = age.warn ? 'vault-warn' : 'vault-hint';
+    // 与首页同一判据：超期也要变色。之前这里只认「从未备份」，于是同一个时间点
+    // 首页是黄的、面板里是灰的，用户会以为是两个不同的东西。
+    statusNode.className = isBackupOverdue(age, reminderDays) ? 'vault-warn' : 'vault-hint';
     return age;
   }
 
@@ -100,6 +124,14 @@ export function openBackupSheet({ onChanged } = {}) {
       const { filename, text } = await exportBackup(pw);
       download(filename, text);
       await markBackedUp();
+      // 「文件真的落盘了吗」网页里无从得知：浏览器拦截下载、用户在另存为里点了取消、
+      // 系统存储权限有问题，这些都不会抛错。所以我们照旧记下这次导出（用户确实点过导出，
+      // 该事实要落盘），但必须紧跟一句「请自己去确认文件在不在」——否则面板上写着
+      // 「上次备份：今天」，用户以为有备份，真到要恢复那天才发现什么都没有。
+      mount(exportNoteArea, el('div', {
+        class: 'vault-warn', dataset: { role: 'export-note' },
+        text: '导出后请到「下载」目录确认文件真的在——浏览器或系统拦截下载时这里不会有任何提示。'
+      }));
       await refreshStatus();
       // 密码用完就清空：这两个输入框没有任何留在内存里的理由。
       pw = '';
@@ -144,11 +176,16 @@ export function openBackupSheet({ onChanged } = {}) {
     oninput: e => { pw2 = e.target.value; refreshExport(); }
   });
 
+  // 导出成功后在这里落一句「去确认文件真的在」。刻意做成空容器而不是一个预先存在的提示框：
+  // .vault-warn 自带底色与内边距，空着也会在界面上留一个黄块。
+  const exportNoteArea = el('div', { class: 'stack', dataset: { role: 'export-note-area' } });
+
   const exportSection = el('section', { class: 'card stack' }, [
     el('div', { class: 'vault-hint', text: '这个密码只用于打开备份文件，可以和主密码不同。忘了它，备份文件同样打不开。' }),
     el('div', { class: 'field' }, [el('label', { text: '备份密码（至少 8 位）' }), pwInput]),
     el('div', { class: 'field' }, [el('label', { text: '再输一次' }), pw2Input]),
-    exportBtn
+    exportBtn,
+    exportNoteArea
   ]);
 
   // —— 导入 ——

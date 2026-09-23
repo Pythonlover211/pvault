@@ -16,12 +16,8 @@ import * as store from '../store.js';
 import { openEntryPanel } from './entry-panel.js';
 import { openSettingsSheet } from './settings-sheet.js';
 import { openReceivableSheet } from './receivable-view.js';
-import { openBackupSheet, backupAge } from './backup-view.js';
+import { openBackupSheet, backupAge, isBackupOverdue, DEFAULT_BACKUP_REMINDER_DAYS } from './backup-view.js';
 import { getLastBackupAt } from '../backup-store.js';
-
-// 超过这个天数没备份就把提醒染成警示色。默认 14 天：一次备份的「保鲜期」大约两周——
-// 更久不备份，一旦清掉浏览器数据，丢的就是半个月的账。
-const DEFAULT_BACKUP_REMINDER_DAYS = 14;
 
 export async function renderLedgerHome(root) {
   const now = Date.now();
@@ -57,12 +53,12 @@ export async function renderLedgerHome(root) {
   const accOf = new Map(accounts.map(a => [a.id, a]));
   const amountClass = hideAmounts ? 'num hide-amount' : 'num';
 
-  // 底部备份提醒。文案与配色都从 backupAge() 走：同一个时间点在这行小字和备份面板里
-  // 必须显示成同一个天数，否则用户会开始怀疑到底哪个是真的。
-  // 「从未备份」时永远警示——这是最需要行动的状态，不该等满 14 天。
+  // 底部备份提醒。文案与配色都从 backupAge() / isBackupOverdue() 走：同一个时间点在这行小字
+  // 和备份面板里必须显示成同一个天数、同一种颜色，否则用户会开始怀疑到底哪个是真的。
+  // 判据（「从未备份」永远警示、否则看天数）由 backup-view 提供，两处共用一份，不再各写一遍。
   // Number(reminderDays) 兜住字符串/空值：设置项是从存储里读出来的，不假设它是数字。
   const backup = backupAge(lastBackupAt, now);
-  const backupOverdue = backup.days === null || backup.days >= Number(reminderDays ?? DEFAULT_BACKUP_REMINDER_DAYS);
+  const backupOverdue = isBackupOverdue(backup, reminderDays);
   const backupText = backup.days === null ? '还没备份过，点这里导出' : `上次备份 ${backup.text}`;
 
   function signed(cents) {
