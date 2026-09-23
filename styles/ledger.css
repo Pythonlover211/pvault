@@ -70,3 +70,52 @@
 .share-del { flex: none; padding: 8px 10px; color: var(--text-2); }
 /* 常驻一行高度：合计提示与超额红字互相切换时，下面的「完成」按钮不会跳一下。 */
 .share-note { min-height: calc(var(--font-sm) * 1.4); }
+
+/* —— 统计页（app/ui/stats-view.js）—— */
+
+/* 月份切换行：左右箭头 + 居中月份标签。 */
+.stats-month { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.stats-month button {
+  border: 0; background: var(--surface-2); color: var(--text);
+  border-radius: var(--radius-sm); width: 34px; height: 34px; font-size: var(--font-lg); line-height: 1;
+}
+.stats-month button:disabled { opacity: .35; }
+.stats-month-label { font-size: var(--font-md); font-weight: 600; }
+
+/* 环比：花得更多用警示色，省下来用成功色。 */
+.stats-cmp { font-size: var(--font-sm); }
+.stats-cmp.up { color: var(--warning); }
+.stats-cmp.down { color: var(--success); }
+
+/* 环形图。描边颜色用 CSS 类配，不写 SVG 呈现属性：呈现属性不接受 var()，
+   写死色值又会丢掉暗色模式的适配。 */
+.stats-donut { display: flex; justify-content: center; }
+.stats-donut text { fill: var(--text); font-size: 11px; }
+.stats-donut text.donut-total { font-size: 17px; font-weight: 600; }
+.stats-donut text.donut-note { fill: var(--text-2); }
+.stats-donut .donut-track { stroke: var(--surface-2); }
+
+.stats-legend { display: flex; flex-direction: column; gap: 8px; }
+.legend-row { display: flex; align-items: center; gap: 8px; font-size: var(--font-sm); }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.legend-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend-cents { color: var(--text-2); }
+.legend-ratio { color: var(--text-3); width: 42px; text-align: right; }
+
+/* 分类明细行：占比条用强调色，超支用错误色（.bar 的 data-level 配色是给预算条用的，这里不套）。 */
+.stats-cats { display: flex; flex-direction: column; }
+.stats-cat-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-radius: var(--radius-sm); }
+.stats-cat-row.over .stats-cat-name { color: var(--error); }
+.stats-cat-row.flash { background: var(--accent-weak); }
+.stats-cat-head { display: flex; align-items: baseline; justify-content: space-between; font-size: var(--font-sm); }
+.stats-cat-row .bar > i { background: var(--accent); }
+.stats-cat-row.over .bar > i { background: var(--error); }
+
+/* 近 6 个月趋势用 SVG 画（viewBox 300×100）：宽度撑满，高度按 viewBox 比例自适应。 */
+.stats-trend { display: block; }
+.stats-trend-svg { display: block; width: 100%; height: auto; }
+.stats-trend-svg .trend-bar { fill: var(--surface-2); }
+.stats-trend-svg .trend-bar.current { fill: var(--accent); }
+.stats-trend-svg .trend-label { fill: var(--text-3); font-size: var(--font-xs); }
+
+.stats-receivable { font-size: var(--font-sm); }
