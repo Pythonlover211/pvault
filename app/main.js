@@ -2,6 +2,7 @@ import { el, mount } from './ui/dom.js';
 import { tabs, currentTab, go, onChange, hashQuery } from './router.js';
 import { renderLedgerHome } from './ui/ledger-home.js';
 import { renderStats } from './ui/stats-view.js';
+import { renderVault } from './ui/vault-view.js';
 import { openEntryPanel, dueRecurringsToday } from './ui/entry-panel.js';
 import * as store from './store.js';
 
@@ -19,7 +20,9 @@ function renderTabBar(active) {
 }
 
 const PLACEHOLDER = {
-  vault: () => el('div', { class: 'empty' }, ['密码箱将在下一步实现'])
+  // 空着：三个 Tab 现在都有真实视图（密码箱在任务 7 接上，见 ./ui/vault-view.js）。
+  // 这个对象留着是为了 render() 里那条兜底链——以后再加 Tab 而忘了写视图时，
+  // 会安静地落到记账页，而不是抛出 undefined is not a function。
 };
 
 // 快速连点两个 Tab 会起两个并发渲染，先发起的那个未必先完成（统计页要查 6~12 个月数据，
@@ -29,7 +32,7 @@ let renderSeq = 0;
 
 async function render(id) {
   const seq = ++renderSeq;
-  const renderers = { ledger: renderLedgerHome, stats: renderStats };
+  const renderers = { ledger: renderLedgerHome, stats: renderStats, vault: renderVault };
   const fn = renderers[id] || PLACEHOLDER[id] || renderers.ledger;
   // 单个视图失败不能拖垮整个外壳：视图渲染会 await store.*（依赖 IndexedDB），
   // 数据层一旦抛错，没有这个 try/catch 就是整页白屏、连 Tab 栏都点不到。

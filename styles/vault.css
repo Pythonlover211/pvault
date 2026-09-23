@@ -1,0 +1,49 @@
+/* 密码箱样式（app/ui/vault-view.js）。
+   三态（初始化引导 / 锁屏 / 列表）共用一套排版；颜色一律取 styles/base.css 的令牌，
+   不写任何色值，暗色模式才能自动跟上。 */
+
+.vault-wrap { display: flex; flex-direction: column; gap: 12px; }
+
+/* 普通说明文字；.vault-warn 用于必须被看见的警告（忘记主密码、恢复码只显示这一次、
+   正在用恢复码访问），底色用强调色的弱化版而不是错误色：它是提醒，不是报错。 */
+.vault-hint { color: var(--text-2); font-size: var(--font-sm); line-height: 1.6; }
+.vault-warn {
+  color: var(--text); font-size: var(--font-sm); line-height: 1.6;
+  background: var(--accent-weak); border-radius: var(--radius-sm); padding: 10px 12px;
+}
+
+/* 错误提示常驻一行高度：出现与消失之间按钮不会跳一下（与录入面板的 .share-note 同源处理）。 */
+.vault-error { color: var(--error); font-size: var(--font-sm); min-height: calc(var(--font-sm) * 1.5); }
+
+.vault-lock { display: flex; flex-direction: column; gap: 10px; }
+
+/* 恢复码：等宽 + 大字号 + 允许选中，逐组核对时不会看串行。
+   39 个字符在窄屏上必然折行，用 break-all 让它在连字符处断得整齐。 */
+.vault-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+  font-size: var(--font-lg); font-weight: 600; letter-spacing: 1px; line-height: 1.6;
+  color: var(--text); word-break: break-all;
+  user-select: text; -webkit-user-select: text;
+}
+.vault-code-row { display: flex; align-items: center; gap: 10px; }
+
+/* 恢复码确认勾选：整行可点（label 包住 input 与文字），点击热区比 18px 的方框大得多。 */
+.vault-check { display: flex; align-items: center; gap: 8px; font-size: var(--font-md); }
+.vault-check input { width: 18px; height: 18px; flex: none; }
+
+/* 列表：行内是「图标 / 标题+副标题 / 右侧操作」，行与行之间用分隔线而不是卡片描边。 */
+.vault-list { display: flex; flex-direction: column; }
+.vault-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.vault-row:last-child { border-bottom: 0; }
+.vault-row-main { flex: 1; min-width: 0; }
+.vault-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-row-sub {
+  color: var(--text-3); font-size: var(--font-xs); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 手动上锁按钮：居中一行，与条目标题拉开距离，避免误触。 */
+.vault-foot { display: flex; justify-content: center; padding-top: 4px; }

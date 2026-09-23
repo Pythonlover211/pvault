@@ -13,10 +13,14 @@
 // 忘了同步），整个 addAll 就 reject，install 失败，SW 根本不激活，离线能力直接是 0，
 // 而且控制台只看得到一条 addAll 的报错。所以 ASSETS 必须与磁盘上的真实文件逐条对齐
 // （这份清单是扫描 styles/、icons/、app/、app/ui/ 生成的，不是凭记忆手写的）。
-const CACHE = 'pvault-v2';
+const CACHE = 'pvault-v3';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
+//
+// v3 一并补齐了此前几个任务新增却忘了进清单的文件（crypto / recovery-code / vault-model /
+// vault-store / backup / backup-store）：漏掉的后果不是「少一份缓存」，而是离线时这些
+// ES module 请求 404、import 链断掉，密码箱与备份功能在离线状态下整个打不开。
 const ASSETS = [
   './',
   './index.html',
@@ -24,9 +28,13 @@ const ASSETS = [
   './styles/base.css',
   './styles/components.css',
   './styles/ledger.css',
+  './styles/vault.css',
   './icons/icon.svg',
+  './app/backup-store.js',
+  './app/backup.js',
   './app/budget.js',
   './app/chart.js',
+  './app/crypto.js',
   './app/dates.js',
   './app/db.js',
   './app/keypad-model.js',
@@ -34,10 +42,13 @@ const ASSETS = [
   './app/money.js',
   './app/predict.js',
   './app/receivable.js',
+  './app/recovery-code.js',
   './app/router.js',
   './app/schema.js',
   './app/store.js',
   './app/summary.js',
+  './app/vault-model.js',
+  './app/vault-store.js',
   './app/ui/accounts-view.js',
   './app/ui/budget-view.js',
   './app/ui/categories-view.js',
@@ -48,7 +59,8 @@ const ASSETS = [
   './app/ui/receivable-view.js',
   './app/ui/settings-sheet.js',
   './app/ui/sheet.js',
-  './app/ui/stats-view.js'
+  './app/ui/stats-view.js',
+  './app/ui/vault-view.js'
 ];
 
 self.addEventListener('install', e => {
