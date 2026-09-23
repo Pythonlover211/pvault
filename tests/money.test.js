@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatCents, parseAmountToCents, addCents, subCents } from '../app/money.js';
+import { formatCents, formatCentsShort, parseAmountToCents, addCents, subCents } from '../app/money.js';
 
 test('formatCents 输出两位小数', () => {
   assert.equal(formatCents(1240), '12.40');
@@ -13,6 +13,19 @@ test('formatCents 负数与货币符号', () => {
   assert.equal(formatCents(-320), '-3.20');
   assert.equal(formatCents(1240, { symbol: true }), '¥12.40');
   assert.equal(formatCents(-320, { symbol: true }), '-¥3.20');
+});
+
+// 供列表行、提示语这类「一眼扫过」的位置使用：整数元去掉小数、加千分位，仍然带 ¥。
+test('formatCentsShort 折叠 .00 并加千分位', () => {
+  assert.equal(formatCentsShort(250000), '¥2,500');
+  assert.equal(formatCentsShort(0), '¥0');
+  assert.equal(formatCentsShort(100), '¥1');
+  assert.equal(formatCentsShort(12345), '¥123.45');
+  assert.equal(formatCentsShort(5), '¥0.05');
+  assert.equal(formatCentsShort(100000000), '¥1,000,000');
+  assert.equal(formatCentsShort(-250000), '-¥2,500');
+  // 千分位只按整数部分分组，不碰小数：1234.56 → ¥1,234.56
+  assert.equal(formatCentsShort(123456), '¥1,234.56');
 });
 
 test('parseAmountToCents 解析用户输入', () => {

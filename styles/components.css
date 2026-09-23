@@ -100,3 +100,22 @@
 .manage-entry { text-align: left; }
 .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .chip-row .btn { padding: 6px 12px; font-size: var(--font-sm); }
+
+/* —— 预算设置与固定支出提示（app/ui/budget-view.js、entry-panel.js）—— */
+.budget-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.budget-row:last-child { border-bottom: 0; }
+.budget-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.budget-amount { width: 108px; flex: none; }
+.recurring-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.recurring-row:last-child { border-bottom: 0; }
+.recurring-main { flex: 1; min-width: 0; }
+.recurring-meta { color: var(--text-3); font-size: var(--font-xs); }
+.due-hint {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--accent-weak); border-radius: var(--radius-sm);
+  padding: 8px 10px; font-size: var(--font-sm);
+}
+.due-hint button { background: none; border: 0; color: var(--accent); font: inherit; font-weight: 600; }
+/* 注意：这里只写 padding / font-size，不写 background / color——
+   与「后代 + 类」同特异性的规则会静默吃掉 .btn-primary / .btn-danger 的配色（任务 17 的教训）。 */
+.recurring-row .btn { padding: 6px 10px; font-size: var(--font-sm); }

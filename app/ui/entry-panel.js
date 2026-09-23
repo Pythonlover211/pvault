@@ -17,7 +17,7 @@ import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import { predictCategory } from '../predict.js';
-import { formatCents, parseAmountToCents } from '../money.js';
+import { formatCents, formatCentsShort, parseAmountToCents } from '../money.js';
 import * as store from '../store.js';
 
 const KINDS = [
@@ -101,12 +101,32 @@ function showUndoToast({ onUndo }) {
   return toast;
 }
 
+// 今天该记的固定支出：返回要提示的那一条，没有则返回 null。
+// 三个条件缺一不可：启用中、dayOfMonth 正好是今天、本月还没有带同一个 recurringId 的交易。
+// 判定「本月还没有」用 listTransactionsInMonths(1) 拿到的本月交易，
+// 而不是「日期串比对」——用户可能提前一天或延后一天记，那笔账仍然算这条固定支出已记。
+function dueRecurringToday(recurring, categories, monthTxns) {
+  if (!Array.isArray(recurring) || recurring.length === 0) return null;
+  const day = new Date().getDate();
+  // dayOfMonth 只允许 1~28，所以 29/30/31 号永远不会有提示（那些日子在短月不存在）。
+  const due = recurring.filter(r => r && r.enabled !== false && Number(r.dayOfMonth) === day);
+  if (due.length === 0) return null;
+  const done = new Set(monthTxns.filter(t => t.recurringId).map(t => t.recurringId));
+  const pending = due.find(r => !done.has(r.id));
+  if (!pending) return null;
+  // 提示里的 emoji 优先用所选分类的图标（房租/居住 → 🏠），没选分类时用房子的默认图标。
+  const cat = categories.find(c => c.id === pending.categoryId);
+  return { ...pending, icon: cat?.icon || '🏠' };
+}
+
 export async function openEntryPanel({ onSaved } = {}) {
-  const [categories, accounts, txns, lastAccountId] = await Promise.all([
+  const [categories, accounts, txns, lastAccountId, recurring] = await Promise.all([
     store.listAllCategories(),
     store.listAccounts(),
     store.listTransactionsInMonths(6),
-    store.getSetting('lastAccountId', null)
+    store.getSetting('lastAccountId', null),
+    // 读失败不能挡着记账：固定支出提示只是锦上添花，兜成空数组继续。
+    store.getSetting('recurring', []).catch(err => { console.error(err); return []; })
   ]);
 
   let kind = 'expense';
@@ -125,6 +145,14 @@ export async function openEntryPanel({ onSaved } = {}) {
   let submitted = false;   // 已经成功保存过：面板收起前再点「完成」不许插第二笔
   let errorText = '';
   let shareNote = null;    // 分摊合计/超额提示节点（每次 render 重建，供局部更新用）
+  // 固定支出提示（任务 18）：dueRecurring 是今天该记的那一条（没有则 null），
+  // pendingRecurringId 记下「这笔是照着提示填的」，提交时写进 txn.recurringId——
+  // 下个月再打开时靠它判断「本月已经记过这条固定支出」，提示就不再出现。
+  const dueRecurring = dueRecurringToday(recurring, categories, txns);
+  let pendingRecurringId = null;
+  // 账户下拉节点的引用：点「填入」时要把选中的账户同步到界面上（账户是纯展示态字段，
+  // 改它不会 render()，否则会丢掉 select 的展开状态）。
+  let accountSelect = null;
 
   function catsOf(k) {
     return categories.filter(c => !c.archived && c.kind === k);
@@ -272,7 +300,9 @@ export async function openEntryPanel({ onSaved } = {}) {
     }
     return el('div', { class: 'field' }, [
       el('label', { text: '账户' }),
-      el('select', { onchange: e => { accountId = e.target.value; updateDone(); } }, accountOptions(accountId))
+      // 记下节点引用：固定支出的「填入」要把它显示的选中项同步过来（见 fillDue）。
+      accountSelect = el('select', { onchange: e => { accountId = e.target.value; updateDone(); } }, accountOptions(accountId)),
+      accountSelect
     ]);
   }
 
@@ -370,6 +400,36 @@ export async function openEntryPanel({ onSaved } = {}) {
     return box;
   }
 
+  // 今天该记的固定支出提示（任务 18）。只在打开面板时算一次，所以它是个常量节点，
+  // 不随 kind 切换变化：用户切到「收入」再切回来，提示理应还在（这笔钱还没记）。
+  function renderDueHint() {
+    if (!dueRecurring) return null;
+    return el('div', { class: 'due-hint' }, [
+      el('span', { text: `今天该记${dueRecurring.name} ${formatCentsShort(dueRecurring.amountCents)}` }),
+      el('button', { type: 'button', text: '填入', onclick: () => fillDue() })
+    ]);
+  }
+
+  // 「填入」：金额灌进键盘、选中分类与账户、记下 recurringId，提交时带上。
+  // 金额必须走 keypad.setFromCents（内部用 (cents/100).toFixed(2) 生成纯数字文本）：
+  // formatCents 的输出带 ¥，parseAmountToCents('¥25.00') 是 null，键盘会变空。
+  function fillDue() {
+    kind = 'expense';
+    keypad.setFromCents(dueRecurring.amountCents);
+    // 分类/账户只在它们确实存在且类型对得上时才套用：固定支出可能指向一个已被归档的分类，
+    // 那时保留默认分类（否则九宫格里没有任何格子高亮，用户以为面板坏了）。
+    const cat = categories.find(c => c.id === dueRecurring.categoryId && !c.archived && c.kind === 'expense');
+    if (cat) categoryId = cat.id;
+    else categoryId = defaultCategoryIdFor('expense');
+    if (dueRecurring.accountId && accounts.some(a => a.id === dueRecurring.accountId)) {
+      accountId = dueRecurring.accountId;
+    }
+    // 账户为纯展示态（改它不 render()），这里手动同步下拉的选中项。
+    if (accountSelect) accountSelect.value = accountId;
+    pendingRecurringId = dueRecurring.id;
+    render();
+  }
+
   // 整块重建 body 的各个区块。keypad.node 与 doneBtn 是同一批元素对象，
   // mount() 只是把它们挪个位置，状态与事件监听都还在。
   function render() {
@@ -378,6 +438,7 @@ export async function openEntryPanel({ onSaved } = {}) {
     if (kind !== 'expense') shareNote = null;
 
     mount(body,
+      renderDueHint(),
       renderKindSwitch(),
       keypad.node,
       kind === 'transfer' ? null : renderCategories(),
@@ -437,7 +498,10 @@ export async function openEntryPanel({ onSaved } = {}) {
         // 兜底：万一 occurredAt 成了非法值，宁可记成「现在」也不能把 NaN 写进库。
         occurredAt: Number.isFinite(occurredAt) ? occurredAt : Date.now(),
         note,
-        shares: payloadShares
+        shares: payloadShares,
+        // 只有「照固定支出提示填的」那一笔才带 recurringId：它是「本月这条固定支出已记」的凭据，
+        // 用别的路径记的账不该被当成它的替代（用户可能只是随手记了另一笔房租）。
+        recurringId: pendingRecurringId
       });
     } catch (err) {
       // 保存失败绝不关面板：用户填的金额、分类、分摊都还在，看到原因后能直接重试。

@@ -40,6 +40,7 @@ export async function addTransaction(input) {
     occurredAt: input.occurredAt ?? now,
     note: input.note ?? '',
     shares: input.shares ?? [],
+    recurringId: input.recurringId ?? null,
     source: input.source ?? 'manual',
     createdAt: now,
     updatedAt: now

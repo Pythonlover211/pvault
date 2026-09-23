@@ -6,6 +6,18 @@ export function formatCents(cents, { symbol = false } = {}) {
   return `${negative ? '-' : ''}${symbol ? '¥' : ''}${yuan}.${fen}`;
 }
 
+// 「给一眼看的金额」：整数元去掉 .00、千分位加逗号，仍然带 ¥。150000 → '¥1,500'，12345 → '¥123.45'。
+// 只用于列表行、提示语这类一眼扫过的位置；需要精确到分的场合（流水、统计数字）继续用 formatCents。
+// 千分位用正则按「后面正好 3 位一组」插入，避免 toLocaleString 在不同环境下输出不一致。
+export function formatCentsShort(cents) {
+  const text = formatCents(cents, { symbol: true });   // '-¥1234.56' / '¥1500.00'
+  const negative = text.startsWith('-');
+  const body = negative ? text.slice(1) : text;
+  const [yuanPart, fenPart] = body.slice(1).split('.');
+  const grouped = yuanPart.replace(/\B(?=(\d{3})+$)/g, ',');
+  return `${negative ? '-' : ''}¥${grouped}${fenPart === '00' ? '' : '.' + fenPart}`;
+}
+
 export function parseAmountToCents(input) {
   const s = String(input).trim();
   if (s === '' || s === '.') return null;

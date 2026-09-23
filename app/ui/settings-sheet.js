@@ -1,4 +1,4 @@
-// 设置面板（任务 17 的入口聚合）：账户管理 / 分类管理（预算设置在任务 18 加）。
+// 设置面板（任务 17 的入口聚合）：账户管理 / 分类管理 / 预算设置。
 //
 // 为什么入口在首页的齿轮而不是统计页底部：账户、分类、预算都是「记账配置」，
 // 用户不会去统计页找它们；统计页只回答「钱花哪了」。
@@ -16,6 +16,7 @@ import { el } from './dom.js';
 import { openSheet } from './sheet.js';
 import { openAccountsSheet } from './accounts-view.js';
 import { openCategoriesSheet } from './categories-view.js';
+import { openBudgetSheet } from './budget-view.js';
 
 // 与 sheet.js 内部摘除节点的延时保持一致，再加一点余量：早于它开下一层，
 // 就是两层同时挂在 DOM 上。
@@ -47,8 +48,8 @@ function dropActive() {
 // 导出是为了让测试探针能按 id 定位入口（真实 UI 只用 openSettingsSheet）。
 export const SETTINGS_ENTRIES = [
   { id: 'accounts', label: '账户管理', open: openAccountsSheet },
-  { id: 'categories', label: '分类管理', open: openCategoriesSheet }
-  // 任务 18：预算设置
+  { id: 'categories', label: '分类管理', open: openCategoriesSheet },
+  { id: 'budget', label: '预算设置', open: openBudgetSheet }
 ];
 
 export function openSettingsSheet({ onChanged } = {}) {
