@@ -1,5 +1,20 @@
-/* 记账视图样式。本任务只需要外壳能跑起来，明细行与金额排版先占位，后续任务扩充。 */
+/* 记账视图样式。首页排版用到的类在这里补齐；尺寸与颜色一律走 styles/base.css 的令牌。 */
 
+/* 大金额：首页「本月支出」用。.ledger-amount 保留给后续视图的其它大金额位。 */
 .ledger-amount { font-size: var(--font-display); font-weight: 600; letter-spacing: -.5px; }
+.ledger-total { font-size: var(--font-display); font-weight: 600; letter-spacing: -.5px; }
+
+/* 顶部月份行（.row 已是 flex + space-between，这里显式声明语义类，便于单独调整）。 */
+.ledger-head { display: flex; align-items: center; justify-content: space-between; }
+.ledger-sub { margin-top: 2px; }
+.ledger-receivable { margin-top: 2px; }
+.ledger-day { margin-top: 6px; }
+
+/* 今日流水行。 */
 .ledger-txn-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .ledger-txn-row:last-child { border-bottom: 0; }
+.ledger-txn-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* 分类名过长时省略；账户名不被压缩（否则窄屏上会先挤掉账户名）。 */
+.ledger-txn-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-txn-name > span:last-child { flex: none; white-space: nowrap; }
+.ledger-txn-row > .num { flex: none; white-space: nowrap; }
