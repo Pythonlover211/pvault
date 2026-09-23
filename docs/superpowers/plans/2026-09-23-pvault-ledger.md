@@ -116,6 +116,11 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
+// 白名单：只服务应用真正需要的资源。服务器绑在 0.0.0.0（手机同 Wi-Fi 预览），
+// 若不做限制，同网段的人能直接读走 docs/ 下的设计规格、tests/ 与 package.json。
+const ALLOWED_ROOT_FILES = new Set(['index.html', 'manifest.webmanifest', 'sw.js']);
+const ALLOWED_DIRS = new Set(['app', 'styles', 'icons']);
+
 // 抽出可导出的 handler，便于测试用 listen(0) 起临时服务器验证真实行为
 export function createHandler(root) {
   return async (req, res) => {
@@ -131,8 +136,16 @@ export function createHandler(root) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Bad request');
       return;
     }
+    // 按 / 与 \ 切段后比第一段，不做字符串前缀比较——否则 appfoo/ 会被当成 app/
+    const segments = rel.split(/[\\/]+/).filter(Boolean);
     // 点开头的路径段（.git/、.gitignore…）一律拒绝，避免局域网预览时被拖走仓库元数据
-    if (rel.split(/[\\/]/).some(seg => seg.startsWith('.'))) {
+    if (segments.some(seg => seg.startsWith('.'))) {
+      res.writeHead(403).end('Forbidden');
+      return;
+    }
+    // 白名单之外一律 403：docs/、tests/、scripts/、package.json 等都不该被局域网取走。
+    // 白名单内的 icons/、manifest.webmanifest、sw.js 尚未创建时走 404，符合预期。
+    if (!ALLOWED_DIRS.has(segments[0]) && !(segments.length === 1 && ALLOWED_ROOT_FILES.has(segments[0]))) {
       res.writeHead(403).end('Forbidden');
       return;
     }
@@ -178,7 +191,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 ```
 
-handler 必须包在 try/catch 里：畸形转义会抛 `URIError`，在 async handler 中无人捕获会直接让 node 进程退出，全部连接被拒。另外任何以点开头的路径段一律 403（`/.gitignore`、`/.git/HEAD` 都不能被同一 Wi-Fi 下的人取走）。
+handler 必须包在 try/catch 里：畸形转义会抛 `URIError`，在 async handler 中无人捕获会直接让 node 进程退出，全部连接被拒。服务器监听 0.0.0.0（`手机访问` 那行），所以同网段的人能直接访问它，静态资源按**白名单**放行：只有 `index.html`、`manifest.webmanifest`、`sw.js` 和 `app/`、`styles/`、`icons/` 三个目录可达，其余一律 403——`docs/`（设计规格与实现计划）、`tests/`、`scripts/`、`package.json`、`.gitignore`、`.git/**` 都不能被同一 Wi-Fi 下的人取走。白名单把 `rel` 按 `/` 与 `\` 切段后**整段比较第一段**，不能用字符串前缀直接比，否则 `appfoo/` 会绕过 `app/`。另外任何以点开头的路径段也一律 403（`/.gitignore`、`/.git/HEAD`），它与白名单、路径穿越检查是并列的三层。白名单内的 `icons/`、`manifest.webmanifest`、`sw.js` 属于任务 20 才创建，现在访问得到 404 而不是 403，这是对的。
 
 本地必须走 `http://localhost`，不能直接双击 `index.html` —— `file://` 下 IndexedDB 和 Service Worker 都不可用。
 
@@ -302,12 +315,14 @@ before(async () => {
 after(() => new Promise(r => server.close(r)));
 ```
 
-至少覆盖 5 条：`/` 返回 200 且含 `<div id="app"`、`/nope.js` 返回 404、`/..%2fpackage.json` 返回 403（路径穿越）、`/%E4%` 返回 400 **且随后 `/` 仍返回 200**（服务器没崩，这是崩溃回归的唯一证据）、`/.gitignore` 返回 403。
+至少覆盖 9 条：`/` 返回 200 且含 `<div id="app"`、`/app/nope.js` 返回 404（404 只能在白名单内验证，白名单外的路径一律 403）、`/..%2fpackage.json` 返回 403（路径穿越）、`/%E4%` 返回 400 **且随后 `/` 仍返回 200**（服务器没崩，这是崩溃回归的唯一证据）、`/.gitignore` 返回 403；白名单 4 条：`/docs/superpowers/plans/2026-09-23-pvault-ledger.md`、`/package.json`、`/scripts/dev-server.js`、`/tests/dev-server.test.js` 都返回 403，`/app/main.js` 与 `/styles/base.css` 仍返回 200（白名单内的资源必须照常可访问）、`/appfoo/secret.txt` 返回 403（整段比较，不是前缀匹配）且 `/app/xyz/nope.js` 返回 404、`/manifest.webmanifest` 与 `/icons/icon-192.png` 返回 404 而不是 403（白名单内但任务 20 才创建）。
 
 穿越与畸形路径用例用 `node:http` 的 `request` 发原始 `path` 作为权威断言（不依赖客户端 URL 预处理的细节）；实测 undici 也不会把 `%2f` 当分隔符，所以同一路径再用 `fetch` 断言一次作为浏览器语义的对照。
 
 运行：`npm test`
-预期：`# tests 5`、`# pass 5`、`# fail 0`，退出码 0。
+预期：`# tests 9`、`# pass 9`、`# fail 0`，退出码 0。
+
+另外手工启动服务器实测一遍（`npm test` 用的是临时端口，测不到真实监听的那条路径）：`/` 、`/app/main.js`、`/styles/base.css` 返回 200；`/package.json`、`/docs/` 下任一文件、`/..%2fpackage.json`、`/.gitignore` 返回 403；`/%E4%` 返回 400 且随后 `/` 仍返回 200；`/manifest.webmanifest`、`/icons/icon-192.png` 返回 404。验证完记得结束服务器进程、确认端口释放。
 
 - [ ] **步骤 7：启动本地服务器确认页面可访问**
 

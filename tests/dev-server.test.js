@@ -41,7 +41,8 @@ test('根路径返回 index.html', async () => {
 });
 
 test('不存在的文件返回 404', async () => {
-  const res = await fetch(base + '/nope.js');
+  // 白名单外的路径一律 403，所以 404 只能在白名单内验证（见下面白名单目录那条用例）
+  const res = await fetch(base + '/app/nope.js');
   assert.equal(res.status, 404);
 });
 
@@ -74,4 +75,39 @@ test('畸形百分号转义返回 400 且服务器仍然存活', async () => {
 test('点开头的路径段返回 403', async () => {
   const res = await fetch(base + '/.gitignore');
   assert.equal(res.status, 403);
+});
+
+// 服务器绑 0.0.0.0 是为了手机同 Wi-Fi 预览，所以白名单不是可选项：
+// 同网段的人不得读走设计规格、测试与仓库元数据。
+test('白名单外的仓库文件返回 403', async () => {
+  const doc = await fetch(base + '/docs/superpowers/plans/2026-09-23-pvault-ledger.md');
+  assert.equal(doc.status, 403);
+  assert.match(await doc.text(), /Forbidden/);
+
+  assert.equal((await fetch(base + '/package.json')).status, 403);
+  assert.equal((await fetch(base + '/scripts/dev-server.js')).status, 403);
+  assert.equal((await fetch(base + '/tests/dev-server.test.js')).status, 403);
+});
+
+test('白名单内应用资源仍可访问', async () => {
+  const main = await fetch(base + '/app/main.js');
+  assert.equal(main.status, 200);
+  assert.match(main.headers.get('content-type'), /text\/javascript/);
+
+  const css = await fetch(base + '/styles/base.css');
+  assert.equal(css.status, 200);
+  assert.match(css.headers.get('content-type'), /text\/css/);
+});
+
+test('白名单目录做整段比较，不走前缀匹配', async () => {
+  // appfoo/ 不能因为以 "app" 开头就绕过白名单
+  assert.equal((await fetch(base + '/appfoo/secret.txt')).status, 403);
+  // app/ 下多级路径仍然允许（读不到就是 404，而不是 403）
+  assert.equal((await fetch(base + '/app/xyz/nope.js')).status, 404);
+});
+
+test('白名单内尚未创建的文件返回 404 而不是 403', async () => {
+  // icons/、manifest.webmanifest、sw.js 属于任务 20，此刻不存在但仍应可达路径
+  assert.equal((await fetch(base + '/manifest.webmanifest')).status, 404);
+  assert.equal((await fetch(base + '/icons/icon-192.png')).status, 404);
 });

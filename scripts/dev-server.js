@@ -18,6 +18,11 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
+// 白名单：只服务应用真正需要的资源。服务器绑在 0.0.0.0（手机同 Wi-Fi 预览），
+// 若不做限制，同网段的人能直接读走 docs/ 下的设计规格、tests/ 与 package.json。
+const ALLOWED_ROOT_FILES = new Set(['index.html', 'manifest.webmanifest', 'sw.js']);
+const ALLOWED_DIRS = new Set(['app', 'styles', 'icons']);
+
 // 抽出可导出的 handler，便于测试用 listen(0) 起临时服务器验证真实行为
 export function createHandler(root) {
   return async (req, res) => {
@@ -33,8 +38,16 @@ export function createHandler(root) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Bad request');
       return;
     }
+    // 按 / 与 \ 切段后比第一段，不做字符串前缀比较——否则 appfoo/ 会被当成 app/
+    const segments = rel.split(/[\\/]+/).filter(Boolean);
     // 点开头的路径段（.git/、.gitignore…）一律拒绝，避免局域网预览时被拖走仓库元数据
-    if (rel.split(/[\\/]/).some(seg => seg.startsWith('.'))) {
+    if (segments.some(seg => seg.startsWith('.'))) {
+      res.writeHead(403).end('Forbidden');
+      return;
+    }
+    // 白名单之外一律 403：docs/、tests/、scripts/、package.json 等都不该被局域网取走。
+    // 白名单内的 icons/、manifest.webmanifest、sw.js 尚未创建时走 404，符合预期。
+    if (!ALLOWED_DIRS.has(segments[0]) && !(segments.length === 1 && ALLOWED_ROOT_FILES.has(segments[0]))) {
       res.writeHead(403).end('Forbidden');
       return;
     }
