@@ -20,7 +20,8 @@
 | `index.html` | 唯一 HTML 外壳：挂载点 + 样式 + 入口脚本 |
 | `manifest.webmanifest` | PWA 清单（名称、图标、快捷方式） |
 | `sw.js` | Service Worker：预缓存静态资源、缓存优先、版本更新提示 |
-| `scripts/dev-server.js` | 本地静态服务器（Node 内置 http，零依赖，供手机/本机预览） |
+| `scripts/dev-server.js` | 本地静态服务器（Node 内置 http，零依赖，供手机/本机预览），导出 `createHandler` 供测试用 |
+| `tests/dev-server.test.js` | 开发服务器的回归测试（零依赖，`node:test` + 内置 fetch/http） |
 | `styles/base.css` | 设计变量、重置、排版、深浅色 |
 | `styles/components.css` | 通用组件：卡片、列表、按钮、输入、面板、标签 |
 | `styles/ledger.css` | 记账页面专用样式：首页、键盘、环形图、统计 |
@@ -72,6 +73,7 @@
 - 创建：`styles/base.css`
 - 创建：`app/main.js`
 - 创建：`scripts/dev-server.js`
+- 创建：`tests/dev-server.test.js`
 
 - [ ] **步骤 1：创建 `package.json`**
 
@@ -84,7 +86,8 @@
   "scripts": {
     "test": "node --test",
     "dev": "node scripts/dev-server.js"
-  }
+  },
+  "engines": { "node": ">=20" }
 }
 ```
 
@@ -95,8 +98,9 @@
 ```js
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { extname, join, normalize, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
@@ -112,31 +116,69 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
-const server = createServer(async (req, res) => {
-  const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-  const rel = normalize(urlPath === '/' ? 'index.html' : urlPath.slice(1));
-  const filePath = join(ROOT, rel);
-  if (!filePath.startsWith(ROOT.endsWith(sep) ? ROOT : ROOT + sep)) {
-    res.writeHead(403).end('Forbidden');
-    return;
-  }
-  try {
-    const body = await readFile(filePath);
-    res.writeHead(200, {
-      'Content-Type': MIME[extname(filePath).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': 'no-store',
-      'Service-Worker-Allowed': '/'
-    });
-    res.end(body);
-  } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not found');
-  }
-});
+// 抽出可导出的 handler，便于测试用 listen(0) 起临时服务器验证真实行为
+export function createHandler(root) {
+  return async (req, res) => {
+    let rel;
+    let filePath;
+    try {
+      const { pathname } = new URL(req.url, 'http://localhost');
+      const urlPath = decodeURIComponent(pathname);
+      rel = normalize(urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, ''));
+      filePath = join(root, rel);
+    } catch {
+      // 畸形百分号转义（如 /%E4%、/a%b）会抛 URIError；回 400，不能拖垮整个进程
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Bad request');
+      return;
+    }
+    // 点开头的路径段（.git/、.gitignore…）一律拒绝，避免局域网预览时被拖走仓库元数据
+    if (rel.split(/[\\/]/).some(seg => seg.startsWith('.'))) {
+      res.writeHead(403).end('Forbidden');
+      return;
+    }
+    if (!filePath.startsWith(root.endsWith(sep) ? root : root + sep)) {
+      res.writeHead(403).end('Forbidden');
+      return;
+    }
+    try {
+      const body = await readFile(filePath);
+      res.writeHead(200, {
+        'Content-Type': MIME[extname(filePath).toLowerCase()] || 'application/octet-stream',
+        'Cache-Control': 'no-store',
+        'Service-Worker-Allowed': '/'
+      });
+      res.end(body);
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not found');
+    }
+  };
+}
 
-server.listen(PORT, () => {
-  console.log(`pvault dev server: http://localhost:${PORT}`);
-});
+const server = createServer(createHandler(ROOT));
+
+// 仅在直接运行（node scripts/dev-server.js）时监听；被测试 import 时不监听
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.on('error', err => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`端口 ${PORT} 已被占用。关闭占用进程，或换个端口：`);
+      console.error(`  PowerShell:  $env:PORT=8081; node scripts/dev-server.js`);
+    } else {
+      console.error('开发服务器启动失败:', err.message);
+    }
+    process.exit(1);
+  });
+
+  server.listen(PORT, () => {
+    console.log(`pvault dev server: http://localhost:${PORT}`);
+    const lan = Object.values(networkInterfaces()).flat()
+      .filter(i => i && i.family === 'IPv4' && !i.internal)
+      .map(i => i.address);
+    for (const ip of lan) console.log(`  手机访问:   http://${ip}:${PORT}`);
+  });
+}
 ```
+
+handler 必须包在 try/catch 里：畸形转义会抛 `URIError`，在 async handler 中无人捕获会直接让 node 进程退出，全部连接被拒。另外任何以点开头的路径段一律 403（`/.gitignore`、`/.git/HEAD` 都不能被同一 Wi-Fi 下的人取走）。
 
 本地必须走 `http://localhost`，不能直接双击 `index.html` —— `file://` 下 IndexedDB 和 Service Worker 都不可用。
 
@@ -148,7 +190,8 @@ server.listen(PORT, () => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0a6ef0">
+<meta name="theme-color" content="#f2f2f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131315" media="(prefers-color-scheme: dark)">
 <title>pvault</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/icon.svg">
@@ -180,7 +223,21 @@ server.listen(PORT, () => {
   --warning: #ff9f0a;
   --error: #ff3b30;
   --radius: 12px;
+  --radius-sm: 10px;
+  --radius-pill: 3px;
+  --radius-sheet: 16px;
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-md: 14px;
+  --font-lg: 20px;
+  --font-xl: 30px;
+  --font-display: 34px;
+  --on-accent: #fff;
+  --overlay: rgba(0, 0, 0, .35);
+  --shadow: 0 6px 18px rgba(0, 0, 0, .22);
   --tab-h: 56px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --bottom-inset: calc(var(--tab-h) + var(--safe-b));
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -209,7 +266,7 @@ body {
   min-height: 100%;
   display: flex;
   flex-direction: column;
-  padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: var(--bottom-inset);
 }
 .num { font-variant-numeric: tabular-nums; }
 .hide-amount { filter: blur(6px); }
@@ -222,20 +279,46 @@ const app = document.getElementById('app');
 app.textContent = 'pvault';
 ```
 
-- [ ] **步骤 6：运行测试确认运行器可用**
+- [ ] **步骤 6：创建 `tests/dev-server.test.js` 并运行测试**
+
+用 `node:test` + 内置 `fetch`，**不引任何依赖**。骨架：
+
+```js
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer, request as httpRequest } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { createHandler } from '../scripts/dev-server.js';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+let server, base;
+
+before(async () => {
+  server = createServer(createHandler(ROOT));
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(() => new Promise(r => server.close(r)));
+```
+
+至少覆盖 5 条：`/` 返回 200 且含 `<div id="app"`、`/nope.js` 返回 404、`/..%2fpackage.json` 返回 403（路径穿越）、`/%E4%` 返回 400 **且随后 `/` 仍返回 200**（服务器没崩，这是崩溃回归的唯一证据）、`/.gitignore` 返回 403。
+
+穿越与畸形路径用例用 `node:http` 的 `request` 发原始 `path` 作为权威断言（不依赖客户端 URL 预处理的细节）；实测 undici 也不会把 `%2f` 当分隔符，所以同一路径再用 `fetch` 断言一次作为浏览器语义的对照。
 
 运行：`npm test`
-预期：`# tests 0`、`# pass 0`，退出码 0。
+预期：`# tests 5`、`# pass 5`、`# fail 0`，退出码 0。
 
 - [ ] **步骤 7：启动本地服务器确认页面可访问**
 
 运行：`npm run dev`（保持后台运行）
-预期：控制台输出 `pvault dev server: http://localhost:8080`；浏览器打开该地址看到 `pvault` 字样。
+预期：控制台输出 `pvault dev server: http://localhost:8080`，以及一行 `手机访问: http://<局域网 IP>:8080`（手机预览必须用后者，`localhost` 在手机上指手机自己）；浏览器打开该地址看到 `pvault` 字样。
+再起一次（不关掉上一个）应看到 `端口 8080 已被占用` 的提示而不是一堆堆栈。
 
 - [ ] **步骤 8：Commit**
 
 ```bash
-git add package.json index.html styles/base.css app/main.js scripts/dev-server.js
+git add package.json index.html styles/base.css app/main.js scripts/dev-server.js tests/dev-server.test.js
 git commit -m "chore: 项目骨架（无构建纯静态 + 零依赖测试运行器）"
 ```
 
