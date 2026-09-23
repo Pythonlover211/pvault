@@ -157,19 +157,33 @@ export function openCategoriesSheet({ onChanged } = {}) {
         }
       })));
 
-    const kindSelect = el('select', {
-      onchange: e => {
-        // 改类型不影响排序框、不管其它字段：整块重建由 onchange 后的 render() 完成，
-        // 名称/图标/排序都按 form 回填。
-        form.kind = e.target.value;
-        render();
-      }
-    }, KIND_OPTIONS.map(k => el('option', { value: k.id, text: k.label, selected: k.id === form.kind })));
+    // 类型：新增时可选，编辑既有分类时**只读**。
+    //
+    // 为什么编辑时不给改：`kind` 是分类的语义身份，summary.byCategory 按 categoryId 归集交易、
+    // 却按**交易**的 kind 过滤，从不看 category.kind。把一个分类从「支出」改成「收入」之后，
+    // 历史支出交易仍然挂在这个分类名下，支出环形图与明细里就会冒出「工资」这类收入分类名，
+    // 首页流水也照旧显示——数据变得不可解释，而用户看不到任何提示。
+    // 真正的迁移要把该分类下所有历史交易的 kind 一起改，代价远大于「新建一个分类」。
+    // 所以这里选择：编辑时类型只读，从源头堵住口径撕裂。
+    const kindField = form.id === null
+      ? el('div', { class: 'field' }, [
+          el('label', { text: '类型' }),
+          el('select', {
+            // 新增时类型可改。改了只影响 form.kind（图标默认值在 blankForm 里已按类型给过，
+            // 用户自己挑过就尊重用户的选择），不必重建整块表单。
+            onchange: e => { form.kind = e.target.value; }
+          }, KIND_OPTIONS.map(k => el('option', { value: k.id, text: k.label, selected: k.id === form.kind })))
+        ])
+      : el('div', { class: 'field' }, [
+          el('label', { text: '类型' }),
+          el('div', { class: 'muted tiny', text: `${KIND_LABEL[form.kind] || form.kind}（创建后不可修改）` }),
+          el('div', { class: 'muted tiny', text: '分类类型创建后不可修改；如需变更请新建一个分类' })
+        ]);
 
     const nodes = [
       el('div', { class: 'field' }, [el('label', { text: '名称' }), nameInput]),
       el('div', { class: 'field' }, [el('label', { text: '图标' }), iconInput, quickRow]),
-      el('div', { class: 'field' }, [el('label', { text: '类型' }), kindSelect]),
+      kindField,
       el('div', { class: 'field' }, [
         el('label', { text: '排序（数字越小越靠前）' }),
         el('input', {
