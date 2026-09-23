@@ -179,10 +179,10 @@ Recurring       固定支出
   dayOfMonth, enabled, lastPromptedAt
 
 Vault           加密保险库（存密文）
-  ciphertext, iv,
-  kdf{ algo:'PBKDF2-SHA256', iterations:600000, salt },
-  wrappedDekByPassword, wrappedDekByRecovery,
-  schemaVersion
+  version, kdf{ name:'PBKDF2-SHA256', iterations:600000 },
+  saltPassword, saltRecovery,
+  wrappedDekByPassword{ iv, ct }, wrappedDekByRecovery{ iv, ct },
+  ciphertext{ iv, ct }, updatedAt
 
 VaultItem       保险库条目（解密后）
   id, type(login|card|note), title, fields{}, createdAt, updatedAt
@@ -191,8 +191,12 @@ VaultItem       保险库条目（解密后）
     note : 标题 + 正文
 
 Settings        设置（明文）
-  hideAmounts, lastBackupAt, lockTimeoutMin, backupReminderDays
+  hideAmounts, lastBackupAt, backupReminderDays（暂无设置界面，默认 14）
 ```
+
+**字段名以 `app/schema.js` 与各仓库层的实际落盘为准**（上面 `Vault` 一段即实现形状）：主密码与恢复码各有**独立 salt**、KDF 参数只记 `name`/`iterations`，`iv` 与 `ct` 收在各自的 `{ iv, ct }` 对象里（`wrappedDekBy*`、`ciphertext`），没有顶层 `iv`，也没有 `schemaVersion`。
+
+**密码箱空闲上锁固定 5 分钟，不是配置项**：`Settings` 里曾计划过 `lockTimeoutMin`，实现时有记录地做成了固定值（理由见第 7 节），故不列在设置项里。
 
 **分类与账户都可自定义**：增、删、改名、换 emoji 图标、排序。删除时若已有历史交易，改为**归档**而非真删，避免历史统计断裂。
 
@@ -216,7 +220,7 @@ Settings        设置（明文）
 - **KEK** 由主密码经 **PBKDF2-SHA256（600,000 次迭代，16 字节随机 salt）** 派生，用 KEK 包裹 DEK 存入 `wrappedDekByPassword`。
 - **恢复码（与本节初版描述的偏离，已确认）**：初始化时生成 **20 字节（160 位熵）** 随机值 → **Crockford Base32 → 32 个字符**，显示为 8 组 4 字符（初版写的是「32 字节 → Base32 → 52 个字符」）。改短的理由：160 位熵对「离线暴力破解不可行」已经绰绰有余，而 52 个字符被用户抄错的概率显著更高——**抄错一个字符就等于丢了恢复码**，这是真实风险。字母表用 Crockford Base32（去掉易混的 `I L O U`），解码时把 `I`/`L` 归一成 `1`、`O` 归一成 `0`，并忽略大小写、空格与连字符。DEK 再用恢复码派生的 KEK 包裹一份存入 `wrappedDekByRecovery`。**两条路都能开锁。**
 - **改主密码**：只重新包裹 DEK（换 `saltPassword` 与 `wrappedDekByPassword`），**不重新加密任何条目**；`saltRecovery` / `wrappedDekByRecovery` 原样保留，因此**恢复码保持不变**，旧主密码立即失效。
-- **密钥只活在内存里（与本节初版描述的偏离，已确认）**：DEK 只存在 `vault-store.js` 的模块级会话变量（`session`）里，**从不上盘**——磁盘上永远只有「被 KEK 包裹过的 DEK」与条目密文。上锁条件是**空闲 5 分钟**（初版写「切走超过 5 分钟」）：任何一次需要 DEK 的操作都会刷新计时，由一个 30 秒的定时器兜底检查，超时就清掉会话并广播上锁事件。理由是 PWA 里「切走」没有一个可靠的捕获点（`visibilitychange` 在手机上表现不一致）。语义不变：5 分钟没碰过密码箱就重新上锁；关闭页面同样清空（会话本来就不落盘）。
+- **密钥只活在内存里（与本节初版描述的偏离，已确认）**：DEK 只存在 `vault-store.js` 的模块级会话变量（`session`）里，**从不上盘**——磁盘上永远只有「被 KEK 包裹过的 DEK」与条目密文。上锁条件是**空闲 5 分钟**（初版写「切走超过 5 分钟」），**固定值、不是配置项**（初版 `Settings` 里的 `lockTimeoutMin` 未实现）：任何一次需要 DEK 的操作都会刷新计时，由一个 30 秒的定时器兜底检查，超时就清掉会话并广播上锁事件。理由是 PWA 里「切走」没有一个可靠的捕获点（`visibilitychange` 在手机上表现不一致）。语义不变：5 分钟没碰过密码箱就重新上锁；关闭页面同样清空（会话本来就不落盘）。
 - **落盘形状**：整个保险库记录（版本、KDF 参数、两份包裹的 DEK、条目密文、更新时间）以**密文**形式存在 `settings` 表的 **`vault`** 键下；`vault` 为空表示「还没初始化」，与「已初始化但条目是空数组」在存储层面长得完全不一样，不会互相混淆。
 - **指纹解锁不做**（V1）：WebAuthn 的 PRF 扩展在各家安卓浏览器（尤其中文 ROM 自带浏览器）支持参差，投入产出比低。
 
@@ -260,7 +264,7 @@ Settings        设置（明文）
 | IndexedDB 被清空（浏览器清理数据） | 首页显示空状态，引导「导入备份」 |
 | 存储配额不足 | 明确提示，并建议先导出备份 |
 | 导入解析失败 | 指明具体原因：编码 / 列不匹配 / 金额格式非法 |
-| 主密码输错 | 明确提示；连续错误逐步加延迟 |
+| 主密码输错 | 明确提示；连续输错 3 次之后，此后每次尝试前固定延迟 1 秒（见 5.4） |
 | 主密码与恢复码都丢失 | UI 明确警告数据不可恢复（写在第 7 节） |
 | 金额输入非法 | 输入层拦截；金额一律整数分 |
 | Service Worker 有新版本 | 由 `controllerchange` 触发一次自动刷新（**仅在页面原本已被旧 SW 控制时**，首次安装不刷新）。数据全部在 IndexedDB，没有易失的页面状态，因此自动刷新比让用户手动点更省事 |
