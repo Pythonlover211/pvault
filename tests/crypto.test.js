@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_ITERATIONS, toBase64, fromBase64, randomBytes,
-  deriveKey, generateDek, wrapDek, unwrapDek,
+  deriveKey, generateDek, wrapDek, unwrapDek, importDek,
   encryptJSON, decryptJSON
 } from '../app/crypto.js';
 
@@ -48,6 +48,13 @@ test('DEK 包裹与解包往返', async () => {
   const unwrapped = await unwrapDek(kek, wrapped);
   const payload = await encryptJSON(dek, { a: 1 });
   assert.deepEqual(await decryptJSON(unwrapped, payload), { a: 1 });
+});
+
+test('importDek 把原始字节转成可用的密钥', async () => {
+  const dek = generateDek();
+  const key = await importDek(dek);
+  const payload = await encryptJSON(key, { ok: true });
+  assert.deepEqual(await decryptJSON(await importDek(dek), payload), { ok: true });
 });
 
 test('错误的 KEK 解不开包裹的 DEK', async () => {

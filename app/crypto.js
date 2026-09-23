@@ -55,7 +55,8 @@ export function generateDek() {
 // 而包裹与解包（wrapDek / unwrapDek）走 CryptoKey，两边就都能用同一条加密路径。
 async function asKey(key) {
   if (key?.type === 'secret') return key;
-  return crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  // raw 形态统一走 importDek，避免两处各自 importKey 导致参数慢慢漂移。
+  return importDek(key);
 }
 
 // 信封加密：用 KEK 把 DEK 包一份存起来（主密码一份、恢复码一份），保险库本体一律用 DEK 加密。
@@ -72,6 +73,18 @@ export async function unwrapDek(kek, wrapped) {
     fromBase64(wrapped.ct)
   );
   return new Uint8Array(plain);
+}
+
+// 把原始 DEK 字节转成可用的 CryptoKey。extractable 保持 false：这个密钥只用于加解密，
+// 没有任何理由允许把它导出成字节（原始字节只在包裹/解包的两个瞬间存在）。
+export async function importDek(bytes) {
+  return crypto.subtle.importKey(
+    'raw',
+    bytes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
 }
 
 export async function encryptJSON(key, value) {
