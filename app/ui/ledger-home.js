@@ -142,7 +142,11 @@ export async function renderLedgerHome(root) {
         el('button', {
           class: 'link-like', type: 'button', text: backupText,
           dataset: { role: 'backup-reminder' },
-          onclick: () => openBackupSheet({ onChanged: () => renderLedgerHome(root) })
+          // 这个 onChanged 是备份面板在**导入成功后**调的。回调必须自己吞掉异常：
+          // 那时数据已经覆盖完了、用户在等 location.reload()，首页渲染失败不该把那个流程带走。
+          onclick: () => openBackupSheet({
+            onChanged: () => { renderLedgerHome(root).catch(err => console.error('首页重渲染失败', err)); }
+          })
         })
       ])
     ]),

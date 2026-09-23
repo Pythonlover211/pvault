@@ -278,9 +278,15 @@ export function openBackupSheet({ onChanged } = {}) {
     try {
       // 整个流程里唯一一次写入。走到这一行，用户已经在摘要页上点过一次确认。
       await importBackup(picked.text, importPw);
-      // 数据真的换了才通知外面（`location.reload()` 会重来一遍，但这 1 秒里
-      // 面板后面的首页仍是旧数据；通知一次能让它在重载前就对上）。
-      if (onChanged) onChanged();
+      // 数据真的换了才通知外面。**这一步必须自己吞掉异常**：onChanged 是调用方注入的
+      // （首页会拿它重渲染整页），它一旦抛错就会把后面的「已恢复 + 重新加载」一起带走——
+      // 那时数据已经覆盖完了，用户却卡在一个显示旧摘要的面板上，并且永远不会自动刷新。
+      // 通知失败只该丢一条日志，绝不能改变「数据已经换过了」这个事实的呈现。
+      try {
+        if (onChanged) onChanged();
+      } catch (err) {
+        console.error('导入成功后的界面刷新失败', err);
+      }
       paintImport([el('div', { class: 'vault-hint', text: '已恢复，正在重新加载' })]);
       // 覆盖之后页面里的模块状态（store 的缓存、已经渲染的列表）全部作废，
       // 重新加载是唯一可靠的收敛方式；1 秒的延迟是留给那句提示被看见的时间。
