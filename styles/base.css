@@ -12,7 +12,21 @@
   --warning: #ff9f0a;
   --error: #ff3b30;
   --radius: 12px;
+  --radius-sm: 10px;
+  --radius-pill: 3px;
+  --radius-sheet: 16px;
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-md: 14px;
+  --font-lg: 20px;
+  --font-xl: 30px;
+  --font-display: 34px;
+  --on-accent: #fff;
+  --overlay: rgba(0, 0, 0, .35);
+  --shadow: 0 6px 18px rgba(0, 0, 0, .22);
   --tab-h: 56px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --bottom-inset: calc(var(--tab-h) + var(--safe-b));
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -41,7 +55,7 @@ body {
   min-height: 100%;
   display: flex;
   flex-direction: column;
-  padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: var(--bottom-inset);
 }
 .num { font-variant-numeric: tabular-nums; }
 .hide-amount { filter: blur(6px); }
