@@ -59,7 +59,7 @@
 - **金额一律为整数分**。任何地方不得用浮点数存储或计算金额。
 - 时间戳为毫秒数（`occurredAt`、`createdAt`）。
 - ID 用 `crypto.randomUUID()`（Node 24 与浏览器都支持）。
-- 测试命令 `npm test`（即 `node --test`），零依赖。
+- 测试命令 `npm test`（即 `node --test --test-isolation=none`），零依赖。带 `--test-isolation=none` 是因为本项目所有测试都是纯函数或本地 HTTP 服务器测试，**没有需要进程隔离的全局状态**：同进程执行结果完全等价，还免去每个文件 spawn 一个子进程的开销。它是 Node 官方开关，普通 shell 里同样正常工作，不是迁就某个受限环境的妥协。
 - commit message 用中文，前缀 `feat:` / `test:` / `chore:` / `fix:`。
 - 每个任务结束都要 commit，**不要攒着一起提交**。
 
@@ -84,7 +84,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "node --test --test-isolation=none",
     "dev": "node scripts/dev-server.js"
   },
   "engines": { "node": ">=20" }
@@ -380,7 +380,7 @@ test('整数分相加不会有浮点误差', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/money.test.js`
+运行：`node --test --test-isolation=none tests/money.test.js`
 预期：FAIL，报 `Cannot find module '../app/money.js'`。
 
 - [ ] **步骤 3：实现 `app/money.js`**
@@ -416,7 +416,7 @@ export function subCents(a, b) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/money.test.js`
+运行：`node --test --test-isolation=none tests/money.test.js`
 预期：PASS，5 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -517,7 +517,7 @@ test('lastNMonths 返回从旧到新的连续月份', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/dates.test.js`
+运行：`node --test --test-isolation=none tests/dates.test.js`
 预期：FAIL，报 `Cannot find module '../app/dates.js'`。
 
 - [ ] **步骤 3：实现 `app/dates.js`**
@@ -579,7 +579,7 @@ export function lastNMonths(ts, n) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/dates.test.js`
+运行：`node --test --test-isolation=none tests/dates.test.js`
 预期：PASS，9 个测试全过。
 
 > 若 `startOfDay` 那条断言因夏令时失败，把它改成只断言 `getHours()/getMinutes()/getSeconds()` 三个分量——中国无夏令时，但测试不该依赖时区。
@@ -647,7 +647,7 @@ test('dailyAllowance 在缺失预算时返回 null', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/budget.test.js`
+运行：`node --test --test-isolation=none tests/budget.test.js`
 预期：FAIL，报 `Cannot find module '../app/budget.js'`。
 
 - [ ] **步骤 3：实现 `app/budget.js`**
@@ -675,7 +675,7 @@ export function dailyAllowance(remainingCents, daysLeft) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/budget.test.js`
+运行：`node --test --test-isolation=none tests/budget.test.js`
 预期：PASS，6 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -763,7 +763,7 @@ test('trendSeries 全零时柱高为 0 且不除以零', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/summary.test.js`
+运行：`node --test --test-isolation=none tests/summary.test.js`
 预期：FAIL，报 `Cannot find module '../app/summary.js'`。
 
 - [ ] **步骤 3：实现 `app/summary.js`**
@@ -816,7 +816,7 @@ export function trendSeries(months) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/summary.test.js`
+运行：`node --test --test-isolation=none tests/summary.test.js`
 预期：PASS，9 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -888,7 +888,7 @@ test('outstandingList 只保留未结清项并按时间倒序', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/receivable.test.js`
+运行：`node --test --test-isolation=none tests/receivable.test.js`
 预期：FAIL，报 `Cannot find module '../app/receivable.js'`。
 
 - [ ] **步骤 3：实现 `app/receivable.js`**
@@ -922,7 +922,7 @@ export function outstandingList(list) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/receivable.test.js`
+运行：`node --test --test-isolation=none tests/receivable.test.js`
 预期：PASS，7 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -1001,7 +1001,7 @@ test('没有任何可用分类时返回 null', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/predict.test.js`
+运行：`node --test --test-isolation=none tests/predict.test.js`
 预期：FAIL，报 `Cannot find module '../app/predict.js'`。
 
 - [ ] **步骤 3：实现 `app/predict.js`**
@@ -1058,7 +1058,7 @@ function mostFrequent(list, usable) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/predict.test.js`
+运行：`node --test --test-isolation=none tests/predict.test.js`
 预期：PASS，6 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -1131,7 +1131,7 @@ test('donutPath 对整圆特殊处理，不产生零长度弧', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/chart.test.js`
+运行：`node --test --test-isolation=none tests/chart.test.js`
 预期：FAIL，报 `Cannot find module '../app/chart.js'`。
 
 - [ ] **步骤 3：实现 `app/chart.js`**
@@ -1175,7 +1175,7 @@ export function donutPath(cx, cy, rOuter, rInner, startAngle, endAngle) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/chart.test.js`
+运行：`node --test --test-isolation=none tests/chart.test.js`
 预期：PASS，7 个测试全过。
 
 - [ ] **步骤 5：Commit**
@@ -1254,7 +1254,7 @@ test('pressKey 不修改原状态', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`node --test tests/keypad-model.test.js`
+运行：`node --test --test-isolation=none tests/keypad-model.test.js`
 预期：FAIL，报 `Cannot find module '../app/keypad-model.js'`。
 
 - [ ] **步骤 3：实现 `app/keypad-model.js`**
@@ -1298,7 +1298,7 @@ export function keypadCents(state) {
 
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`node --test tests/keypad-model.test.js`
+运行：`node --test --test-isolation=none tests/keypad-model.test.js`
 预期：PASS，10 个测试全过。
 
 - [ ] **步骤 5：Commit**

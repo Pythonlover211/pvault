@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "node --test --test-isolation=none",
     "dev": "node scripts/dev-server.js"
   },
   "engines": { "node": ">=20" }
