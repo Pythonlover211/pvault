@@ -6,7 +6,12 @@
 import * as db from './db.js';
 import { monthRange } from './dates.js';
 
-export const uid = () => crypto.randomUUID();
+// crypto.randomUUID 只在安全上下文（HTTPS / localhost）可用；用手机通过局域网地址
+// （http://192.168.1.8:8080）打开时它是 undefined，一点「完成」就报错。
+// 因此回落成时间戳 + 随机数：同一毫秒内碰撞概率极低，且与 UUID 一样只要求本地唯一。
+export const uid = () =>
+  (globalThis.crypto?.randomUUID?.() ??
+    `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 
 export async function listAccounts() {
   const all = await db.getAll('accounts');

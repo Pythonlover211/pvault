@@ -20,6 +20,8 @@
 .ledger-txn-row > .num { flex: none; white-space: nowrap; }
 
 /* —— 录入面板（app/ui/entry-panel.js）—— */
+/* 注意 .kind-switch 不只录入面板用：统计页的「支出 / 收入」口径切换（app/ui/stats-view.js）也复用它，
+   改动这几条规则会同时影响两处。 */
 
 .kind-switch { display: flex; gap: 6px; }
 .kind-switch button {

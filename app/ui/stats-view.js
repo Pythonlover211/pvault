@@ -1,12 +1,16 @@
-// 统计页（设计规格 5.3）：月份切换 + 环比 → 环形占比图 → 图例 → 分类明细 → 近 6 个月趋势 → 应收/应付。
+// 统计页（设计规格 5.3）：月份切换 + 支出/收入口径切换 + 环比 → 环形占比图 → 图例 →
+// 分类明细 → 近 6 个月趋势 → 应收/应付。
 //
 // 口径约定（与首页一致，重要）：
 // - 汇总金额一律走 effectiveExpense() 扣掉他人分摊：规格 5.3「借出去的和垫付的钱都不算消费」。
-//   所以本月支出、分类占比、趋势柱高统计的都是「自己实际花掉的钱」。
+//   所以支出总额、分类占比、趋势柱高统计的都是「自己实际花掉的钱」。
+//   收入不做分摊扣减（收入本来就不带分摊），effective() 只对 kind === 'expense' 动手。
+// - 支出口径**含转账**（用户 2026-09-23 的要求），转账在分类聚合里归到内置的「转账」伪分类，
+//   因此「分类各项之和 === 环形圆心总额」这条不变量对两个口径都成立。
 // - 图例、环形图、分类明细共用同一份 slices 数组（每个分类带自己的颜色、角度、占比），
 //   顺序天然一致；本任务不做「超支置顶」，也是为了不让三处顺序被打乱。
 //
-// 状态：anchorTs 是模块级状态，切 Tab 后回来仍停在上次看的那个月。
+// 状态：anchorTs 与 scope 都是模块级状态，切 Tab 后回来仍停在上次看的那个月、那个口径。
 import { el, mount } from './dom.js';
 import { donutSegments, donutPath } from '../chart.js';
 import { byCategory, monthlyTotals, compareWithPrev, trendSeries } from '../summary.js';
@@ -48,20 +52,32 @@ function isOverBudget(cents, budgetCents) {
 }
 
 let anchorTs = Date.now();
+// 统计口径：'expense' | 'income'。两个口径走的是同一段计算与渲染代码，只是取数时换一个字段。
+let scope = 'expense';
 let drawSeq = 0;
 
 export async function renderStats(root) {
   return draw(root);
 }
 
-function goMonth(root, delta) {
-  anchorTs = addMonths(anchorTs, delta);
-  // 视图自己发起的重渲染不在 main.js 的 try/catch 里，这里要自己兜住数据层异常，
-  // 否则切月份时数据层一出错就是「界面没反应 + 控制台未捕获 promise」。
+// 视图自己发起的重渲染不在 main.js 的 try/catch 里，这里要自己兜住数据层异常，
+// 否则切月份/切口径时数据层一出错就是「界面没反应 + 控制台未捕获 promise」。
+function rerender(root) {
   return draw(root).catch(err => {
     console.error(err);
     mount(root, el('div', { class: 'empty' }, ['页面加载失败：' + (err?.message || err)]));
   });
+}
+
+function goMonth(root, delta) {
+  anchorTs = addMonths(anchorTs, delta);
+  return rerender(root);
+}
+
+function switchScope(root, next) {
+  if (next === scope) return undefined;
+  scope = next;
+  return rerender(root);
 }
 
 async function draw(root) {
@@ -83,16 +99,25 @@ async function draw(root) {
   const buckets = months.map(m => txns.filter(t => t.occurredAt >= m.start && t.occurredAt < m.end));
   const effective = list => list.map(t => (t.kind === 'expense' ? { ...t, amountCents: effectiveExpense(t) } : t));
 
-  const monthlyExpense = buckets.map(b => monthlyTotals(effective(b)).expense);
+  // —— 口径唯一的两个分叉点 ——
+  // 1) 金额取哪个字段：支出（含转账）/ 收入。
+  // 2) 分类聚合按哪个 kind：byCategory 支出口径含转账、收入口径不含。
+  // 环形图、图例、明细、趋势、环比全部读下面这几个值，不各自算一遍，避免口径漂移。
+  const scopeLabel = scope === 'income' ? '收入' : '支出';
+  const amountOf = list => {
+    const totals = monthlyTotals(effective(list));
+    return scope === 'income' ? totals.income : totals.expense;
+  };
+  const monthlyAmounts = buckets.map(amountOf);
   const currentTxns = effective(buckets[buckets.length - 1]);
-  const totals = monthlyTotals(currentTxns);
-  const prevExpense = monthlyExpense[monthlyExpense.length - 2];
+  const scopeTotal = monthlyAmounts[monthlyAmounts.length - 1];
+  const prevTotal = monthlyAmounts[monthlyAmounts.length - 2];
 
   // 传给 donutSegments 的 cents 必须是 number：字符串会让它内部的 reduce 变成字符串拼接
   // （"3000" + "7000" → "030007000"），占比静默算错且不报错。byCategory 给的就是 number，
   // 这里不做 `?? '0'` 之类的兜底，否则正好把这个隐患引进来。
   // 另外过滤掉有效金额为 0 的分类（整笔都被分摊掉时会出现）：0 元分类画不出扇区，只有噪声。
-  const cats = byCategory(currentTxns, categories).filter(c => c.cents > 0);
+  const cats = byCategory(currentTxns, categories, scope).filter(c => c.cents > 0);
   const slices = donutSegments(cats.map(c => ({ key: c.categoryId, cents: c.cents })))
     .map((seg, i) => ({
       ...cats[i],
@@ -122,8 +147,19 @@ async function draw(root) {
     })
   ]);
 
-  // —— 2. 本月支出 + 环比 ——
-  const cmp = compareWithPrev(totals.expense, prevExpense);
+  // —— 1b. 支出 / 收入口径切换（复用录入面板那套 .kind-switch 样式）——
+  const scopeRow = el('div', { class: 'kind-switch' }, [
+    { id: 'expense', label: '支出' }, { id: 'income', label: '收入' }
+  ].map(s => el('button', {
+    type: 'button',
+    // 必须是字符串：CSS 只对 [aria-selected="true"] 生效，而 el() 会跳过 false 值。
+    'aria-selected': String(s.id === scope),
+    text: s.label,
+    onclick: () => switchScope(root, s.id)
+  })));
+
+  // —— 2. 本月合计 + 环比 ——
+  const cmp = compareWithPrev(scopeTotal, prevTotal);
   let cmpNode;
   if (cmp === null) {
     // 上月为 0（compareWithPrev 返回 null）时显示「—」，绝不显示 +∞%。
@@ -144,7 +180,7 @@ async function draw(root) {
   const ringW = DONUT.rOuter - DONUT.rInner;
   const donutParts = [];
   if (slices.length === 0) {
-    // 没有可展示的分类支出：画一个灰色整环兜底，否则这里是一块空白。
+    // 该口径下没有可展示的分类（没数据，或金额全被分摊掉）：画一个灰色整环兜底，否则这里是一块空白。
     donutParts.push(svgEl('circle', {
       class: 'donut-track', cx: DONUT.cx, cy: DONUT.cy, r: ringR, fill: 'none', 'stroke-width': ringW
     }));
@@ -161,21 +197,21 @@ async function draw(root) {
         : svgEl('path', { d, fill: s.color }));
     }
   }
-  if (totals.expense === 0) {
+  if (scopeTotal === 0) {
     donutParts.push(svgEl('text', {
       x: DONUT.cx, y: DONUT.cy + 4, 'text-anchor': 'middle', class: 'donut-note'
-    }, ['本月还没有支出']));
+    }, [`本月还没有${scopeLabel}`]));
   } else {
-    donutParts.push(svgEl('text', { x: DONUT.cx, y: DONUT.cy - 4, 'text-anchor': 'middle' }, ['支出']));
+    donutParts.push(svgEl('text', { x: DONUT.cx, y: DONUT.cy - 4, 'text-anchor': 'middle' }, [scopeLabel]));
     donutParts.push(svgEl('text', {
       x: DONUT.cx, y: DONUT.cy + 16, 'text-anchor': 'middle', class: 'donut-total'
-    }, [formatCents(totals.expense, { symbol: true })]));
+    }, [formatCents(scopeTotal, { symbol: true })]));
   }
   const donutNode = el('div', { class: 'stats-donut' }, [
     svgEl('svg', {
       viewBox: `0 0 ${DONUT.size} ${DONUT.size}`,
       width: DONUT.size, height: DONUT.size,
-      role: 'img', 'aria-label': '所选月份支出分类占比'
+      role: 'img', 'aria-label': `所选月份${scopeLabel}分类占比`
     }, donutParts)
   ]);
 
@@ -183,7 +219,7 @@ async function draw(root) {
   const catRowNodes = new Map();
   const catList = slices.length === 0
     // 「这个月真的没花钱」和「花了但一笔都没归到分类」是两回事，不要用同一句话。
-    ? el('div', { class: 'empty', text: totals.expense === 0 ? '本月还没有支出' : '本月的支出还没有分类' })
+    ? el('div', { class: 'empty', text: scopeTotal === 0 ? `本月还没有${scopeLabel}` : `本月的${scopeLabel}还没有分类` })
     : el('div', { class: 'stats-cats' }, slices.map(s => {
         const over = isOverBudget(s.cents, budgetMap[s.categoryId]);
         const row = el('div', { class: 'stats-cat-row' + (over ? ' over' : '') }, [
@@ -218,7 +254,7 @@ async function draw(root) {
   // —— 6. 近 6 个月趋势（SVG，viewBox 300×100，宽度撑满、高度按比例自适应）——
   const trend = trendSeries(months.map((m, i) => ({
     label: `${new Date(m.start).getMonth() + 1}月`,
-    cents: monthlyExpense[i]
+    cents: monthlyAmounts[i]
   })));
   const barBase = TREND.height - TREND.labelH - TREND.topPad;
   const maxBarH = barBase - TREND.topPad;
@@ -243,7 +279,7 @@ async function draw(root) {
     svgEl('svg', {
       class: 'stats-trend-svg',
       viewBox: `0 0 ${TREND.width} ${TREND.height}`,
-      role: 'img', 'aria-label': '近 6 个月支出趋势'
+      role: 'img', 'aria-label': `近 6 个月${scopeLabel}趋势`
     }, trendParts)
   ]);
 
@@ -253,10 +289,11 @@ async function draw(root) {
 
   const tree = el('div', { class: 'stack' }, [
     monthRow,
+    scopeRow,
     el('section', { class: 'card stack' }, [
       el('div', {}, [
-        el('div', { class: 'muted tiny', text: '本月支出' }),
-        el('div', { class: 'ledger-total num', text: formatCents(totals.expense, { symbol: true }) }),
+        el('div', { class: 'muted tiny', text: `本月${scopeLabel}` }),
+        el('div', { class: 'ledger-total num', text: formatCents(scopeTotal, { symbol: true }) }),
         cmpNode
       ]),
       donutNode,
