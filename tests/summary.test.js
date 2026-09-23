@@ -16,9 +16,9 @@ test('monthlyTotals 合计支出与收入，净额取差', () => {
   assert.deepEqual(r, { expense: 4240, income: 850000, net: 845760 });
 });
 
-test('monthlyTotals 排除转账', () => {
+test('monthlyTotals 把转账计入支出', () => {
   const r = monthlyTotals([txn('expense', 1000), txn('transfer', 500000)]);
-  assert.equal(r.expense, 1000);
+  assert.equal(r.expense, 501000);
   assert.equal(r.income, 0);
 });
 
@@ -39,8 +39,29 @@ test('byCategory 按金额降序并给出占比', () => {
 });
 
 test('byCategory 忽略其他类型与未知分类', () => {
+  // 转账不在这条里：它现在被归到内置的「转账」分类，不再被忽略（见下一条测试）。
   const rows = byCategory([txn('income', 9999, 'c3'), txn('expense', 500, 'ghost')], cats, 'expense');
   assert.deepEqual(rows, []);
+});
+
+test('byCategory 把转账归到内置的「转账」分类', () => {
+  const rows = byCategory([txn('expense', 1000, 'c1'), txn('transfer', 3000)], cats, 'expense');
+  const transfer = rows.find(r => r.categoryId === '__transfer__');
+  assert.ok(transfer);
+  assert.equal(transfer.name, '转账');
+  assert.equal(transfer.icon, '⇄');
+  assert.equal(transfer.cents, 3000);
+});
+
+test('byCategory 的占比合计仍然为 1（含转账）', () => {
+  const rows = byCategory([txn('expense', 1000, 'c1'), txn('transfer', 3000)], cats, 'expense');
+  const sum = rows.reduce((s, r) => s + r.ratio, 0);
+  assert.ok(Math.abs(sum - 1) < 1e-12);
+});
+
+test('byCategory 在收入口径下不含转账', () => {
+  const rows = byCategory([txn('income', 2000, 'c3'), txn('transfer', 3000)], cats, 'income');
+  assert.deepEqual(rows.map(r => r.categoryId), ['c3']);
 });
 
 test('compareWithPrev 计算环比', () => {

@@ -747,9 +747,9 @@ test('monthlyTotals 合计支出与收入，净额取差', () => {
   assert.deepEqual(r, { expense: 4240, income: 850000, net: 845760 });
 });
 
-test('monthlyTotals 排除转账', () => {
+test('monthlyTotals 把转账计入支出', () => {
   const r = monthlyTotals([txn('expense', 1000), txn('transfer', 500000)]);
-  assert.equal(r.expense, 1000);
+  assert.equal(r.expense, 501000);
   assert.equal(r.income, 0);
 });
 
@@ -770,8 +770,29 @@ test('byCategory 按金额降序并给出占比', () => {
 });
 
 test('byCategory 忽略其他类型与未知分类', () => {
+  // 转账不在这条里：它现在被归到内置的「转账」分类，不再被忽略（见下一条测试）。
   const rows = byCategory([txn('income', 9999, 'c3'), txn('expense', 500, 'ghost')], cats, 'expense');
   assert.deepEqual(rows, []);
+});
+
+test('byCategory 把转账归到内置的「转账」分类', () => {
+  const rows = byCategory([txn('expense', 1000, 'c1'), txn('transfer', 3000)], cats, 'expense');
+  const transfer = rows.find(r => r.categoryId === '__transfer__');
+  assert.ok(transfer);
+  assert.equal(transfer.name, '转账');
+  assert.equal(transfer.icon, '⇄');
+  assert.equal(transfer.cents, 3000);
+});
+
+test('byCategory 的占比合计仍然为 1（含转账）', () => {
+  const rows = byCategory([txn('expense', 1000, 'c1'), txn('transfer', 3000)], cats, 'expense');
+  const sum = rows.reduce((s, r) => s + r.ratio, 0);
+  assert.ok(Math.abs(sum - 1) < 1e-12);
+});
+
+test('byCategory 在收入口径下不含转账', () => {
+  const rows = byCategory([txn('income', 2000, 'c3'), txn('transfer', 3000)], cats, 'income');
+  assert.deepEqual(rows.map(r => r.categoryId), ['c3']);
 });
 
 test('compareWithPrev 计算环比', () => {
@@ -802,23 +823,40 @@ test('trendSeries 全零时柱高为 0 且不除以零', () => {
 - [ ] **步骤 3：实现 `app/summary.js`**
 
 ```js
+// 转账在统计口径里计入支出（用户 2026-09-23 的要求）：它没有真实分类（录入时不选分类），
+// 所以在分类聚合里统一归到这个内置的「转账」伪分类。它不在数据库的 categories 里，
+// 只在统计时存在——这样分类各项之和仍然等于支出总额，环形图不会和总额对不上。
+export const TRANSFER_CATEGORY_ID = '__transfer__';
+const TRANSFER_META = { id: TRANSFER_CATEGORY_ID, name: '转账', icon: '⇄' };
+
 export function monthlyTotals(txns) {
   let expense = 0;
   let income = 0;
   for (const t of txns) {
-    if (t.kind === 'expense') expense += t.amountCents;
+    // 转账也计入支出：信用卡还款是「银行卡 → 信用卡」的转账，按新口径它算一笔消费。
+    if (t.kind === 'expense' || t.kind === 'transfer') expense += t.amountCents;
     else if (t.kind === 'income') income += t.amountCents;
   }
   return { expense, income, net: income - expense };
 }
 
 export function byCategory(txns, categories, kind = 'expense') {
+  // 内置伪分类要先进映射表，否则下面查不到它的名字。
   const nameOf = new Map(categories.map(c => [c.id, c]));
+  nameOf.set(TRANSFER_CATEGORY_ID, TRANSFER_META);
   const sums = new Map();
   for (const t of txns) {
-    if (t.kind !== kind) continue;
-    if (!nameOf.has(t.categoryId)) continue;
-    sums.set(t.categoryId, (sums.get(t.categoryId) || 0) + t.amountCents);
+    let categoryId;
+    if (t.kind === 'transfer') {
+      // 转账只归入支出口径；收入口径下它不是收入，直接跳过（byCategory 不做收入统计）。
+      if (kind !== 'expense') continue;
+      categoryId = TRANSFER_CATEGORY_ID;
+    } else {
+      if (t.kind !== kind) continue;
+      categoryId = t.categoryId;
+    }
+    if (!nameOf.has(categoryId)) continue;
+    sums.set(categoryId, (sums.get(categoryId) || 0) + t.amountCents);
   }
   const total = [...sums.values()].reduce((a, b) => a + b, 0);
   if (total === 0) return [];
@@ -850,7 +888,7 @@ export function trendSeries(months) {
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`node --test --test-isolation=none tests/summary.test.js`
-预期：PASS，8 个测试全过。
+预期：PASS，11 个测试全过（转账计入支出后新增了 3 条：内置「转账」分类、含转账的占比合计、收入口径不含转账）。
 
 - [ ] **步骤 5：Commit**
 
@@ -1740,7 +1778,7 @@ await s.deleteTransaction(t.id);
 ## 仓库层
 - [ ] 新增一笔支出后，当月查询能查到，删除后查不到
 - [ ] 带分摊的交易会同时生成一条「应收」
-- [ ] 转账不计入月度支出统计（用 summary.monthlyTotals 在控制台验证）
+- [ ] 转账计入月度支出统计（用 summary.monthlyTotals 在控制台验证）
 - [ ] 设置项读写正常（budgetTotalCents 改完刷新仍在）
 ```
 
