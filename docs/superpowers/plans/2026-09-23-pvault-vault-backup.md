@@ -71,7 +71,7 @@
 - 创建：`app/crypto.js`
 - 测试：`tests/crypto.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -166,7 +166,7 @@ test('派生密钥的默认迭代次数是 600000', async () => {
 运行：`node --test --test-isolation=none tests/crypto.test.js`
 预期：FAIL，报 `Cannot find module '../app/crypto.js'`。
 
-- [ ] **步骤 3：实现 `app/crypto.js`**
+- [x] **步骤 3：实现 `app/crypto.js`**
 
 ```js
 export const DEFAULT_ITERATIONS = 600000;
@@ -242,9 +242,9 @@ export async function decryptJSON(key, payload) {
 
 > `btoa`/`atob` 在 Node 24 里是全局可用的（与浏览器一致），所以这个模块能直接在 Node 里测。**不要**用 `Buffer`，那会让它在浏览器里挂掉。
 
-- [ ] **步骤 4：运行测试验证通过** → 11 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 11 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/crypto.js tests/crypto.test.js
@@ -259,7 +259,7 @@ git commit -m "feat: 加密模块（PBKDF2 派生 + AES-GCM 信封加密）"
 - 创建：`app/recovery-code.js`
 - 测试：`tests/recovery-code.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -326,7 +326,7 @@ test('归一化遇到不合法字符抛错', () => {
 
 - [ ] **步骤 2：运行测试验证失败** → `Cannot find module '../app/recovery-code.js'`
 
-- [ ] **步骤 3：实现 `app/recovery-code.js`**
+- [x] **步骤 3：实现 `app/recovery-code.js`**
 
 ```js
 import { randomBytes } from './crypto.js';
@@ -397,9 +397,9 @@ export function formatRecoveryCode(code) {
 }
 ```
 
-- [ ] **步骤 4：运行测试验证通过** → 11 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 11 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/recovery-code.js tests/recovery-code.test.js
@@ -414,7 +414,7 @@ git commit -m "feat: 恢复码（Crockford Base32 编码与容错归一化）"
 - 创建：`app/vault-model.js`
 - 测试：`tests/vault-model.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -521,7 +521,7 @@ test('itemSummary：给列表用的副标题', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-- [ ] **步骤 3：实现 `app/vault-model.js`**
+- [x] **步骤 3：实现 `app/vault-model.js`**
 
 ```js
 export const ITEM_TYPES = {
@@ -603,9 +603,9 @@ export function itemSummary(item) {
 
 > `maskSecret` 的契约：中间段用 `•`、每 4 个一组以空格分隔；长度不超过 8 位时整串打点；空串返回空串。这个形状同时被列表副标题（`itemSummary`）与详情页复用。
 
-- [ ] **步骤 4：运行测试验证通过** → 12 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 12 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/vault-model.js tests/vault-model.test.js
@@ -620,7 +620,7 @@ git commit -m "feat: 保险库条目模型（类型定义、校验、搜索、�
 - 创建：`app/backup.js`
 - 测试：`tests/backup.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -693,7 +693,7 @@ test('summarizeBackup 给出可读摘要', () => {
 
 - [ ] **步骤 2：运行测试验证失败**
 
-- [ ] **步骤 3：实现 `app/backup.js`**
+- [x] **步骤 3：实现 `app/backup.js`**
 
 ```js
 export const BACKUP_FORMAT = 'pvault-backup';
@@ -750,9 +750,9 @@ export function summarizeBackup(obj) {
 
 > `structuredClone` 在 Node 24 与浏览器里都是全局可用的。
 
-- [ ] **步骤 4：运行测试验证通过** → 8 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 8 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/backup.js tests/backup.test.js
@@ -778,7 +778,7 @@ git commit -m "feat: 备份包格式（组装、版本校验、摘要）"
     { key: 'backupReminderDays', value: 14 }
 ```
 
-- [ ] **步骤 2：实现 `app/vault-store.js`**
+- [x] **步骤 2：实现 `app/vault-store.js`**
 
 要求（完整实现）：
 
@@ -831,7 +831,7 @@ let listeners = new Set();
 }
 ```
 
-- [ ] **步骤 3：写临时探针验证**（fake IndexedDB 或真实内存实现，跑完删除）
+- [x] **步骤 3：写临时探针验证**（fake IndexedDB 或真实内存实现，跑完删除）
 
 至少断言：
 - 初始化后 `isInitialized()` 为 true，且返回的恢复码能被 `unlockWithRecoveryCode` 用上
@@ -841,7 +841,7 @@ let listeners = new Set();
 - 空闲超时：把 `lastTouched` 人为拨回 6 分钟前，下一次 `isUnlocked()` 为 false
 - 每次 `saveItems` 的 `ciphertext.iv` 都不同
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add app/vault-store.js app/schema.js
@@ -857,7 +857,7 @@ git commit -m "feat: 保险库仓库层（初始化、解锁、空闲上锁、�
 
 > 同样依赖 IndexedDB，不写单测。
 
-- [ ] **步骤 1：实现 `app/backup-store.js`**
+- [x] **步骤 1：实现 `app/backup-store.js`**
 
 | 函数 | 行为 |
 |---|---|
@@ -905,7 +905,7 @@ export async function replaceAll({ clears = [], puts = [] }) {
 - 导入一个格式不对的文件 → 抛错，现有数据不变
 - 导出包里包含 `vault`（如果设过密码箱）
 
-- [ ] **步骤 3：Commit**
+- [x] **步骤 3：Commit**
 
 ```bash
 git add app/backup-store.js app/db.js
@@ -928,7 +928,7 @@ git commit -m "feat: 备份导出与导入（整体加密、导入原子覆盖�
 2. **未解锁** —— 锁屏：一个主密码输入框 + 「解锁」按钮；下面一个折叠的「用恢复码解锁」入口。连续输错 3 次后每次延迟 1 秒（防手滑与轻量防爆破）。用恢复码解锁成功后，**顶部显示一条提示**：「你正在用恢复码访问，建议尽快修改主密码」。
 3. **已解锁** —— 列表页（任务 8）。
 
-- [ ] 实现后写探针/手动清单，Commit：`feat: 密码箱视图（初始化引导、恢复码、锁屏）`
+- [x] 实现后写探针/手动清单，Commit：`feat: 密码箱视图（初始化引导、恢复码、锁屏）`
 
 ---
 
@@ -997,11 +997,11 @@ export async function copyWithAutoClear(text, seconds = 30) {
 
 ### 任务 12：收尾
 
-- [ ] `sw.js` 的 `ASSETS` 补齐所有新文件，并把 `CACHE` 版本号 +1
-- [ ] `docs/手动验证清单.md` 追加「密码箱」「备份与恢复」两节
-- [ ] `docs/superpowers/specs/2026-09-23-pvault-design.md`：把 5.4 / 7 / 8 节标记为「已实现」，并按本计划的两处偏离（恢复码长度、空闲上锁）更新
+- [x] `sw.js` 的 `ASSETS` 补齐所有新文件，并把 `CACHE` 版本号 +1
+- [x] `docs/手动验证清单.md` 追加「密码箱」「备份与恢复」两节
+- [x] `docs/superpowers/specs/2026-09-23-pvault-design.md`：把 5.4 / 7 / 8 节标记为「已实现」，并按本计划的两处偏离（恢复码长度、空闲上锁）更新
 - [ ] 全量测试全绿 + 本地服务器手动过一遍
-- [ ] Commit：`docs: 密码箱与备份交付收尾`
+- [x] Commit：`docs: 密码箱与备份交付收尾`
 
 ---
 
@@ -1022,3 +1022,18 @@ export async function copyWithAutoClear(text, seconds = 30) {
 **类型一致性**：`dek` 全程是 `Uint8Array(32)`；`{ iv, ct }` 是唯一的密文形状；`wrappedDekByPassword` / `wrappedDekByRecovery` / `ciphertext` 三处都用它；`ITEM_TYPES` 的 key 与 `VaultItem.type` 取值一致（`login` / `card` / `note`）。
 
 **与计划 1 的接口一致性**：复用 `db.putAll` / `db.getAll` / `db.put`（计划 1 已建）；`store.setSetting` / `getSetting` 读写 `vault` 与 `lastBackupAt`；`uid()` 用于条目与备份内新记录。
+
+**收尾时的勾选依据（交付收尾时补记）**
+
+本次收尾只勾「有可核对证据」的步骤：文件在、commit 在、`node --test` 现在通过。下面 7 个复选框**刻意保持未勾**——不代表任务没做，而是**事后无法独立复现**或**实际做法与计划不同**：
+
+| 位置 | 步骤 | 为什么没勾 |
+|---|---|---|
+| 任务 1～4 各自的「步骤 2：运行测试验证失败」（4 条） | TDD 的失败先行 | 每个 commit 同时引入测试与实现，事后无法从仓库里复现「先失败」的那一刻。四个模块的测试现在全过（crypto 12、recovery-code 11、vault-model 12、backup 8），同一任务的步骤 1 / 3 / 4 / 5 已勾。 |
+| 任务 5 步骤 1（`seedSettings()` 增加 `vault` 与 `backupReminderDays`） | 计划要求改种子数据 | **实现换成了别的做法**：`seedSettings()` 仍是 5 条（`tests/schema.test.js` 覆盖了这个数字）；`vault` 行由 `initVault()` 按需写入，`backupReminderDays` 由 `ledger-home.js` 以默认值 14 兜底读取。这个改法反而保住了「没初始化」与「已初始化但为空」在存储层面的区别（种子写 `vault: null` 会让两者长得一样）。 |
+| 任务 6 步骤 2（备份仓库层探针验证） | 探针断言：导出→改数据→导入能回滚、错密码不改数据、坏文件不改数据、备份含 vault | 文档里只有备份**界面**层的探针证据（「确认覆盖之前一次写入都没有」），没有这一层这四条断言的记录。本轮不凭空补勾，交给 `docs/手动验证清单.md`「备份与恢复」小节在真机上确认。 |
+| 任务 12「全量测试全绿 + 本地服务器手动过一遍」 | 两件事 | 前半句已做到并留证：`node --test --test-isolation=none` → 134/134 全绿；`node scripts/dev-server.js` 起服后逐条请求 `sw.js` 的 42 条 ASSETS → 全部 200。后半句「本地服务器手动过一遍」**没有做**——开发环境里没有浏览器，所有界面交互仍待真机人工验证（见 `docs/手动验证清单.md` 开头的「本次交付的验证状态」）。 |
+
+**与计划文字的一处出入**：`tests/crypto.test.js` 实际有 **12** 个用例（计划任务 1 步骤 4 写的是 11）——多出的一条 `importDek 把原始字节转成可用的密钥` 来自实现中途的补充提交（`1bdfcb4 feat: crypto 补充 importDek`）：仓库层需要把解包得到的原始 DEK 字节升格成 CryptoKey 才能交给 WebCrypto 加解密。其余三个模块的用例数与计划一致（recovery-code 11、vault-model 12、backup 8）。
+
+**交付时的环境事实（收尾核对）**：`sw.js` 的 `CACHE` 为 `pvault-v5`；ASSETS 共 42 条，逐条请求全部 200，且与磁盘上的 41 个运行时文件双向对齐（无漏缓存、无 404 项）；`app/` 下 34 个模块的 85 条静态 import 全部指向已缓存路径，离线时不存在断链。
