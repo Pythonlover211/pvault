@@ -6,5 +6,6 @@
   "scripts": {
     "test": "node --test",
     "dev": "node scripts/dev-server.js"
-  }
+  },
+  "engines": { "node": ">=20" }
 }
