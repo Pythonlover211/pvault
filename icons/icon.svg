@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <!-- maskable 图标的安全区是中心 80%（192 的 10% 即 19.2 为边距，圆形遮罩半径 76.8）。
+       底色铺满整个画布（圆角在圆形遮罩下会被裁掉，不会损失内容），
+       白色的 ¥ 全部画在 45~147 的范围内，任何遮罩形状下都不会被切到。 -->
+  <rect width="192" height="192" rx="42" fill="#0a6ef0"/>
+  <g fill="none" stroke="#ffffff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M58 52 L96 96 L134 52"/>
+    <path d="M96 96 L96 142"/>
+    <path d="M60 104 L132 104"/>
+    <path d="M60 122 L132 122"/>
+  </g>
+</svg>

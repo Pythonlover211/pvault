@@ -1,0 +1,16 @@
+{
+  "name": "pvault 记账",
+  "short_name": "pvault",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f2f5",
+  "theme_color": "#0a6ef0",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "./icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "记一笔", "short_name": "记一笔", "url": "./index.html#/ledger?new=1" }
+  ]
+}

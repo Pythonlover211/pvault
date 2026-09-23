@@ -135,8 +135,28 @@ test('白名单目录做整段比较，不走前缀匹配', async () => {
   assert.equal((await fetch(base + '/app/xyz/nope.js')).status, 404);
 });
 
-test('白名单内尚未创建的文件返回 404 而不是 403', async () => {
-  // icons/、manifest.webmanifest、sw.js 属于任务 20，此刻不存在但仍应可达路径
-  assert.equal((await fetch(base + '/manifest.webmanifest')).status, 404);
+test('PWA 资源（manifest / sw / icon）返回 200 且 MIME 正确', async () => {
+  // 任务 20 之前这三个文件不存在，本用例断言的是 404；现在它们已落地，改为断言真能取到。
+  // MIME 不是小事：类型错了浏览器会把清单当普通文本丢掉，「添加到主屏幕」直接失效。
+  const manifest = await fetch(base + '/manifest.webmanifest');
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers.get('content-type'), /application\/manifest\+json/);
+  assert.equal((await manifest.json()).short_name, 'pvault');
+
+  const sw = await fetch(base + '/sw.js');
+  assert.equal(sw.status, 200);
+  assert.match(sw.headers.get('content-type'), /text\/javascript/);
+  // SW 的默认作用域是脚本所在目录；显式给出根作用域，手机上加到主屏后整站才归它管
+  assert.equal(sw.headers.get('service-worker-allowed'), '/');
+
+  const icon = await fetch(base + '/icons/icon.svg');
+  assert.equal(icon.status, 200);
+  assert.match(icon.headers.get('content-type'), /image\/svg\+xml/);
+});
+
+test('白名单内不存在的文件返回 404 而不是 403', async () => {
+  // 白名单判断先于「文件在不在」：icons/ 整个目录可达，但目录里没有的文件仍是 404，
+  // 不能因为同目录下有 icon.svg 就一律 200（也不能变成 403）
   assert.equal((await fetch(base + '/icons/icon-192.png')).status, 404);
+  assert.equal((await fetch(base + '/app/xyz/nope.js')).status, 404);
 });

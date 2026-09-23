@@ -101,22 +101,30 @@ function showUndoToast({ onUndo }) {
   return toast;
 }
 
-// 今天该记的固定支出：返回要提示的那一条，没有则返回 null。
+// 今天该记的固定支出：返回**全部**待记的条目（可能不止一条——比如 1 号既有房租又有宽带）。
 // 三个条件缺一不可：启用中、dayOfMonth 正好是今天、本月还没有带同一个 recurringId 的交易。
 // 判定「本月还没有」用 listTransactionsInMonths(1) 拿到的本月交易，
 // 而不是「日期串比对」——用户可能提前一天或延后一天记，那笔账仍然算这条固定支出已记。
-function dueRecurringToday(recurring, categories, monthTxns) {
-  if (!Array.isArray(recurring) || recurring.length === 0) return null;
+//
+// 导出给 app/main.js 算桌面图标角标用（那边要的是条数）。同一套判定只此一份：
+// 面板顶部提示与角标数字必须永远一致，各写一份迟早会分叉。
+export function dueRecurringsToday(recurring, categories, monthTxns) {
+  if (!Array.isArray(recurring) || recurring.length === 0) return [];
   const day = new Date().getDate();
   // dayOfMonth 只允许 1~28，所以 29/30/31 号永远不会有提示（那些日子在短月不存在）。
   const due = recurring.filter(r => r && r.enabled !== false && Number(r.dayOfMonth) === day);
-  if (due.length === 0) return null;
+  if (due.length === 0) return [];
   const done = new Set(monthTxns.filter(t => t.recurringId).map(t => t.recurringId));
-  const pending = due.find(r => !done.has(r.id));
-  if (!pending) return null;
-  // 提示里的 emoji 优先用所选分类的图标（房租/居住 → 🏠），没选分类时用房子的默认图标。
-  const cat = categories.find(c => c.id === pending.categoryId);
-  return { ...pending, icon: cat?.icon || '🏠' };
+  return due.filter(r => !done.has(r.id)).map(r => {
+    // 提示里的 emoji 优先用所选分类的图标（房租/居住 → 🏠），没选分类时用房子的默认图标。
+    const cat = categories.find(c => c.id === r.categoryId);
+    return { ...r, icon: cat?.icon || '🏠' };
+  });
+}
+
+// 面板顶部一次只提示一条，取第一条；一条都没有时返回 null（保持任务 18 的行为不变）。
+function dueRecurringToday(recurring, categories, monthTxns) {
+  return dueRecurringsToday(recurring, categories, monthTxns)[0] || null;
 }
 
 export async function openEntryPanel({ onSaved } = {}) {
