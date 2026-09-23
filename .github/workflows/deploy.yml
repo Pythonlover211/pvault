@@ -1,0 +1,49 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 组装站点（只含运行时需要的文件）
+        run: |
+          mkdir -p _site
+          cp index.html manifest.webmanifest sw.js .nojekyll _site/
+          cp -r app styles icons _site/
+
+      - name: 确认没有把仓库文件带进去
+        run: |
+          set -e
+          for forbidden in docs tests scripts .git package.json; do
+            if [ -e "_site/$forbidden" ]; then
+              echo "错误：_site 里不应存在 $forbidden"
+              exit 1
+            fi
+          done
+          echo "站点内容："
+          find _site -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
