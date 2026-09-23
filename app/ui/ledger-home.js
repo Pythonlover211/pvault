@@ -14,6 +14,7 @@ import { effectiveExpense, receivableSummary } from '../receivable.js';
 import { budgetProgress, budgetLevel, dailyAllowance } from '../budget.js';
 import * as store from '../store.js';
 import { openEntryPanel } from './entry-panel.js';
+import { openSettingsSheet } from './settings-sheet.js';
 
 export async function renderLedgerHome(root) {
   const now = Date.now();
@@ -51,13 +52,22 @@ export async function renderLedgerHome(root) {
     el('div', { class: 'stack' }, [
       el('div', { class: 'row ledger-head' }, [
         el('span', { class: 'muted', text: formatMonthLabel(now) }),
-        el('button', {
-          class: 'btn', type: 'button', text: hideAmounts ? '👁 显示' : '👁 隐藏',
-          onclick: async () => {
-            await store.setSetting('hideAmounts', !hideAmounts);
-            await renderLedgerHome(root);
-          }
-        })
+        el('div', { class: 'row head-actions' }, [
+          el('button', {
+            class: 'btn', type: 'button', text: hideAmounts ? '👁 显示' : '👁 隐藏',
+            onclick: async () => {
+              await store.setSetting('hideAmounts', !hideAmounts);
+              await renderLedgerHome(root);
+            }
+          }),
+          // 管理入口（账户/分类/预算设置）放在这里，而不是统计页底部：
+          // 它们都是「记账配置」，用户不会去统计页找；统计页只回答「钱花哪了」。
+          el('button', {
+            class: 'btn', type: 'button', text: '⚙',
+            'aria-label': '设置',
+            onclick: () => openSettingsSheet({ onChanged: () => renderLedgerHome(root) })
+          })
+        ])
       ]),
       el('div', {}, [
         el('div', { class: 'muted tiny', text: '本月支出' }),

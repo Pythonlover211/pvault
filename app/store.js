@@ -13,6 +13,10 @@ export async function listAccounts() {
   return all.filter(a => !a.archived).sort((a, b) => a.sort - b.sort);
 }
 
+export async function listAllAccounts() {
+  return (await db.getAll('accounts')).sort((a, b) => a.sort - b.sort);
+}
+
 export async function listCategories(kind) {
   const all = await db.getAll('categories');
   return all

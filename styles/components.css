@@ -74,3 +74,29 @@
   color: var(--text); font: inherit; font-size: var(--font-lg); padding: 12px 0;
 }
 .keypad-key:active { background: var(--accent-weak); }
+
+/* 管理界面（账户 / 分类，app/ui/accounts-view.js 与 categories-view.js）。
+   放这里而不是 ledger.css：这些类不绑「记账」这个 Tab，任务 18 的预算设置、
+   后续的其它设置项会继续复用同一套行/表单/操作按钮样式。
+   注意：管理界面表单里的 .field / .stack / .muted 等复用的是 ledger.css 与
+   本文件里已有的通用类，这里不重复定义。 */
+.manage-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.manage-row:last-child { border-bottom: 0; }
+.manage-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.manage-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manage-kind { color: var(--text-3); font-size: var(--font-xs); flex: none; }
+.manage-archived { color: var(--text-3); font-size: var(--font-xs); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 1px 6px; flex: none; }
+/* 只收窄行内按钮的尺寸，不碰颜色：btn-primary / btn-danger 的配色要留着
+   （CSS 里单个类与「后代 + 类」特异性相同，后写的会赢，所以这里绝不能写 background/color）。 */
+.manage-row .btn { padding: 6px 10px; font-size: var(--font-sm); }
+.emoji-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.emoji-quick button { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); font-size: 18px; padding: 4px 8px; }
+.form-actions { display: flex; gap: 8px; margin-top: 4px; }
+.form-actions .btn { flex: 1; }
+.group-title { font-size: var(--font-xs); color: var(--text-2); margin-top: 6px; }
+
+/* 首页月份行右侧的两个按钮靠在一起；设置面板里的入口行整行可点、左对齐。 */
+.head-actions { gap: 8px; }
+.manage-entry { text-align: left; }
+.chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip-row .btn { padding: 6px 12px; font-size: var(--font-sm); }
