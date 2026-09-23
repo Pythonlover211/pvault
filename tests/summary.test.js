@@ -35,7 +35,7 @@ test('byCategory 按金额降序并给出占比', () => {
   assert.equal(rows[0].cents, 3000);
   assert.equal(rows[0].name, '交通');
   assert.equal(rows[1].cents, 2000);
-  assert.equal(rows[0].ratio + rows[1].ratio, 1);
+  assert.ok(Math.abs((rows[0].ratio + rows[1].ratio) - 1) < 1e-12);
 });
 
 test('byCategory 忽略其他类型与未知分类', () => {

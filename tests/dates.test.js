@@ -54,6 +54,21 @@ test('addMonths 处理跨年与月末', () => {
   assert.equal(new Date(back).getMonth(), 11);
 });
 
+test('addMonths 在月末锚点上钳制到目标月最后一天，不向前溢出', () => {
+  const d31 = (y, m) => new Date(y, m - 1, 31).getTime();
+  assert.equal(new Date(addMonths(d31(2026, 1), 1)).getMonth(), 1);      // 1/31 +1 → 2 月
+  assert.equal(new Date(addMonths(d31(2026, 1), 1)).getDate(), 28);      // 2026-02-28
+  assert.equal(new Date(addMonths(d31(2026, 3), -1)).getMonth(), 1);     // 3/31 -1 → 2 月
+  assert.equal(new Date(addMonths(d31(2026, 3), -1)).getDate(), 28);
+  assert.equal(new Date(addMonths(d31(2026, 5), -1)).getDate(), 30);     // 5/31 -1 → 4/30
+  assert.equal(new Date(addMonths(d31(2026, 12), 1)).getFullYear(), 2027); // 跨年
+  assert.equal(new Date(addMonths(d31(2026, 12), 1)).getMonth(), 0);
+  assert.equal(new Date(addMonths(d31(2026, 12), 1)).getDate(), 31);     // 2027-01-31
+  assert.equal(new Date(addMonths(d31(2024, 1), 1)).getDate(), 29);      // 闰年 2 月
+  // 非月末锚点行为不变
+  assert.equal(new Date(addMonths(new Date(2026, 0, 15).getTime(), 1)).getDate(), 15);
+});
+
 test('formatDayLabel 给出今天/昨天/日期', () => {
   const yesterday = new Date(2026, 8, 22, 9, 0).getTime();
   assert.equal(formatDayLabel(sep23, sep23), '今天');

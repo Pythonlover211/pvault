@@ -25,7 +25,10 @@ export function daysLeftInMonth(ts) {
 
 export function addMonths(ts, n) {
   const d = new Date(ts);
-  return new Date(d.getFullYear(), d.getMonth() + n, d.getDate()).getTime();
+  const targetMonth = d.getMonth() + n;
+  const daysInTarget = new Date(d.getFullYear(), targetMonth + 1, 0).getDate();
+  const day = Math.min(d.getDate(), daysInTarget);
+  return new Date(d.getFullYear(), targetMonth, day).getTime();
 }
 
 export function formatDayLabel(ts, now) {
