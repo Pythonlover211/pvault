@@ -77,7 +77,7 @@ export async function renderLedgerHome(root) {
         el('div', { class: 'muted tiny', text: `还剩 ${formatCents(Math.max(0, remaining), { symbol: true })} · 日均可用 ${formatCents(allowance || 0, { symbol: true })}` })
       ]) : null,
       recv.owedToMe > 0 ? el('div', { class: 'muted tiny ledger-receivable', text: `应收 ${formatCents(recv.owedToMe, { symbol: true })}` }) : null,
-      el('div', { class: 'muted tiny ledger-day', text: `今天 · ${formatDayLabel(now, now)}` }),
+      el('div', { class: 'muted tiny ledger-day', text: `${formatDayLabel(now, now)} · ${new Date(now).getMonth() + 1}月${new Date(now).getDate()}日` }),
       todayTxns.length === 0
         ? el('div', { class: 'empty', text: '今天还没有记账' })
         : el('div', { class: 'stack' }, todayTxns
@@ -92,7 +92,8 @@ export async function renderLedgerHome(root) {
                 el('span', { class: 'muted tiny', text: accOf.get(t.accountId)?.name || '' })
               ]),
               // 单笔显示交易原始金额（不扣分摊），分摊只体现在上面的月度汇总里。
-              el('span', { class: amountClass, text: `${t.kind === 'income' ? '+' : '-'}${formatCents(t.amountCents)}` })
+              // 转账既不是收入也不是支出，用 ⇄ 标记，不加正负号。
+              el('span', { class: amountClass, text: `${t.kind === 'income' ? '+' : t.kind === 'transfer' ? '⇄ ' : '-'}${formatCents(t.amountCents)}` })
             ])))
     ]),
     el('button', {
