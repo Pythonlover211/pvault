@@ -1,0 +1,93 @@
+// IndexedDB 薄封装：只做读写，不写业务逻辑。
+// 依赖 indexedDB / IDBKeyRange 浏览器全局，因此不能在 Node 里被 import
+// （app/ 根目录下的纯逻辑模块也绝不能 import 本文件）。验证方式见 docs/手动验证清单.md。
+
+import { DB_NAME, DB_VERSION, applyMigrations, seedAccounts, seedCategories, seedSettings } from './schema.js';
+
+let dbPromise = null;
+
+export function open() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = event => {
+      applyMigrations(req.result, event.oldVersion);
+    };
+    req.onsuccess = async () => {
+      const db = req.result;
+      try { await ensureSeeded(db); } catch (e) { reject(e); return; }
+      resolve(db);
+    };
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function txDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+// 只在 settings 为空时写入种子：首次打开写一次，之后每次打开都直接返回。
+async function ensureSeeded(db) {
+  const count = await new Promise((resolve, reject) => {
+    const tx = db.transaction('settings', 'readonly');
+    const req = tx.objectStore('settings').count();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  if (count > 0) return;
+  const tx = db.transaction(['accounts', 'categories', 'settings'], 'readwrite');
+  for (const a of seedAccounts()) tx.objectStore('accounts').put(a);
+  for (const c of seedCategories()) tx.objectStore('categories').put(c);
+  for (const s of seedSettings()) tx.objectStore('settings').put(s);
+  await txDone(tx);
+}
+
+export async function put(store, value) {
+  const db = await open();
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store).put(value);
+  await txDone(tx);
+  return value;
+}
+
+export async function get(store, key) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getAll(store) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// 按索引取 [lower, upper) 区间：上界开区间，因为调用方传的 end 是「下月 1 日 0 点」，
+// 那一瞬间不该被算进本月。
+export async function getByRange(store, indexName, lower, upper) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const range = IDBKeyRange.bound(lower, upper, false, true);
+    const req = db.transaction(store, 'readonly').objectStore(store).index(indexName).getAll(range);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function remove(store, key) {
+  const db = await open();
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store).delete(key);
+  await txDone(tx);
+}
