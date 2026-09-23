@@ -31,19 +31,56 @@
 .vault-check { display: flex; align-items: center; gap: 8px; font-size: var(--font-md); }
 .vault-check input { width: 18px; height: 18px; flex: none; }
 
-/* 列表：行内是「图标 / 标题+副标题 / 右侧操作」，行与行之间用分隔线而不是卡片描边。 */
+/* 列表：行内是「图标 / 标题+副标题 / 右侧操作」，行与行之间用分隔线而不是卡片描边。
+   行本身是 button（整行可点、键盘可达），所以要把浏览器给按钮的默认外观全部摘掉。 */
 .vault-list { display: flex; flex-direction: column; }
 .vault-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
+  width: 100%; border: 0; background: none; color: var(--text); font: inherit;
+  text-align: left; padding: 10px 0; border-bottom: 1px solid var(--border);
 }
 .vault-row:last-child { border-bottom: 0; }
-.vault-row-main { flex: 1; min-width: 0; }
-.vault-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-row:active { background: var(--surface-2); }
+.vault-row-icon { font-size: var(--font-lg); line-height: 1; flex: none; }
+/* 标题与副标题都是 span（button 里只放行内元素），靠 display:block 撑成两行。 */
+.vault-row-main { display: block; flex: 1; min-width: 0; }
+.vault-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vault-row-sub {
-  color: var(--text-3); font-size: var(--font-xs); margin-top: 2px;
+  display: block; color: var(--text-3); font-size: var(--font-xs); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* 搜索行：输入框吃掉剩余宽度，「＋ 新建」保持自身宽度不被压缩。 */
+.vault-toolbar { display: flex; align-items: center; gap: 8px; }
+.vault-search {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font: inherit; padding: 8px 10px;
+}
+.vault-toolbar .btn { flex: none; }
+.vault-count { min-height: calc(var(--font-sm) * 1.4); }
+
+/* 分组标题带数量；空分组在上层就不渲染（见 vault-view 的 paintList）。 */
+.vault-group-title { font-size: var(--font-xs); color: var(--text-2); }
+
+/* —— 详情 —— */
+.vault-detail-head { display: flex; align-items: center; gap: 10px; }
+.vault-fields { display: flex; flex-direction: column; }
+.vault-detail-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.vault-detail-row:last-child { border-bottom: 0; }
+.vault-detail-label { color: var(--text-2); font-size: var(--font-xs); flex: none; width: 56px; padding-top: 2px; }
+/* pre-wrap：备注与「内容」字段里的换行要原样保留，不能让浏览器折成一长条。 */
+.vault-value { flex: 1; min-width: 0; word-break: break-all; white-space: pre-wrap; }
+
+/* 只改行内小按钮的尺寸，不写 background/color——同特异性的「后代 + 类」规则
+   会静默吃掉 .btn-danger 的配色（任务 17 的教训）。 */
+.vault-mini { flex: none; padding: 6px 10px; font-size: var(--font-sm); }
+
+.vault-actions { display: flex; gap: 8px; }
+.vault-actions .btn { flex: 1; }
 
 /* 手动上锁按钮：居中一行，与条目标题拉开距离，避免误触。 */
 .vault-foot { display: flex; justify-content: center; padding-top: 4px; }

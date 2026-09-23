@@ -14,6 +14,12 @@
 import { el, mount } from './dom.js';
 import * as vaultStore from '../vault-store.js';
 import { formatRecoveryCode } from '../recovery-code.js';
+import {
+  ITEM_TYPES, FIELD_LABELS, SECRET_FIELDS,
+  searchItems, groupItems, maskSecret, itemSummary
+} from '../vault-model.js';
+import { copyWithAutoClear } from './clipboard.js';
+import { openVaultEditor } from './vault-editor.js';
 
 const MIN_PASSWORD = 8;
 const FAIL_THRESHOLD = 3;
@@ -319,9 +325,9 @@ function renderLock(root, seq) {
   ]);
 }
 
-// —— 列表（已解锁）——
-// 任务 7 只做到「解锁后能落地」：读一次条目、说明数量、给出手动上锁的入口。
-// 搜索、分组、详情在任务 8 补齐，状态机不动。
+// —— 列表、搜索与详情（已解锁）——
+// 数据只读一次（loadItems），列表与详情共用这一份，互相切换时不必重新解密。
+// 搜索只在列表区局部重画，不整块重渲染（见 paintList 的注释）。
 async function renderList(root, seq) {
   mount(root, el('div', { class: 'empty', text: '正在打开密码箱…' }));
 
@@ -342,21 +348,238 @@ async function renderList(root, seq) {
     return;
   }
 
+  // 列表状态收在这一处：搜索词、当前详情、写操作锁、错误文案。
+  // 它们都不放模块级——离开密码箱这个 Tab 就该全部忘掉，尤其是 detailId。
+  let query = '';
+  let detailId = null;
+  let busy = false;
+  let errorText = '';
+
   const wrap = el('div', { class: 'vault-wrap' });
   mount(root, wrap);
 
-  if (usingRecoveryCode) {
-    wrap.append(el('div', { class: 'vault-warn', text: '你正在用恢复码访问，建议尽快修改主密码' }));
+  const goList = () => { detailId = null; errorText = ''; paint(); };
+  const goDetail = id => { detailId = id; errorText = ''; paint(); };
+
+  function openEditor(item) {
+    // 任务 9 才实现真正的编辑器；保存成功后整块重读一次，
+    // 不在本地拼条目，避免界面上的数据和存储里的密文对不上。
+    openVaultEditor({
+      item,
+      onSaved: () => { renderVault(root).catch(err => console.error('密码箱重新渲染失败', err)); }
+    });
   }
-  wrap.append(el('section', { class: 'card stack' }, [
-    el('div', { class: 'vault-hint', text: `密码箱里有 ${items.length} 条记录` })
-  ]));
-  wrap.append(el('div', { class: 'vault-foot' }, [
-    el('button', {
-      class: 'btn', type: 'button', text: '锁定',
-      // lock() 会广播 false，订阅回调把界面切回锁屏——这里不自己重渲染，
-      // 手动上锁和空闲上锁走同一条路，避免两条路各自实现一遍而行为不一致。
-      onclick: () => { vaultStore.lock(); }
-    })
-  ]));
+
+  // 列表与详情共用一次数据读取：paint() 决定画哪一个，两者之间切换不必重新解密。
+  function paint() {
+    const item = detailId ? items.find(i => i.id === detailId) : null;
+    // 条目可能在别处被删掉了（或 detailId 来自一份过期的界面）：退回列表，
+    // 而不是渲染一个字段全空的详情壳子。
+    if (detailId && !item) detailId = null;
+    const children = [];
+    // 「用恢复码访问」的提醒要一直挂在页面顶部，切进详情也不该消失。
+    if (usingRecoveryCode) {
+      children.push(el('div', { class: 'vault-warn', text: '你正在用恢复码访问，建议尽快修改主密码' }));
+    }
+    children.push(item ? detailView(item) : listView());
+    mount(wrap, children);
+  }
+
+  // —— 列表 ——
+
+  function listView() {
+    const listArea = el('div', { class: 'stack' });
+    const countNode = el('div', { class: 'vault-count tiny muted' });
+    const searchInput = el('input', {
+      class: 'vault-search', type: 'search', placeholder: '搜索标题、用户名、备注',
+      value: query,
+      oninput: e => { query = e.target.value; paintList(); }
+    });
+
+    // 输入时只重画下面的列表区，不重建搜索框本身：重建会让正在输入的那个框丢焦点，
+    // 中文输入法正在拼的词也会一起丢掉。
+    function paintList() {
+      const q = query.trim();
+      const matched = searchItems(items, q);
+
+      if (q && matched.length === 0) {
+        countNode.textContent = '';
+        mount(listArea, el('div', { class: 'empty', text: '没有匹配的条目' }));
+        return;
+      }
+      countNode.textContent = q ? `${matched.length} 条匹配` : '';
+
+      if (items.length === 0) {
+        mount(listArea, el('div', { class: 'empty', text: '密码箱还是空的，点「＋ 新建」放第一条进来' }));
+        return;
+      }
+
+      const groups = groupItems(matched);
+      const sections = [];
+      // ITEM_TYPES 的顺序就是分组顺序；空分组直接跳过，新用户不会看到
+      // 「银行卡与证件（0）」这种纯噪音。
+      for (const [type, def] of Object.entries(ITEM_TYPES)) {
+        const rows = groups[type] ?? [];
+        if (rows.length === 0) continue;
+        sections.push(el('section', { class: 'card stack' }, [
+          el('div', { class: 'vault-group-title', text: `${def.label}（${rows.length}）` }),
+          el('div', { class: 'vault-list' }, rows.map(rowView))
+        ]));
+      }
+      mount(listArea, sections);
+    }
+
+    paintList();
+
+    return el('div', { class: 'stack' }, [
+      el('div', { class: 'vault-toolbar' }, [
+        searchInput,
+        el('button', {
+          class: 'btn', type: 'button', text: '＋ 新建',
+          onclick: () => openEditor(null)
+        })
+      ]),
+      countNode,
+      listArea,
+      el('div', { class: 'vault-foot' }, [
+        el('button', {
+          class: 'btn', type: 'button', text: '锁定',
+          // lock() 会广播 false，订阅回调把界面切回锁屏——这里不自己重渲染，
+          // 手动上锁和空闲上锁走同一条路，避免两条路各自实现一遍而行为不一致。
+          onclick: () => { vaultStore.lock(); }
+        })
+      ])
+    ]);
+  }
+
+  // 行是 button：整行可点、键盘可达，不需要额外挂点击处理。
+  function rowView(item) {
+    const def = ITEM_TYPES[item.type];
+    return el('button', {
+      class: 'vault-row', type: 'button',
+      onclick: () => goDetail(item.id)
+    }, [
+      el('span', { class: 'vault-row-icon', text: def ? def.icon : '🔒' }),
+      el('span', { class: 'vault-row-main' }, [
+        el('span', { class: 'vault-row-title', text: item.title || '（未命名）' }),
+        el('span', { class: 'vault-row-sub', text: itemSummary(item) })
+      ])
+    ]);
+  }
+
+  // —— 详情 ——
+
+  function detailView(item) {
+    const def = ITEM_TYPES[item.type];
+    // 字段顺序照 ITEM_TYPES[type].fields 走；空字段不列出来——
+    // 一排「备注：」空行除了占地方没有别的用处。
+    const keys = (def ? def.fields : Object.keys(item.fields ?? {}))
+      .filter(k => String(item.fields?.[k] ?? '').trim() !== '');
+
+    const fields = keys.length
+      ? keys.map(key => fieldView(key, String(item.fields[key])))
+      : [el('div', { class: 'vault-hint', text: '这条还没有填写任何内容' })];
+
+    let armed = false;
+    const delBtn = el('button', {
+      class: 'btn btn-danger', type: 'button', text: '删除',
+      onclick: () => {
+        // 二次确认：第一次点击只把按钮变成「确认删除？」，再点一次才真的删。
+        // 这里刻意不用 confirm()：那是同步阻塞的原生弹窗，样式无法统一，
+        // 在 PWA 里还会打断整页；而按钮就长在原来的位置上，撤销成本为零。
+        if (!armed) {
+          armed = true;
+          delBtn.textContent = '确认删除？';
+          return;
+        }
+        if (busy) return;
+        busy = true;
+        errorText = '';
+        removeItem(item).then(() => { goList(); }).catch(err => {
+          busy = false;
+          errorText = '删除失败：' + (err?.message || err);
+          console.error(err);
+          paint();
+        });
+      }
+    });
+
+    return el('div', { class: 'stack' }, [
+      errorText ? el('div', { class: 'vault-error', text: errorText }) : null,
+      el('button', {
+        class: 'link-like muted tiny', type: 'button', text: '← 返回列表',
+        onclick: () => goList()
+      }),
+      el('section', { class: 'card stack' }, [
+        el('div', { class: 'vault-detail-head' }, [
+          el('span', { class: 'vault-row-icon', text: def ? def.icon : '🔒' }),
+          el('span', { class: 'vault-row-main' }, [
+            el('span', { class: 'vault-row-title', text: item.title || '（未命名）' }),
+            el('span', { class: 'vault-row-sub', text: def ? def.label : '' })
+          ])
+        ]),
+        el('div', { class: 'vault-fields' }, fields)
+      ]),
+      el('div', { class: 'vault-actions' }, [
+        el('button', { class: 'btn', type: 'button', text: '编辑', onclick: () => openEditor(item) }),
+        delBtn
+      ])
+    ]);
+  }
+
+  function fieldView(key, value) {
+    const isSecret = SECRET_FIELDS.has(key);
+    // 掩码态与明文态都只是文本节点：隐藏时 DOM 里根本没有明文——刻意不给 input 赋值，
+    // 因为「值在 value 属性里、只是显示成圆点」会给人一种是遮罩的错觉，看源码就能读到。
+    const valueNode = el('span', {
+      class: 'vault-value',
+      text: isSecret ? maskSecret(value) : value
+    });
+    const nodes = [
+      el('span', { class: 'vault-detail-label', text: FIELD_LABELS[key] || key }),
+      valueNode
+    ];
+
+    if (isSecret) {
+      let shown = false;
+      const toggle = el('button', {
+        class: 'btn vault-mini', type: 'button', text: '显示',
+        onclick: () => {
+          shown = !shown;
+          valueNode.textContent = shown ? value : maskSecret(value);
+          toggle.textContent = shown ? '隐藏' : '显示';
+        }
+      });
+      nodes.push(toggle);
+    }
+
+    const copyBtn = el('button', {
+      class: 'btn vault-mini', type: 'button', text: '复制',
+      onclick: () => { doCopy(copyBtn, value); }
+    });
+    nodes.push(copyBtn);
+
+    return el('div', { class: 'vault-detail-row' }, nodes);
+  }
+
+  // 删除要走整包重写（条目整体加密，没有单条删除），所以先按 id 过滤再 saveItems。
+  async function removeItem(item) {
+    const next = items.filter(i => i.id !== item.id);
+    await vaultStore.saveItems(next);
+    items = next;
+  }
+
+  paint();
+}
+
+// 复制成功短暂显示「已复制」，失败（非安全上下文、权限被拒）时按钮自己说明结果，
+// 不弹 alert：按钮就在手指底下，是比弹窗更近的反馈位。
+async function doCopy(btn, value) {
+  try {
+    await copyWithAutoClear(value);
+    btn.textContent = '已复制';
+  } catch {
+    btn.textContent = '复制失败';
+  }
+  setTimeout(() => { btn.textContent = '复制'; }, 1500);
 }

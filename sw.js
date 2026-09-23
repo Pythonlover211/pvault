@@ -13,7 +13,7 @@
 // 忘了同步），整个 addAll 就 reject，install 失败，SW 根本不激活，离线能力直接是 0，
 // 而且控制台只看得到一条 addAll 的报错。所以 ASSETS 必须与磁盘上的真实文件逐条对齐
 // （这份清单是扫描 styles/、icons/、app/、app/ui/ 生成的，不是凭记忆手写的）。
-const CACHE = 'pvault-v3';
+const CACHE = 'pvault-v4';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -52,6 +52,7 @@ const ASSETS = [
   './app/ui/accounts-view.js',
   './app/ui/budget-view.js',
   './app/ui/categories-view.js',
+  './app/ui/clipboard.js',
   './app/ui/dom.js',
   './app/ui/entry-panel.js',
   './app/ui/keypad.js',
@@ -60,6 +61,7 @@ const ASSETS = [
   './app/ui/settings-sheet.js',
   './app/ui/sheet.js',
   './app/ui/stats-view.js',
+  './app/ui/vault-editor.js',
   './app/ui/vault-view.js'
 ];
 

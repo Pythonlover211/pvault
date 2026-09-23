@@ -19,12 +19,6 @@ function renderTabBar(active) {
   ));
 }
 
-const PLACEHOLDER = {
-  // 空着：三个 Tab 现在都有真实视图（密码箱在任务 7 接上，见 ./ui/vault-view.js）。
-  // 这个对象留着是为了 render() 里那条兜底链——以后再加 Tab 而忘了写视图时，
-  // 会安静地落到记账页，而不是抛出 undefined is not a function。
-};
-
 // 快速连点两个 Tab 会起两个并发渲染，先发起的那个未必先完成（统计页要查 6~12 个月数据，
 // 比首页慢）。没有这个序号就是「后完成者决定界面」——界面与 Tab 高亮会停在统计页，
 // 而 hash 已经是 #/ledger，且此后不会再有 hashchange，这个不一致不会自愈。
@@ -33,7 +27,9 @@ let renderSeq = 0;
 async function render(id) {
   const seq = ++renderSeq;
   const renderers = { ledger: renderLedgerHome, stats: renderStats, vault: renderVault };
-  const fn = renderers[id] || PLACEHOLDER[id] || renderers.ledger;
+  // 未注册的 Tab id 落到记账页，而不是抛 undefined is not a function。
+  // （原来的 PLACEHOLDER 占位表在密码箱接上真实视图后就空了，已删掉。）
+  const fn = renderers[id] || renderers.ledger;
   // 单个视图失败不能拖垮整个外壳：视图渲染会 await store.*（依赖 IndexedDB），
   // 数据层一旦抛错，没有这个 try/catch 就是整页白屏、连 Tab 栏都点不到。
   try {
