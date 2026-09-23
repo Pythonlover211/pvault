@@ -50,6 +50,12 @@ function notify(unlocked) {
 // 没有会话可清时不再重复通知（避免同一次锁屏被广播两遍）。
 function clearSession() {
   const hadSession = session !== null;
+  // 密钥字节就地清零，而不是只把引用置 null 交给 GC：内存里的 DEK 只要还在，
+  // 一次核心转储、一次堆快照就可能把它带走。真正「上锁」应当是字节不再存在。
+  // （CryptoKey 本身在 JS 里无法擦除，这部分只能靠丢弃引用。）
+  // changeMasterPassword 只在会话存活时用 raw，importDek 已把字节复制进 CryptoKey，
+  // 所以填零不会影响任何还活着的用法。
+  if (session?.raw) session.raw.fill(0);
   session = null;
   lastTouched = 0;
   stopIdleWatcher();
@@ -104,10 +110,27 @@ async function establishSession(raw) {
 
 // 密码路径与恢复码路径的解包收在一处：解不开就是同一句「不对」，
 // 且失败前一定先把会话清干净——绝不能留下「解锁失败却 isUnlocked() 为真」的半解锁状态。
-async function unwrapOrFail(kek, wrapped, message) {
+async function unwrapOrFail(kek, wrapped, record, message) {
   let raw;
   try {
     raw = await unwrapDek(kek, wrapped);
+  } catch {
+    clearSession();
+    throw new Error(message);
+  }
+  // 记录里压根没有条目密文（被外部写坏了）时，试解无从谈起：这属于格式异常，
+  // 不能伪装成「主密码不正确」，否则用户会一直重输一个其实正确的密码。
+  if (typeof record?.ciphertext?.ct !== 'string' || typeof record.ciphertext.iv !== 'string') {
+    clearSession();
+    throw new Error('保险库内容格式异常：记录里没有条目密文');
+  }
+  // 密钥承诺：解出来的 DEK 必须真的能打开这份库，才允许建立会话。
+  // 记录内部没有 AAD，所以「把 wrappedDekByPassword 整条换成用同一把 KEK 包裹的另一把随机
+  // DEK」这种错配，unwrapDek 是照样成功的——症状会推迟到 loadItems()，表现为
+  // 「解锁成功却打不开库」。多花一次 AES-GCM（约 1ms）把它收敛回一次明确的解锁失败。
+  // 这需要先知道主密码才能构造出这种记录，因此不可被利用；代价是错密码多算一次判定。
+  try {
+    await decryptJSON(await importDek(raw), record.ciphertext);
   } catch {
     clearSession();
     throw new Error(message);
@@ -168,7 +191,7 @@ export async function unlock(masterPassword) {
     fromBase64(record.saltPassword),
     iterationsOf(record)
   );
-  await unwrapOrFail(kek, record.wrappedDekByPassword, '主密码不正确');
+  await unwrapOrFail(kek, record.wrappedDekByPassword, record, '主密码不正确');
 }
 
 export async function unlockWithRecoveryCode(code) {
@@ -185,7 +208,7 @@ export async function unlockWithRecoveryCode(code) {
   }
 
   const kek = await deriveKey(normalized, fromBase64(record.saltRecovery), iterationsOf(record));
-  await unwrapOrFail(kek, record.wrappedDekByRecovery, '恢复码不正确');
+  await unwrapOrFail(kek, record.wrappedDekByRecovery, record, '恢复码不正确');
 }
 
 export function lock() {
@@ -212,7 +235,11 @@ export async function loadItems() {
   const current = requireSession();
   const items = await decryptJSON(current.key, record.ciphertext);
   touch();
-  return Array.isArray(items) ? items : [];
+  // 解出来不是数组，说明这份记录不是本 app 写出来的（密文有认证标签，写入方正常时不可能
+  // 出现这种内容）。静默当空数组更危险：用户会看到「密码箱是空的」，而真正的数据可能
+  // 就躺在旁边那份解不开的记录里。宁可抛错，让界面把「读取失败」说出来。
+  if (!Array.isArray(items)) throw new Error('保险库内容格式异常：解出的内容不是条目数组');
+  return items;
 }
 
 export async function saveItems(items) {

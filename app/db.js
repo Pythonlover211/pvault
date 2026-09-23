@@ -84,8 +84,21 @@ export async function replaceAll({ clears = [], puts = [] }) {
   const db = await open();
   const names = [...new Set([...clears, ...puts.map(e => e.store)])];
   const tx = db.transaction(names, 'readwrite');
-  for (const name of clears) tx.objectStore(name).clear();
-  for (const e of puts) tx.objectStore(e.store).put(e.value);
+  try {
+    for (const name of clears) tx.objectStore(name).clear();
+    for (const e of puts) tx.objectStore(e.store).put(e.value);
+  } catch (err) {
+    // 事务只对**异步**失败有效：objectStore.put() 同步抛出的 DataError（value 不是对象、
+    // 取不出 keyPath / key 类型不合法）不会自动中止事务，先前入队的 clear() 与部分 put()
+    // 会照常提交，正好留下「旧数据已清、新数据不全」的空库——这是本函数唯一要避免的情形。
+    // 所以这里必须显式 abort() 把整个事务回滚掉，再把错误原样抛给调用方。
+    // abort 自己也可能抛（事务已经不在活动态时会抛 InvalidStateError）：那种情况下
+    // 原始错误信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
+    try {
+      tx.abort();
+    } catch { /* 事务已经结束：没什么可回滚的 */ }
+    throw err;
+  }
   await txDone(tx);
 }
 

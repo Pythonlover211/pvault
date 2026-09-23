@@ -6,7 +6,7 @@
 //   { format: 'pvault-backup-encrypted', version: 1, createdAt,
 //     kdf: { name: 'PBKDF2-SHA256', iterations, salt }, iv, ct }
 //
-// 四条不能破的约定：
+// 五条不能破的约定：
 // 1. 每次导出都用**新生成的随机 salt**。复用 salt 会让同一个备份密码在任何时间导出的文件
 //    用同一把密钥，那就等于把「一次泄露 = 全部历史文件可解」写死进格式里。
 // 2. 导出的加密与导入的解密都以文件里 kdf.salt / kdf.iterations 为准：迭代次数会随版本涨，
@@ -15,11 +15,14 @@
 //    一个事务里——中途失败绝不能留下「旧数据已清、新数据没写进去」的空库。
 // 4. 备份里没有密码箱时，**保留**目标设备现有的密码箱。删掉它等于顺手毁掉用户设备上
 //    唯一一份密码箱密文，而备份文件里根本没有它的替补。
+// 5. 备份里带密码箱时，覆盖完成后立刻上锁：新记录的 DEK 与内存里的会话多半不配套，
+//    带着老会话继续写会把新密码箱的条目加密成一把再也解不开的钥匙（见 importBackup）。
 //
 // 本模块依赖 db.js（IndexedDB）与 crypto.js（WebCrypto 全局），因此不能在 Node 里 import，
 // 也不写单测；验证方式见 docs/手动验证清单.md 的「备份与恢复」小节与临时探针。
 
 import * as db from './db.js';
+import * as vaultStore from './vault-store.js';
 import {
   DEFAULT_ITERATIONS, deriveKey, encryptJSON, decryptJSON, randomBytes, toBase64, fromBase64
 } from './crypto.js';
@@ -185,8 +188,16 @@ export async function importBackup(text, password) {
   for (const name of ARRAY_STORES) {
     for (const value of data[name]) puts.push({ store: name, value });
   }
+  // settings 是 { key, value } 形状、以 keyPath 为主键，所以 key 不是字符串时 put() 会**同步**
+  // 抛 DataError。这种异常不会自动中止事务（见 db.replaceAll），因此必须在入队之前就拦下来：
+  // 文件里有一行坏设置，不该换来一个清了一半的库。
   for (const row of data.settings) {
-    if (row?.key === VAULT_KEY) continue; // 密码箱只认 data.vault，避免文件里两份互相打架
+    if (typeof row?.key !== 'string' || !row.key) {
+      throw new BackupFileError('备份文件里的设置项格式异常（缺少 key）', 'BAD_CONTENT');
+    }
+  }
+  for (const row of data.settings) {
+    if (row.key === VAULT_KEY) continue; // 密码箱只认 data.vault，避免文件里两份互相打架
     puts.push({ store: 'settings', value: row });
   }
   puts.push({ store: 'settings', value: { key: LAST_BACKUP_KEY, value: lastBackupRow?.value ?? Date.now() } });
@@ -201,6 +212,14 @@ export async function importBackup(text, password) {
 
   // 清空与写入必须在同一个事务里，否则中途失败会留下一个空库。
   await db.replaceAll({ clears: [...ARRAY_STORES, 'settings'], puts });
+
+  // 覆盖进来的密码箱多半属于**另一个**密码箱（另一把 DEK），而内存里的会话还是老的。
+  // 不在这里上锁的话，此后任何一次 saveItems 都会用老 DEK 加密后写进新记录——
+  // 新密码箱的条目就永久打不开了（老 DEK 再也拿不回来，因为包裹它的 KEK 也已作废）。
+  // 当前 UI 在导入后会立刻 location.reload()，所以这条路径暂时走不到；但它是一颗结构里的雷：
+  // 只要哪天有人在 reload 之前动一下密码箱就会踩响。备份里没有密码箱时不必锁——
+  // 那种情况下磁盘上留下的还是原来那份记录，与会话里的 DEK 仍然配套。
+  if (data.vault) vaultStore.lock();
 
   return summary;
 }
