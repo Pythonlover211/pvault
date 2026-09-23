@@ -35,7 +35,7 @@
 | `app/predict.js` | **纯**：按时段与历史预测默认分类 |
 | `app/chart.js` | **纯**：环形图弧段角度与 SVG path |
 | `app/keypad-model.js` | **纯**：数字键盘输入状态机 |
-| `app/db.js` | IndexedDB 薄封装：open/get/put/putAll/getAll/delete/byIndex |
+| `app/db.js` | IndexedDB 薄封装：open/put/putAll/get/getAll/getByRange/remove/removeAll |
 | `app/schema.js` | 对象仓库定义 + 默认分类与账户种子数据 |
 | `app/store.js` | 仓库层：交易的增删改查、按月查询、预算与应收读写 |
 | `app/ui/dom.js` | DOM helper：`el()` 创建元素、`clear()`、事件绑定 |
@@ -1425,7 +1425,11 @@ export function seedSettings() {
 - [ ] **步骤 2：创建 `app/db.js`**
 
 ```js
-import { DB_NAME, DB_VERSION, STORES, applyMigrations, seedAccounts, seedCategories, seedSettings } from './schema.js';
+// IndexedDB 薄封装：只做读写，不写业务逻辑。
+// 依赖 indexedDB / IDBKeyRange 浏览器全局，因此不能在 Node 里被 import
+// （app/ 根目录下的纯逻辑模块也绝不能 import 本文件）。验证方式见 docs/手动验证清单.md。
+
+import { DB_NAME, DB_VERSION, applyMigrations, seedAccounts, seedCategories, seedSettings } from './schema.js';
 
 let dbPromise = null;
 
@@ -1438,22 +1442,36 @@ export function open() {
     };
     req.onsuccess = async () => {
       const db = req.result;
-      try { await ensureSeeded(db); } catch (e) { reject(e); return; }
+      try {
+        await ensureSeeded(db);
+      } catch (e) {
+        db.close();
+        reject(e);
+        return;
+      }
       resolve(db);
     };
     req.onerror = () => reject(req.error);
+  }).catch(err => {
+    // 失败的连接不能永久缓存：否则本次页面生命周期内数据层彻底不可用，只能刷新。
+    // 置回 null 让下一次调用重新尝试打开。
+    dbPromise = null;
+    throw err;
   });
   return dbPromise;
 }
 
+// 请求级错误会自然冒泡并中止事务，所以只认 oncomplete / onabort。
+// 注意不能在 onerror 里 reject(tx.error)：规范里 tx.error 要等到「中止事务」步骤才赋值，
+// 此刻它还是 null，抛出 null 会让调用方读 err.message 时反过来抛 TypeError。
 function txDone(tx) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务被中止'));
   });
 }
 
+// 只在 settings 为空时写入种子：首次打开写一次，之后每次打开都直接返回。
 async function ensureSeeded(db) {
   const count = await new Promise((resolve, reject) => {
     const tx = db.transaction('settings', 'readonly');
@@ -1477,6 +1495,16 @@ export async function put(store, value) {
   return value;
 }
 
+// 批量写入：一个事务里可以访问多个仓库，让「交易 + 派生应收」这类跨仓库的写入
+// 要么全成、要么全不成。entries 形如 [{ store, value }]。
+export async function putAll(entries) {
+  const db = await open();
+  const names = [...new Set(entries.map(e => e.store))];
+  const tx = db.transaction(names, 'readwrite');
+  for (const e of entries) tx.objectStore(e.store).put(e.value);
+  await txDone(tx);
+}
+
 export async function get(store, key) {
   const db = await open();
   return new Promise((resolve, reject) => {
@@ -1495,6 +1523,8 @@ export async function getAll(store) {
   });
 }
 
+// 按索引取 [lower, upper) 区间：上界开区间，因为调用方传的 end 是「下月 1 日 0 点」，
+// 那一瞬间不该被算进本月。
 export async function getByRange(store, indexName, lower, upper) {
   const db = await open();
   return new Promise((resolve, reject) => {
@@ -1509,6 +1539,15 @@ export async function remove(store, key) {
   const db = await open();
   const tx = db.transaction(store, 'readwrite');
   tx.objectStore(store).delete(key);
+  await txDone(tx);
+}
+
+// 批量删除：与 putAll 对称，同样在一个事务里跨仓库删除。entries 形如 [{ store, key }]。
+export async function removeAll(entries) {
+  const db = await open();
+  const names = [...new Set(entries.map(e => e.store))];
+  const tx = db.transaction(names, 'readwrite');
+  for (const e of entries) tx.objectStore(e.store).delete(e.key);
   await txDone(tx);
 }
 ```
@@ -1556,6 +1595,11 @@ git commit -m "feat: IndexedDB 封装与默认分类/账户种子数据"
 - [ ] **步骤 1：实现 `app/store.js`**
 
 ```js
+// 仓库层：UI 与 IndexedDB 之间的唯一通道。
+// 所有视图只通过本模块读写数据，不直接引用 db.js。
+// 本模块依赖 db.js（进而依赖 indexedDB / IDBKeyRange 浏览器全局），因此不能在 Node 里被 import，
+// 验证方式见 docs/手动验证清单.md 的「仓库层」小节。
+
 import * as db from './db.js';
 import { monthRange } from './dates.js';
 
@@ -1593,20 +1637,26 @@ export async function addTransaction(input) {
     createdAt: now,
     updatedAt: now
   };
-  await db.put('txns', txn);
+  // 交易与它派生的应收必须同一个事务写入：分次写一旦中途失败（配额满、标签页被杀），
+  // 会留下「钱记上了、别人欠我的却少了」的半截数据，而用户重试还会插入第二笔交易。
+  const entries = [{ store: 'txns', value: txn }];
   for (const share of txn.shares) {
-    await db.put('receivables', {
-      id: uid(),
-      personName: share.personName,
-      direction: 'owedToMe',
-      amountCents: share.amountCents,
-      occurredAt: txn.occurredAt,
-      dueAt: null,
-      settledAt: null,
-      note: txn.note,
-      sourceTxnId: txn.id
+    entries.push({
+      store: 'receivables',
+      value: {
+        id: uid(),
+        personName: share.personName,
+        direction: 'owedToMe',
+        amountCents: share.amountCents,
+        occurredAt: txn.occurredAt,
+        dueAt: null,
+        settledAt: null,
+        note: txn.note,
+        sourceTxnId: txn.id
+      }
     });
   }
+  await db.putAll(entries);
   return txn;
 }
 
@@ -1616,14 +1666,15 @@ export async function updateTransaction(txn) {
 
 export async function deleteTransaction(id) {
   const receivables = await db.getAll('receivables');
-  for (const r of receivables) {
-    if (r.sourceTxnId === id && !r.settledAt) {
-      await db.remove('receivables', r.id);
-    }
-  }
-  await db.remove('txns', id);
+  // 只删未结清的派生应收：已结清的是真实发生过的债权历史，删除交易不该抹掉它。
+  const entries = receivables
+    .filter(r => r.sourceTxnId === id && !r.settledAt)
+    .map(r => ({ store: 'receivables', key: r.id }));
+  entries.push({ store: 'txns', key: id });
+  await db.removeAll(entries);
 }
 
+// end 为开上界，调用方应传「下月/次日 0 点」（与 dates.js 的 monthRange/dayRange 的 end 一致）
 export async function listTransactionsInRange(start, end) {
   return db.getByRange('txns', 'by_occurredAt', start, end);
 }
@@ -1848,23 +1899,34 @@ const PLACEHOLDER = {
   vault: () => el('div', { class: 'empty' }, ['密码箱将在下一步实现'])
 };
 
+// 快速连点两个 Tab 会起两个并发渲染，先发起的那个未必先完成（统计页要查 6~12 个月数据，
+// 比首页慢）。没有这个序号就是「后完成者决定界面」——界面与 Tab 高亮会停在统计页，
+// 而 hash 已经是 #/ledger，且此后不会再有 hashchange，这个不一致不会自愈。
+let renderSeq = 0;
+
 async function render(id) {
+  const seq = ++renderSeq;
   const renderers = { ledger: renderLedgerHome, stats: renderStats };
   const fn = renderers[id] || PLACEHOLDER[id] || renderers.ledger;
-  await fn(view);
+  // 单个视图失败不能拖垮整个外壳：视图渲染会 await store.*（依赖 IndexedDB），
+  // 数据层一旦抛错，没有这个 try/catch 就是整页白屏、连 Tab 栏都点不到。
+  try {
+    await fn(view);
+  } catch (err) {
+    mount(view, el('div', { class: 'empty' }, ['页面加载失败：' + (err?.message || err)]));
+    console.error(err);
+  }
+  // 只有最后发起的那次渲染有权挂载，语义从「后完成者胜」改为「最后发起者胜」。
+  if (seq !== renderSeq) return;
   mount(app, view, renderTabBar(id));
 }
 
+// 注意：Service Worker 的注册放在任务 20（sw.js 到那时才存在），
+// 现在注册只会对一个不存在的文件刷 404。
 onChange(render);
-
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  });
-}
 ```
 
-> `sw.js` 在任务 20 才创建，本步骤的注册调用会失败并被 `catch` 吞掉，不影响开发。`ledger-home.js` 与 `stats-view.js` 在本任务里先写成**最小实现**（各自只渲染一个标题文字），让三个 Tab 立刻可验证；它们的内容分别在任务 13 与任务 16 替换。
+> `sw.js` 在任务 20 才创建，所以注册 Service Worker 的代码也留到那时再加（现在注册只会对一个不存在的文件刷 404）。`ledger-home.js` 与 `stats-view.js` 在本任务里先写成**最小实现**（各自只渲染一个标题文字），让三个 Tab 立刻可验证；它们的内容分别在任务 13 与任务 16 替换。
 
 - [ ] **步骤 5：手动验证**
 
@@ -2035,6 +2097,16 @@ git commit -m "feat: 记账首页（月度总额、预算进度、今日流水�
 要求：从底部滑出、带遮罩、点遮罩关闭、打开时锁滚动、可指定高度（默认 72vh）。
 
 ```js
+// 从底部滑出的半屏面板（设计规格 5.2）。
+//
+// 为什么是半屏而不是全屏：录入面板打开时，上半屏仍要能看到今天的流水，
+// 方便一边记账一边核对刚记的账。所以面板贴底、最大高度 78vh，上半屏留给页面本身。
+//
+// 约定：
+// - body 传入的是节点（调用方自己构造内容），会被塞进 `.sheet-body`；
+// - onClose 在面板开始收起时同步触发，调用方据此判断「是否真的保存了」；
+// - 返回 { close, panel, overlay }，调用方可以直接往 panel 里补内容（例如把
+//   键盘挂到面板底部），也可以自己调 close()。
 import { el } from './dom.js';
 
 export function openSheet({ title, body, onClose }) {
@@ -2051,14 +2123,24 @@ export function openSheet({ title, body, onClose }) {
   ]);
   overlay.append(panel);
   document.body.append(overlay);
+  // 先挂到 DOM 再在下一帧加 .open，否则浏览器会把「初始 opacity:0」和「.open」
+  // 合并成一次样式计算，过渡动画不会播放。
   requestAnimationFrame(() => overlay.classList.add('open'));
+  // 面板打开时锁住背景滚动，关闭时恢复。
   document.body.style.overflow = 'hidden';
 
+  // 点遮罩后节点还要在 DOM 里留 180ms（等滑出动画走完），这期间再点一次「关闭」
+  // （或把「完成」按钮双击）会二次触发 onClose，所以 close 必须幂等。
+  let closed = false;
+
   function close() {
+    if (closed) return;
+    closed = true;
     overlay.classList.remove('open');
     document.body.style.overflow = '';
+    // 等过渡（.18s）走完再摘节点，否则面板会瞬间消失、没有滑出动画。
     setTimeout(() => overlay.remove(), 180);
-    onClose?.();
+    if (onClose) onClose();
   }
 
   return { close, panel, overlay };
