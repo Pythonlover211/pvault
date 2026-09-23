@@ -29,8 +29,15 @@ export function createHandler(root) {
     let rel;
     let filePath;
     try {
-      const { pathname } = new URL(req.url, 'http://localhost');
-      const urlPath = decodeURIComponent(pathname);
+      const url = new URL(req.url, 'http://localhost');
+      // request-target 以 // 或 /\ 开头时会被解析成 authority（//package.json → host=package.json），
+      // pathname 随之变成 '/'，于是白名单检查被跳过、返回首页。这里显式校验 authority，
+      // 非 localhost 一律 403，保证"白名单外的东西"永远是 403 而不是 200。
+      if (url.host !== 'localhost') {
+        res.writeHead(403).end('Forbidden');
+        return;
+      }
+      const urlPath = decodeURIComponent(url.pathname);
       rel = normalize(urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, ''));
       filePath = join(root, rel);
     } catch {
@@ -69,10 +76,11 @@ export function createHandler(root) {
   };
 }
 
-const server = createServer(createHandler(ROOT));
-
-// 仅在直接运行（node scripts/dev-server.js）时监听；被测试 import 时不监听
+// 仅在直接运行（node scripts/dev-server.js）时监听；被测试 import 时不监听。
+// Server 与监听一起放在这个分支里：被 import 时不该凭空构造一个永不 listen 的对象。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createServer(createHandler(ROOT));
+
   server.on('error', err => {
     if (err.code === 'EADDRINUSE') {
       console.error(`端口 ${PORT} 已被占用。关闭占用进程，或换个端口：`);
