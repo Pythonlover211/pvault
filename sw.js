@@ -15,7 +15,9 @@
 // （这份清单是扫描 styles/、icons/、app/、app/ui/ 生成的，不是凭记忆手写的）。
 // v7：密码箱列表页多了「重新生成恢复码」入口（vault-store / vault-view / vault.css），
 // 备份面板里「忘了密码就打不开」那句从说明段上移到密码输入框下方（backup-view）。
-const CACHE = 'pvault-v7';
+// v8：账单导入（csv / import-parse / import-schema / import-store / ui/import-view）
+// 进了预缓存清单，设置面板多了第五行入口。
+const CACHE = 'pvault-v8';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -37,8 +39,12 @@ const ASSETS = [
   './app/budget.js',
   './app/chart.js',
   './app/crypto.js',
+  './app/csv.js',
   './app/dates.js',
   './app/db.js',
+  './app/import-parse.js',
+  './app/import-schema.js',
+  './app/import-store.js',
   './app/keypad-model.js',
   './app/main.js',
   './app/money.js',
@@ -58,6 +64,7 @@ const ASSETS = [
   './app/ui/clipboard.js',
   './app/ui/dom.js',
   './app/ui/entry-panel.js',
+  './app/ui/import-view.js',
   './app/ui/keypad.js',
   './app/ui/ledger-home.js',
   './app/ui/receivable-view.js',
