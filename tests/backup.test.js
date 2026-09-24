@@ -64,3 +64,42 @@ test('summarizeBackup 给出可读摘要', () => {
   assert.equal(s.hasVault, true);
   assert.equal(s.createdAt, 1700000000000);
 });
+
+// 真机上抓到的 bug：安卓系统 WebView 的版本由设备决定，旧设备上是 Chrome 83，
+// 而 structuredClone 要 Chrome 98+。没有它就等于「备份导出」这个功能整条不可用，
+// 用户只会看到一句没头没脑的「导出失败」。这条测试把那个环境固定下来。
+test('没有 structuredClone 的环境（旧版安卓 WebView）里 buildBackup 仍可用', () => {
+  const saved = globalThis.structuredClone;
+  try {
+    delete globalThis.structuredClone;
+    assert.equal(typeof structuredClone, 'undefined', '前置条件：structuredClone 已被移除');
+
+    const b = buildBackup(payload, 1);
+    assert.deepEqual(b.data.txns, payload.txns);
+    assert.equal(validateBackup(b).ok, true);
+  } finally {
+    globalThis.structuredClone = saved;
+  }
+});
+
+test('buildBackup 是深拷贝：改原对象不影响备份内容', () => {
+  const src = {
+    txns: [{ id: 'a', amountCents: 100, tags: ['x'] }],
+    accounts: [{ id: 'ac', name: '现金' }],
+    categories: [],
+    receivables: [],
+    settings: [],
+    vault: { ciphertext: 'abc' }
+  };
+  const b = buildBackup(src, 1);
+
+  src.txns[0].amountCents = 999;
+  src.txns[0].tags.push('y');
+  src.accounts[0].name = '改了';
+  src.vault.ciphertext = '改了';
+
+  assert.equal(b.data.txns[0].amountCents, 100);
+  assert.deepEqual(b.data.txns[0].tags, ['x']);
+  assert.equal(b.data.accounts[0].name, '现金');
+  assert.equal(b.data.vault.ciphertext, 'abc');
+});

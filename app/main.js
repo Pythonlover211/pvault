@@ -119,7 +119,12 @@ function openFromShortcut() {
 // 此时页面本来就是刚从网络拿的最新代码，接管不需要刷新；为 true 才是「旧页面被新 SW 接管」，
 // 这时刷一次才能把新版本的模块脚本换掉（已加载的 ES module 不会自动重取）。
 // 所以这里在 register 之前把状态存进闭包。
-if ('serviceWorker' in navigator) {
+// 安卓壳（本地打包版）里静态资源本来就在 APK 内，Service Worker 既没有意义、
+// 又注册不上 —— 脚本由 Java 层的 shouldInterceptRequest 提供，SW 的脚本获取走不到
+// 那条路径，注册必定失败并在控制台刷一条 error。靠壳盖在 UA 上的戳识别。
+const IN_ANDROID_SHELL = /pvault-shell\//.test(navigator.userAgent);
+
+if ('serviceWorker' in navigator && !IN_ANDROID_SHELL) {
   window.addEventListener('load', async () => {
     const hadController = !!navigator.serviceWorker.controller;
     let refreshing = false;
