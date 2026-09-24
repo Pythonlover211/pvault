@@ -518,6 +518,12 @@ async function renderList(root, seq) {
           // 不嵌套第二层 sheet：vault-view 自己就是页面（不是面板），
           // 这个小面板是页面上唯一的一层，关掉它不会踩到别人。
           onclick: () => { openPasswordChangeSheet(() => { renderVault(root).catch(err => console.error('密码箱重新渲染失败', err)); }); }
+        }),
+        el('button', {
+          class: 'btn', type: 'button', text: '重新生成恢复码',
+          // 恢复码只在初始化那一屏露过一次面：手滑切了 Tab、在那屏刷新了页面、纸条丢了，
+          // 都等于永久失去它。主密码在手的人本来就该能补发一串，这里就是那条路。
+          onclick: () => { openRecoveryRegenerateSheet(() => { renderVault(root).catch(err => console.error('密码箱重新渲染失败', err)); }); }
         })
       ])
     ]);
@@ -727,6 +733,84 @@ function openPasswordChangeSheet(onChanged) {
     el('div', { class: 'field' }, [el('label', { text: '再输一次' }), pw2Input]),
     errorNode,
     saveBtn
+  ]));
+
+  return sheet;
+}
+
+// —— 重新生成恢复码（列表页底部的入口）——
+//
+// 与「修改主密码」同构：只重新包裹 DEK，条目密文一个字节都不动（见 vault-store.regenerateRecoveryCode），
+// 所以同样既快又安全。三点与改密码不同，都写在这里免得以后被"顺手统一"掉：
+// 1. **必须当场输入主密码**验明身份。这条路径不依赖「当前会话还活着」——用户即便刚被空闲上锁，
+//    只要记得主密码就能补发，这正是它作为兜底的真正价值。
+// 2. 成功后**不在这层面板里显示新码**：关掉面板，把新码交给 pendingRecoveryCode，
+//    走初始化时同一套「抄写 + 勾选确认才能继续」的展示页（见 renderVault 开头那段）。
+//    刻意不另写一套展示——新码同样只有一次展示机会，纪律必须与第一次完全一致。
+// 3. 旧码立即失效是**预期行为**，所以它写在面板的第一句话里，而不是藏在小字里。
+function openRecoveryRegenerateSheet(onChanged) {
+  const body = el('div', { class: 'stack' });
+  const sheet = openSheet({ title: '重新生成恢复码', body });
+
+  let pw = '';
+  let busy = false;
+
+  const errorNode = el('div', { class: 'vault-error', dataset: { role: 'regen-error' } });
+  const genBtn = el('button', {
+    class: 'btn btn-primary', type: 'button', text: '生成新恢复码', disabled: true,
+    onclick: () => { submit(); }
+  });
+  const pwInput = el('input', {
+    type: 'password', autocomplete: 'current-password', placeholder: '主密码',
+    oninput: e => { pw = e.target.value; refresh(); },
+    onkeydown: e => { if (e.key === 'Enter') submit(); }
+  });
+
+  // 只切按钮禁用态，不整页重渲染：重建 input 会让正在输入的那个框丢焦点。
+  function refresh() {
+    genBtn.disabled = busy || pw.length === 0;
+  }
+
+  async function submit() {
+    if (busy || genBtn.disabled) return;
+    busy = true;
+    refresh();
+    errorNode.textContent = '';
+
+    let recoveryCode;
+    try {
+      ({ recoveryCode } = await vaultStore.regenerateRecoveryCode(pw));
+    } catch (err) {
+      // 失败一律留在面板里：密码打错就该原地重试，关掉面板等于让用户从头再点一遍。
+      // 「主密码不正确」是底层唯一那句身份校验失败；其余（记录读不出来一类）原样带上 message——
+      // 那类问题重输密码没有用，得让用户看到真正的原因。
+      const message = String(err?.message || err);
+      busy = false;
+      refresh();
+      errorNode.textContent = message === '主密码不正确' ? '主密码不正确' : '重新生成失败：' + message;
+      console.error('重新生成恢复码失败', err);
+      return;
+    }
+
+    busy = false;
+    // 面板里输入的明文没有任何留在内存里的理由。
+    pw = '';
+    pwInput.value = '';
+    refresh();
+    // 先落到模块级状态、再关面板：恢复码页的优先级高于一切状态判定，
+    // 于是紧接着的任何一次渲染（onChanged 触发的那次）都必然画它，
+    // 不存在「新码还没渲染出来就被别的渲染挤掉」的窗口。
+    pendingRecoveryCode = recoveryCode;
+    sheet.close();
+    if (onChanged) onChanged();
+  }
+
+  mount(body, el('div', { class: 'stack' }, [
+    el('div', { class: 'vault-warn', text: '重新生成后，旧的恢复码立即失效——你抄写的那串从此再也打不开密码箱。' }),
+    el('div', { class: 'vault-hint', text: '新的恢复码会立刻显示出来，和第一次一样只有这一次机会，请当场抄下来。主密码与密码箱里的条目都不受影响。' }),
+    el('div', { class: 'field' }, [el('label', { text: '主密码' }), pwInput]),
+    errorNode,
+    genBtn
   ]));
 
   return sheet;

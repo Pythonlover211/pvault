@@ -13,7 +13,9 @@
 // 忘了同步），整个 addAll 就 reject，install 失败，SW 根本不激活，离线能力直接是 0，
 // 而且控制台只看得到一条 addAll 的报错。所以 ASSETS 必须与磁盘上的真实文件逐条对齐
 // （这份清单是扫描 styles/、icons/、app/、app/ui/ 生成的，不是凭记忆手写的）。
-const CACHE = 'pvault-v6';
+// v7：密码箱列表页多了「重新生成恢复码」入口（vault-store / vault-view / vault.css），
+// 备份面板里「忘了密码就打不开」那句从说明段上移到密码输入框下方（backup-view）。
+const CACHE = 'pvault-v7';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。

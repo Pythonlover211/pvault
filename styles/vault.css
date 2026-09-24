@@ -82,8 +82,10 @@
 .vault-actions { display: flex; gap: 8px; }
 .vault-actions .btn { flex: 1; }
 
-/* 列表底部：锁定 / 修改主密码并排居中，与条目标题拉开距离，避免误触。 */
-.vault-foot { display: flex; justify-content: center; gap: 8px; padding-top: 4px; }
+/* 列表底部：锁定 / 修改主密码 / 重新生成恢复码并排居中，与条目标题拉开距离，避免误触。
+   允许换行：三个按钮都是中文长词，窄屏（≈360px）上一行放不下，硬挤会把按钮压成
+   「修改主密…」这种看不全的样子——换行只是多占一行，读不全的按钮才是真问题。 */
+.vault-foot { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding-top: 4px; }
 
 /* —— 条目编辑器（app/ui/vault-editor.js）—— */
 /* 表单行：label 在上、输入框在下，这是 .field 本来的形态；这里只补两件事——

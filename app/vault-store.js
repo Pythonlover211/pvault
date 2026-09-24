@@ -5,7 +5,9 @@
 // 三条不能破的约定：
 // 1. DEK 只在内存——落盘的只有「被 KEK 包裹过的 DEK」，任何时候都不能把裸 DEK 写进存储。
 // 2. 同一密钥下 IV 绝不重复——条目密文每次保存都用新的随机 IV（交给 crypto.js 的 encryptJSON）。
-// 3. 恢复码与主密码是两条独立的门——改主密码绝不碰 saltRecovery / wrappedDekByRecovery。
+// 3. 恢复码与主密码是两条独立的门——改主密码绝不碰 saltRecovery / wrappedDekByRecovery，
+//    改恢复码（regenerateRecoveryCode）也绝不碰 saltPassword / wrappedDekByPassword。
+//    两条路都不重新加密条目：换的只是「包裹 DEK 的那把钥匙」。
 //
 // 本模块依赖 db.js（IndexedDB）与 crypto.js（WebCrypto 全局），因此不能在 Node 里 import，
 // 也不写单测；验证方式见 docs/手动验证清单.md 的「密码箱（数据层）」小节与临时探针。
@@ -276,6 +278,76 @@ export async function changeMasterPassword(newPassword) {
   };
   await db.put('settings', { key: VAULT_KEY, value: next });
   touch();
+}
+
+// 重新生成恢复码：**只换恢复码这一条路**，主密码与条目密文一个字都不动。
+//
+// 为什么需要它：恢复码只在初始化的那一屏出现过一次，用户手滑切了 Tab、在那屏刷新了页面、
+// 或者干脆把抄写的纸条弄丢了，就再也没有地方能拿到它——而这三件事都不该是终局：
+// 用户手里还有主密码，本来就完全有权补发一串新的。**没有这个入口，「恢复码只展示一次」
+// 就是一条不可逆的风险**：一次误操作 = 永久失去唯一退路。
+//
+// 与 changeMasterPassword 同构：DEK 不变，只重新包裹它，所以不需要重新加密任何条目
+// （代价是一次 PBKDF2 而不是整库重加密）。区别是这次换的是恢复码那一份包裹：
+//   - saltRecovery / wrappedDekByRecovery → 全新（旧恢复码从这一刻起立即失效，这是预期：
+//     换恢复码的意义就在于「旧的那串从此没用」，否则等于凭空多留了一把没人数得清的钥匙）
+//   - saltPassword / wrappedDekByPassword → 原样保留（主密码不受影响，仍然能解锁）
+//   - ciphertext → **一个字节都不能动**（它的加密密钥是 DEK，而 DEK 没换；碰它等于把用户的
+//     条目全部废掉）
+export async function regenerateRecoveryCode(masterPassword) {
+  const record = await requireRecord();
+
+  // 第一步先证明「你是本人」：重新派生 KEK、解开包裹拿回 32 字节原始 DEK。
+  // 这一步是纯读的——派生失败或解不开都直接抛错，记录一个字节都不会被碰。
+  // 这里刻意不动会话：这不是一次解锁尝试，输错密码不该把已经解锁的密码箱踢回锁屏
+  // （用户只是打错了一个字符，他并没有要求上锁）。
+  let raw;
+  try {
+    const kek = await deriveKey(
+      String(masterPassword),
+      fromBase64(record.saltPassword),
+      iterationsOf(record)
+    );
+    raw = await unwrapDek(kek, record.wrappedDekByPassword);
+  } catch {
+    throw new Error('主密码不正确');
+  }
+
+  try {
+    // 与 unwrapOrFail 里同一条「密钥承诺」：记录被外部改坏（密码那份包裹与条目密文错配）时，
+    // 单看 unwrapDek 是成功的，但把恢复码绑到一把打不开库的 DEK 上只会让用户以为补发成功、
+    // 事后才发现新恢复码也是废的。多花一次 AES-GCM（约 1ms）把它收敛成一次当场失败。
+    try {
+      await decryptJSON(await importDek(raw), record.ciphertext);
+    } catch {
+      throw new Error('主密码不正确');
+    }
+
+    const recoveryCode = generateRecoveryCode();
+    const saltRecovery = randomBytes(SALT_BYTES);
+    // 用新恢复码归一化后派生的 KEK 重新包裹**同一个 DEK**；包裹用的 IV 由 wrapDek 现取，绝不复用。
+    const kekRecovery = await deriveKey(
+      normalizeRecoveryCode(recoveryCode),
+      saltRecovery,
+      iterationsOf(record)
+    );
+    const wrappedDekByRecovery = await wrapDek(kekRecovery, raw);
+
+    const next = {
+      ...record,
+      saltRecovery: toBase64(saltRecovery),
+      wrappedDekByRecovery,
+      updatedAt: Date.now()
+    };
+    await db.put('settings', { key: VAULT_KEY, value: next });
+    touch();
+    // 这串码和 initVault 返回的那串一样：只在内存里存在这一次，UI 必须当场展示并让用户抄下来。
+    return { recoveryCode };
+  } finally {
+    // 用完就把局部字节清零：这 32 字节只在「重新包裹」的瞬间需要存在（wrapDek / importDek
+    // 都已把内容复制进去），留着一个多余的 DEK 副本没有任何理由。失败路径同样会走到这里。
+    raw.fill(0);
+  }
 }
 
 // 订阅锁定状态变化：回调收到 true（已解锁）或 false（已锁定），返回取消订阅函数。
