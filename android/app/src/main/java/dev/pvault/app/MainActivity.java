@@ -149,6 +149,9 @@ public class MainActivity extends Activity {
         });
 
         web.addJavascriptInterface(new ShellBridge(), "PvaultShell");
+        // 允许用 Chrome/Edge 的 devtools 远程调试这个 WebView（adb forward 到
+        // webview_devtools_remote_<pid> 即可用 CDP 驱动页面）。自用应用，留着方便排查。
+        WebView.setWebContentsDebuggingEnabled(true);
         web.loadUrl(START_URL);
         setContentView(web);
     }
