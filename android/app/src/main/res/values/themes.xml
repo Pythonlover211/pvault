@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 无 ActionBar 的全屏主题：app 自己画顶栏，系统栏只提供背景色。
+         状态栏图标用深色，因为页面底色是浅色（pvault 的页面底色是 #f2f2f5）。
+         注意：XML 注释里不能出现连续两个 ASCII 连字符，改文案时别踩。 -->
+    <style name="PvaultTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">#f2f2f5</item>
+        <item name="android:colorBackground">#f2f2f5</item>
+        <item name="android:statusBarColor">#f2f2f5</item>
+        <item name="android:navigationBarColor">#f2f2f5</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

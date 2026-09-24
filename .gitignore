@@ -5,3 +5,26 @@ backups/
 # OS
 Thumbs.db
 .DS_Store
+
+# —— Android 构建产物 ——
+# assets/www 不是源码，是 scripts/build-apk.ps1 从仓库根目录复制出来的副本。
+# 两份副本必然不同步，所以仓库里只留根目录那一份。
+android/app/src/main/assets/
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+*.iml
+
+# Gradle 缓存
+.gradle/
+
+# 签名密钥：仓库是公开的，绝不能提交。
+# 密钥实际存在 D:\temp\android\keystore\，这里再兜一道。
+*.jks
+*.keystore
+keystore.properties
+
+# 打包产物
+dist/

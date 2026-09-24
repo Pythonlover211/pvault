@@ -1,0 +1,73 @@
+// pvault 的安卓壳。唯一的职责：用一个 WebView 加载打包进来的静态站点。
+//
+// 为什么不用 file:// 直接加载 assets：
+//   file:// 是不透明源（opaque origin），ES Module 会被 CORS 拦掉、WebCrypto 的
+//   secure context 也不成立。所以走 https://appassets.androidplatform.net/ 这个
+//   虚拟域名（WebView 认定它是安全源），再由 shouldInterceptRequest 从 assets 里
+//   取文件喂回去。全程零第三方依赖。
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'dev.pvault.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "dev.pvault.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    // 静态站点由 scripts/build-apk.ps1 从仓库根目录复制进来，不纳入版本管理。
+    sourceSets {
+        main {
+            assets.srcDirs = ['src/main/assets']
+        }
+    }
+
+    // 顺序有讲究：signingConfigs 必须在 buildTypes 之前声明。
+    // 反过来的话 buildTypes 里引用 signingConfigs.release 会报
+    // "Could not get unknown property 'release'"，因为那时容器还是空的。
+    signingConfigs {
+        release {
+            // 口令不进仓库（仓库是公开的）。优先读仓库外的 keystore.properties，
+            // 没有就退回环境变量，再没有才用占位值——占位值签出来的包无法升级安装。
+            def propsFile = file(System.getenv('PVAULT_KEYSTORE_PROPS')
+                    ?: 'D:/temp/android/keystore/keystore.properties')
+            def props = new Properties()
+            if (propsFile.exists()) {
+                propsFile.withInputStream { props.load(it) }
+            }
+            storeFile file(props['storeFile']
+                    ?: (System.getenv('PVAULT_KEYSTORE') ?: 'D:/temp/android/keystore/pvault-release.jks'))
+            storePassword props['storePassword'] ?: System.getenv('PVAULT_STOREPASS') ?: 'unset'
+            keyAlias props['keyAlias'] ?: (System.getenv('PVAULT_KEYALIAS') ?: 'pvault')
+            keyPassword props['keyPassword'] ?: System.getenv('PVAULT_KEYPASS') ?: 'unset'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            // 自用应用，用固定密钥签名，保证以后升级能覆盖安装。
+            // 密钥与口令放在仓库之外（D:\temp\android\keystore\），仓库是公开的，绝不能提交。
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*']
+    }
+}
+
+// 零依赖：这里故意什么都不加。
+dependencies { }

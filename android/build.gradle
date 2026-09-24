@@ -1,0 +1,6 @@
+// 根构建脚本：只声明插件版本，不在这里加依赖。
+// pvault 的安卓壳刻意做到「零第三方依赖」——不用 AndroidX、不用 AppCompat，
+// 只用系统自带的 android.app.Activity + WebView，所以 APK 极小、构建也快。
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}
