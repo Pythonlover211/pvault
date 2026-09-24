@@ -126,6 +126,31 @@ test('mapRows 遇到「不计收支」的行跳过（不是错误）', () => {
   assert.equal(errors.length, 0);
 });
 
+test('mapRows 在收支方向列越界时报错，而不是静默丢掉整批数据', () => {
+  const idx = buildColumnIndex(wechatHeader);
+  const preset = PRESETS.find(p => p.id === 'wechat');
+  // 列映射配错：direction 指向一个不存在的列
+  const mapping = { ...autoMapping(preset, idx), direction: 99 };
+  const { records, errors } = mapRows(wechatRows, 3, mapping);
+  assert.equal(records.length, 0);
+  assert.equal(errors.length, 2); // 两行数据各记一条，而不是「0 条记录、0 个错误」
+  assert.equal(errors[0].reason, '收支方向列不存在');
+  assert.equal(errors[0].row, 4);
+  assert.equal(errors[1].row, 5);
+});
+
+test('mapRows 方向列存在但值为空时静默跳过（与越界区分开）', () => {
+  const rows = [
+    wechatHeader,
+    ['2026-08-15 12:30:00', '', '店', '', '', '¥3.00']
+  ];
+  const idx = buildColumnIndex(wechatHeader);
+  const preset = PRESETS.find(p => p.id === 'wechat');
+  const { records, errors } = mapRows(rows, 0, autoMapping(preset, idx));
+  assert.equal(records.length, 0);
+  assert.equal(errors.length, 0);
+});
+
 test('mapRows 不传 direction 列时按金额正负判断', () => {
   const rows = [['d'], ['2026-08-15 12:30:00', '-12.34'], ['2026-08-15 12:30:00', '12.34']];
   const { records } = mapRows(rows, 0, { time: 0, amount: 1, direction: null, merchant: null, note: null });

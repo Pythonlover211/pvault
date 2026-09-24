@@ -39,6 +39,9 @@ export function parseDirection(input) {
   return null;
 }
 
-export function makeFingerprint({ occurredAt, amountCents, merchant }) {
-  return `${occurredAt}|${amountCents}|${String(merchant ?? '').trim()}`;
+// 指纹 = 时间 + 金额 + 收支方向 + 商户。方向必须参与：真实账单里「转账」双向往来、
+// 或「消费 + 即时退款」会在同一秒出现同金额同商户的一收一支，少了 kind 两条会被
+// 认成同一笔，去重时静默丢掉其中一条。
+export function makeFingerprint({ occurredAt, amountCents, merchant, kind }) {
+  return `${occurredAt}|${amountCents}|${String(kind ?? '')}|${String(merchant ?? '').trim()}`;
 }

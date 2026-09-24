@@ -268,6 +268,21 @@ test('makeFingerprint 同一笔数据的指纹稳定，不同数据不同', () =
   assert.notEqual(a, c);
   assert.notEqual(a, d);
 });
+
+test('makeFingerprint 把收支方向纳入指纹', () => {
+  // 同一秒、同金额、同商户的一收一支（转账双向往来、消费 + 即时退款）必须是两条
+  const expense = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' });
+  const income = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'income' });
+  const transfer = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'transfer' });
+  assert.notEqual(expense, income);
+  assert.notEqual(expense, transfer);
+  assert.notEqual(income, transfer);
+  // 同一方向的同一笔仍必须稳定
+  assert.equal(
+    expense,
+    makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' })
+  );
+});
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -316,8 +331,11 @@ export function parseDirection(input) {
   return null;
 }
 
-export function makeFingerprint({ occurredAt, amountCents, merchant }) {
-  return `${occurredAt}|${amountCents}|${String(merchant ?? '').trim()}`;
+// 指纹 = 时间 + 金额 + 收支方向 + 商户。方向必须参与：真实账单里「转账」双向往来、
+// 或「消费 + 即时退款」会在同一秒出现同金额同商户的一收一支，少了 kind 两条会被
+// 认成同一笔，去重时静默丢掉其中一条。
+export function makeFingerprint({ occurredAt, amountCents, merchant, kind }) {
+  return `${occurredAt}|${amountCents}|${String(kind ?? '')}|${String(merchant ?? '').trim()}`;
 }
 ```
 
@@ -467,6 +485,31 @@ test('mapRows 遇到「不计收支」的行跳过（不是错误）', () => {
   assert.equal(errors.length, 0);
 });
 
+test('mapRows 在收支方向列越界时报错，而不是静默丢掉整批数据', () => {
+  const idx = buildColumnIndex(wechatHeader);
+  const preset = PRESETS.find(p => p.id === 'wechat');
+  // 列映射配错：direction 指向一个不存在的列
+  const mapping = { ...autoMapping(preset, idx), direction: 99 };
+  const { records, errors } = mapRows(wechatRows, 3, mapping);
+  assert.equal(records.length, 0);
+  assert.equal(errors.length, 2);            // 两行数据各记一条，而不是「0 条记录、0 个错误」
+  assert.equal(errors[0].reason, '收支方向列不存在');
+  assert.equal(errors[0].row, 4);
+  assert.equal(errors[1].row, 5);
+});
+
+test('mapRows 方向列存在但值为空时静默跳过（与越界区分开）', () => {
+  const rows = [
+    wechatHeader,
+    ['2026-08-15 12:30:00', '', '店', '', '', '¥3.00']
+  ];
+  const idx = buildColumnIndex(wechatHeader);
+  const preset = PRESETS.find(p => p.id === 'wechat');
+  const { records, errors } = mapRows(rows, 0, autoMapping(preset, idx));
+  assert.equal(records.length, 0);
+  assert.equal(errors.length, 0);
+});
+
 test('mapRows 不传 direction 列时按金额正负判断', () => {
   const rows = [['d'], ['2026-08-15 12:30:00', '-12.34'], ['2026-08-15 12:30:00', '12.34']];
   const { records } = mapRows(rows, 0, { time: 0, amount: 1, direction: null, merchant: null, note: null });
@@ -554,6 +597,11 @@ export function mapRows(rows, headerIndex, mapping) {
     let kind;
     if (mapping.direction == null) {
       kind = rawAmount < 0 ? 'expense' : 'income';
+    } else if (mapping.direction >= row.length) {
+      // 列索引越界：多半是列映射配错了。这种情况必须报错而不是静默跳过——
+      // 否则整批数据被丢光，用户看到的是「0 条记录、0 个错误」，完全无从排查。
+      errors.push({ row: i, reason: '收支方向列不存在', raw: '' });
+      continue;
     } else {
       kind = parseDirection(cell('direction'));
       if (kind === null) continue; // 「不计收支」这类行：不是错误，直接跳过
@@ -567,7 +615,7 @@ export function mapRows(rows, headerIndex, mapping) {
       amountCents,
       kind,
       note: noteParts.join(' · '),
-      fingerprint: makeFingerprint({ occurredAt, amountCents, merchant })
+      fingerprint: makeFingerprint({ occurredAt, amountCents, kind, merchant })
     });
   }
   return { records, errors };

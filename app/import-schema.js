@@ -70,6 +70,11 @@ export function mapRows(rows, headerIndex, mapping) {
     let kind;
     if (mapping.direction == null) {
       kind = rawAmount < 0 ? 'expense' : 'income';
+    } else if (mapping.direction >= row.length) {
+      // 列索引越界：多半是列映射配错了。这种情况必须报错而不是静默跳过——
+      // 否则整批数据被丢光，用户看到的是「0 条记录、0 个错误」，完全无从排查。
+      errors.push({ row: i, reason: '收支方向列不存在', raw: '' });
+      continue;
     } else {
       kind = parseDirection(cell('direction'));
       if (kind === null) continue; // 「不计收支」这类行：不是错误，直接跳过
@@ -83,7 +88,7 @@ export function mapRows(rows, headerIndex, mapping) {
       amountCents,
       kind,
       note: noteParts.join(' · '),
-      fingerprint: makeFingerprint({ occurredAt, amountCents, merchant })
+      fingerprint: makeFingerprint({ occurredAt, amountCents, kind, merchant })
     });
   }
   return { records, errors };

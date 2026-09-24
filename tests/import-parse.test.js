@@ -67,3 +67,18 @@ test('makeFingerprint 同一笔数据的指纹稳定，不同数据不同', () =
   assert.notEqual(a, c);
   assert.notEqual(a, d);
 });
+
+test('makeFingerprint 把收支方向纳入指纹', () => {
+  // 同一秒、同金额、同商户的一收一支（转账双向往来、消费 + 即时退款）必须是两条
+  const expense = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' });
+  const income = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'income' });
+  const transfer = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'transfer' });
+  assert.notEqual(expense, income);
+  assert.notEqual(expense, transfer);
+  assert.notEqual(income, transfer);
+  // 同一方向的同一笔仍必须稳定
+  assert.equal(
+    expense,
+    makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' })
+  );
+});
