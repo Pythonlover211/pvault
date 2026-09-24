@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseImportAmount, parseImportDateTime, parseDirection, makeFingerprint
+  parseImportAmount, parseImportDateTime, parseDirection, makeFingerprint, merchantFromNote
 } from '../app/import-parse.js';
 
 test('parseImportAmount 处理带货币符号与千分位', () => {
@@ -58,11 +58,13 @@ test('parseDirection 认微信/支付宝的写法', () => {
   assert.equal(parseDirection('转账'), 'transfer');
 });
 
+// 指纹的第四个分量由 note 派生（makeFingerprint 内部调 merchantFromNote），
+// 所以这三个用例的期望值必须按 note 写，而不是按「商户原文」写。
 test('makeFingerprint 同一笔数据的指纹稳定，不同数据不同', () => {
-  const a = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店' });
-  const b = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店' });
-  const c = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '别的店' });
-  const d = makeFingerprint({ occurredAt: 2000, amountCents: 1234, merchant: '便利店' });
+  const a = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店' });
+  const b = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店' });
+  const c = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '别的店' });
+  const d = makeFingerprint({ occurredAt: 2000, amountCents: 1234, note: '便利店' });
   assert.equal(a, b);
   assert.notEqual(a, c);
   assert.notEqual(a, d);
@@ -70,15 +72,45 @@ test('makeFingerprint 同一笔数据的指纹稳定，不同数据不同', () =
 
 test('makeFingerprint 把收支方向纳入指纹', () => {
   // 同一秒、同金额、同商户的一收一支（转账双向往来、消费 + 即时退款）必须是两条
-  const expense = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' });
-  const income = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'income' });
-  const transfer = makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'transfer' });
+  const expense = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店', kind: 'expense' });
+  const income = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店', kind: 'income' });
+  const transfer = makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店', kind: 'transfer' });
   assert.notEqual(expense, income);
   assert.notEqual(expense, transfer);
   assert.notEqual(income, transfer);
   // 同一方向的同一笔仍必须稳定
   assert.equal(
     expense,
-    makeFingerprint({ occurredAt: 1000, amountCents: 1234, merchant: '便利店', kind: 'expense' })
+    makeFingerprint({ occurredAt: 1000, amountCents: 1234, note: '便利店', kind: 'expense' })
   );
+});
+
+test('merchantFromNote 取 note 的第一段，没有分隔符时整条当商户', () => {
+  assert.equal(merchantFromNote('某某便利店 · 矿泉水'), '某某便利店');
+  assert.equal(merchantFromNote('矿泉水'), '矿泉水');
+  assert.equal(merchantFromNote(''), '');
+  assert.equal(merchantFromNote(null), '');
+  assert.equal(merchantFromNote(undefined), '');
+});
+
+test('makeFingerprint 的商户分量 = merchantFromNote(note)：写入侧与读库侧同口径', () => {
+  // A1 的三个真实输入。左边是 mapRows 写出的 note（[商户, 备注] 用 ' · ' 拼），
+  // 右边是库里只有 note 时能反解出来的东西。旧实现用「商户原文」当第四分量，
+  // 这三条都会两侧不等价 → 同一份账单第二次导入静默翻倍。
+  const written = [
+    { merchant: '', note: '矿泉水' },            // 交易对方为空、商品有值
+    { merchant: '', note: '备注' },              // 商户选「（不使用）」，只留备注
+    { merchant: '喜茶 · 深圳店', note: '奶茶' }   // 商户名自带 ' · '
+  ];
+  const expected = ['矿泉水', '备注', '喜茶'];
+  const fingerprints = written.map(({ merchant, note }, i) => {
+    const combined = [merchant, note].filter(Boolean).join(' · ');
+    const fp = makeFingerprint({ occurredAt: 1000, amountCents: 300, kind: 'expense', note: combined });
+    // 指纹的第四段就是反解出来的商户
+    assert.equal(fp.split('|')[3], merchantFromNote(combined));
+    assert.equal(fp.split('|')[3], expected[i]);
+    return fp;
+  });
+  // 三条 note 互不相同 → 指纹互不相同（口径统一不会把它们挤成同一条）
+  assert.equal(new Set(fingerprints).size, 3);
 });

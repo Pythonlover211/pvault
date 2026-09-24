@@ -127,3 +127,9 @@
 .toast.import-confirming .import-toast-slot { flex-direction: column; align-items: stretch; gap: 8px; }
 .import-toast-text { line-height: 1.5; }
 .import-toast-actions { display: flex; justify-content: flex-end; gap: 18px; }
+
+/* 「已保存的配置」那一行：下拉 + 删除按钮并排。不能复用 .form-actions——它给 .btn
+   加了 flex:1，删除按钮会跟下拉各占一半，长配置名更会被挤到看不见。 */
+.import-profile-row { display: flex; align-items: center; gap: 8px; }
+.import-profile-row select { flex: 1; min-width: 0; }
+.import-profile-row .btn { flex: none; }

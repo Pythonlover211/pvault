@@ -1,4 +1,6 @@
-import { parseImportAmount, parseImportDateTime, parseDirection, makeFingerprint } from './import-parse.js';
+import {
+  parseImportAmount, parseImportDateTime, parseDirection, makeFingerprint, NOTE_SEPARATOR
+} from './import-parse.js';
 
 export const FIELDS = ['time', 'amount', 'direction', 'merchant', 'note'];
 
@@ -42,19 +44,42 @@ export function buildColumnIndex(headerRow) {
   return map;
 }
 
+// 命中一个预设要求两点同时成立：
+//
+// ① **该预设的时间列与金额列都命中**。这条不只是门槛，还是区分微信与支付宝的**唯一**依据：
+//    两个预设的金额列名不同（「金额(元)」vs「金额」），而「交易时间」「交易对方」「收/支」
+//    三列同名。只看「有几个列名对上」的话，支付宝表头会以 5 个命中同时命中微信的 3 个命中，
+//    而 PRESETS 里微信在前——整批支付宝账单会被判成微信支付账单。
+//
+// ② 专有列命中数 ≥ MIN_PRESET_COLUMN_HITS。原来只要求「交易时间」+「金额」两列，银行导出
+//    `交易时间,交易摘要,金额,余额` 恰好满足，于是被判成支付宝账单、界面顶着「已识别为：
+//    支付宝账单」，而且走预设路径时第 2 步被跳过，用户连自己指认表头的机会都没有。
+//    官方导出都是 5 列全中，缺一两列仍能命中；银行式表头只有 2 个。
+export const MIN_PRESET_COLUMN_HITS = 3;
+
 function headerMatches(row, preset) {
   const idx = buildColumnIndex(row);
   const { time, amount } = preset.columns;
-  return idx.has(time) && idx.has(amount);
+  if (!idx.has(time) || !idx.has(amount)) return false;
+  const names = Object.values(preset.columns ?? {}).filter(n => n != null);
+  return names.filter(name => idx.has(name)).length >= MIN_PRESET_COLUMN_HITS;
 }
 
-export function detectPreset(rows) {
-  for (const row of (rows ?? []).slice(0, DETECT_SCAN_LIMIT)) {
+// 逐行找命中的预设，并把命中的**行号**一起带出来：buildColumnIndex / mapRows 都要那一行，
+// 而 detectPreset 只回答「像哪种账单」。判据只有 headerMatches 一份，界面不再自己抄一遍
+// ——原来 import-view.js 抄了一份写死「时间 + 金额」的副本，判据一改两侧就会分叉。
+export function detectPresetHeader(rows) {
+  const limit = Math.min((rows ?? []).length, DETECT_SCAN_LIMIT);
+  for (let i = 0; i < limit; i++) {
     for (const preset of PRESETS) {
-      if (headerMatches(row, preset)) return preset;
+      if (headerMatches(rows[i], preset)) return { preset, headerIndex: i };
     }
   }
   return null;
+}
+
+export function detectPreset(rows) {
+  return detectPresetHeader(rows)?.preset ?? null;
 }
 
 export function autoMapping(preset, columnIndex) {
@@ -116,15 +141,18 @@ export function mapRows(rows, headerIndex, mapping, { defaultKind = null } = {})
       }
     }
 
-    const merchant = cell('merchant');
-    const noteParts = [merchant, cell('note')].filter(Boolean);
+    // 指纹一律由 note 现算（makeFingerprint 内部用 merchantFromNote 反解第一段），
+    // 不再把商户原文单独传进去：库里只有 note，读库比对走的是同一个反解函数，
+    // 传原文会让「商户列为空」「商户名自带 · 」这两类数据两侧口径分叉。
+    const noteParts = [cell('merchant'), cell('note')].filter(Boolean);
     const amountCents = Math.abs(rawAmount);
+    const note = noteParts.join(NOTE_SEPARATOR);
     records.push({
       occurredAt,
       amountCents,
       kind,
-      note: noteParts.join(' · '),
-      fingerprint: makeFingerprint({ occurredAt, amountCents, kind, merchant })
+      note,
+      fingerprint: makeFingerprint({ occurredAt, amountCents, kind, note })
     });
   }
   return { records, errors, skipped };

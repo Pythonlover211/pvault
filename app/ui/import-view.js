@@ -18,10 +18,12 @@ import { openSheet } from './sheet.js';
 import * as store from '../store.js';
 import { decodeBytes, parseCsv, UNCLOSED_QUOTE_CODE, UTF16_CODE } from '../csv.js';
 import {
-  FIELDS, DETECT_SCAN_LIMIT, detectPreset, buildColumnIndex, autoMapping, mapRows,
+  FIELDS, detectPresetHeader, buildColumnIndex, autoMapping, mapRows,
   UNRESOLVED_DIRECTION_REASON
 } from '../import-schema.js';
-import { prepareImport, commitImport, undoImport, listProfiles, saveProfile } from '../import-store.js';
+import {
+  prepareImport, materializeImport, commitImport, undoImport, listProfiles, saveProfile, deleteProfile
+} from '../import-store.js';
 import { formatCents } from '../money.js';
 
 const FIELD_LABELS = { time: '时间', amount: '金额', direction: '收支方向', merchant: '商户', note: '备注' };
@@ -76,49 +78,65 @@ function fileErrorMessage(err) {
   return '读取文件失败：' + (err?.message || err);
 }
 
-// detectPreset 只回答「这份文件像哪种账单」，不告诉你是哪一行命中的，而后面
-// buildColumnIndex / mapRows 都要那一行。判据与 import-schema.js 里的 headerMatches 完全一致
-// （时间列与金额列都在），故意重复这两行而不是去改动已交付的模块签名。
-function presetHeaderIndex(rows, preset) {
-  const { time, amount } = preset.columns;
-  // 与 detectPreset 同一个扫描窗口：命中既然在前 50 行内，就没理由为了「更完整」再扫几十万行。
-  const limit = Math.min(rows.length, DETECT_SCAN_LIMIT);
-  for (let i = 0; i < limit; i++) {
-    const idx = buildColumnIndex(rows[i]);
-    if (idx.has(time) && idx.has(amount)) return i;
-  }
-  return null;
-}
+// 判据与命中行都来自 import-schema.js 的 detectPresetHeader（detectPreset 只回答「像哪种
+// 账单」，不告诉你是哪一行命中的，而后面 buildColumnIndex / mapRows 都要那一行）。
+// 判据**不在这里抄第二份**：抄一份的下场是判据加强后界面仍按旧判据走，
+// 预设命中与「第 3 步看到的东西」对不上。
 
-// 同一时刻只留一个撤销浮层（与 entry-panel.js 里那套同理：位置完全重合，叠起来既看不见
-// 也点不到）。两个模块各自持有一份引用是有意的——抽公共组件要动已交付的录入面板，
-// 而这里多出来的只是一次赋值。代价：记账后立刻导入会短暂并存两个浮层，互不干扰。
+// ── 撤销浮层（累积未过期的批次） ────────────────────────────────────────────
+// 同一时刻只留一个浮层（与 entry-panel.js 里那套同理：位置完全重合，叠起来既看不见
+// 也点不到）。但**批次要累积**：5 分钟内连导两次时，旧实现把第一个浮层 remove 掉，
+// 第一批就永远撤不回来了——用户以为浮层能兜住，实际兜不住。
+// 现在浮层显示的是所有未过期批次的总条数，一次撤销把这几批一起删掉；过期时间按**最早**
+// 那批算（保守：宁可让后一批跟着早消失，也不让前一批悄悄过了 5 分钟还能撤）。
+const undoBatches = [];        // [{ ids, at }]，at = 该批写入时刻
 let activeToast = null;
+let toastCtl = null;           // 当前浮层的控制句柄（refresh / toast）
+let latestUndoneHandler = null;
 
-function showUndoToast({ count, ids, onUndone }) {
+function showUndoToast({ ids, onUndone }) {
+  undoBatches.push({ ids, at: Date.now() });
+  if (typeof onUndone === 'function') latestUndoneHandler = onUndone;
+  if (toastCtl) {
+    // 还在过期窗口里：只更新文案与计时器，不复用也不重挂节点。
+    toastCtl.refresh();
+    return toastCtl.toast;
+  }
+  // 上一轮浮层可能还在 200ms 的退场动画里：直接摘掉，避免两个浮层重合。
   if (activeToast) {
     activeToast.remove();
     activeToast = null;
   }
+  toastCtl = createUndoToast();
+  return toastCtl.toast;
+}
 
+function createUndoToast() {
   // 撤销只能生效一次：await undoImport 期间浮层还在页面上，双击会发出两次删除。
   let settled = false;
   let confirming = false;
   let timer = null;
-  let labelText = `已导入 ${count} 条`;
+  // 撤销失败时把这一行替掉正常文案：用户看到「已导入 N 条」消失会以为删干净了。
+  let failureText = '';
 
   const slot = el('div', { class: 'import-toast-slot' });
   const toast = el('div', { class: 'toast', dataset: { role: 'import-toast' } }, [slot]);
 
+  const totalCount = () => undoBatches.reduce((n, b) => n + b.ids.length, 0);
+  const allIds = () => undoBatches.flatMap(b => b.ids);
+  const labelText = () => (failureText || `已导入 ${totalCount()} 条`);
+  // 单批次时沿用原来的「本次导入的」；累积了多批才换措辞，免得把单批次数说成「这几次」。
+  const scopeText = () => (undoBatches.length > 1 ? '这几次导入的' : '本次导入的');
+
   function paint() {
     if (!confirming) {
       mount(slot, [
-        el('span', { dataset: { role: 'import-toast-label' }, text: labelText }),
+        el('span', { dataset: { role: 'import-toast-label' }, text: labelText() }),
         el('button', {
           type: 'button', text: '撤销', dataset: { role: 'import-undo' },
           onclick: () => {
-            // 二次确认不是客套：撤销删的是**本次导入的 id**，这些 id 上后来被用户改过的
-            // 分类、备注、金额都会一起没掉。少这一次点击，误触的代价是一批账。
+            // 二次确认不是客套：撤销删的是**这些批次导入的 id**，这些 id 上后来被用户改过的
+            // 分类、备注、金额都会一起没掉。少这一次点击，误触的代价是几批账。
             confirming = true;
             toast.classList.add('import-confirming');
             paint();
@@ -134,7 +152,7 @@ function showUndoToast({ count, ids, onUndone }) {
     mount(slot, [
       el('div', {
         class: 'import-toast-text', dataset: { role: 'import-undo-confirm' },
-        text: `将删除本次导入的 ${count} 条记录，包含你之后修改过的。确定吗？`
+        text: `将删除${scopeText()} ${totalCount()} 条记录，包含你之后修改过的。确定吗？`
       }),
       el('div', { class: 'import-toast-actions' }, [
         el('button', {
@@ -146,9 +164,22 @@ function showUndoToast({ count, ids, onUndone }) {
     ]);
   }
 
+  // 按最早那批算剩余时间；批次空了（或已撤销）就把计时器停掉。
+  function scheduleExpiry() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (undoBatches.length === 0) return;
+    const earliest = undoBatches.reduce((min, b) => Math.min(min, b.at), Infinity);
+    timer = setTimeout(dismiss, Math.max(0, UNDO_WINDOW_MS - (Date.now() - earliest)));
+  }
+
   function dismiss() {
     if (timer) clearTimeout(timer);
     timer = null;
+    // 浮层消失 = 撤销窗口结束，所有批次一并作废（按最早批次算窗口，见上面那段）。
+    undoBatches.length = 0;
+    failureText = '';
+    if (toastCtl && toastCtl.toast === toast) toastCtl = null;
     if (activeToast === toast) activeToast = null;
     toast.classList.remove('open');
     // 等 .18s 的退场过渡走完再摘节点，否则浮层会瞬间消失、没有动画。
@@ -161,20 +192,20 @@ function showUndoToast({ count, ids, onUndone }) {
     settled = true;
     btn.disabled = true;
     try {
-      await undoImport(ids);
+      await undoImport(allIds());
     } catch (err) {
       // 撤销失败就把浮层留在原地并恢复可点：否则用户看到「已导入」消失，
       // 会以为删干净了，实际那些记录还在库里。
       settled = false;
       confirming = false;
       toast.classList.remove('import-confirming');
-      labelText = '撤销失败，请重试';
+      failureText = '撤销失败，请重试';
       paint();
       console.error('撤销导入失败', err);
       return;
     }
     dismiss();
-    if (onUndone) onUndone();
+    if (latestUndoneHandler) latestUndoneHandler();
   }
 
   paint();
@@ -183,8 +214,8 @@ function showUndoToast({ count, ids, onUndone }) {
   // 先挂 DOM 再在下一帧加 .open：同一帧里做，浏览器会把「初始 opacity:0」和 .open
   // 合并成一次样式计算，过渡不会播放（和 sheet.js / entry-panel.js 同理）。
   requestAnimationFrame(() => toast.classList.add('open'));
-  timer = setTimeout(dismiss, UNDO_WINDOW_MS);
-  return toast;
+  scheduleExpiry();
+  return { toast, refresh: () => { paint(); scheduleExpiry(); } };
 }
 
 export function openImportSheet({ onChanged } = {}) {
@@ -198,6 +229,9 @@ export function openImportSheet({ onChanged } = {}) {
     rows: null,          // parseCsv 的结果：只在选文件时算一次
     preset: null,
     headerIndex: null,
+    // 用户是不是自己指认过表头（从「不对，我自己选表头」这条逃生口进来、或从第 2 步选过行）。
+    // 预设命中时第 2 步本来是被跳过的，这个标记让「返回上一步」回到用户真正的来路。
+    manualHeaderPick: false,
     mapping: blankMapping(),
     // 「这批金额全部算作支出/收入」：只在收支方向列没被映射时才用得上。
     // 故意不预选——见 import-schema.js 的 mapRows。
@@ -209,12 +243,16 @@ export function openImportSheet({ onChanged } = {}) {
     committing: false,
     committed: null,     // { ids, count, skipped }
     reverted: false,
+    // 「仍然导入」的二次确认：用户点了一次才展开确认按钮，避免误触把整批重复灌进库里。
+    forceConfirming: false,
     expenseCategories: null,
     incomeCategories: null,
     accounts: null,
     profiles: null,
     profileId: '',
-    profileName: ''
+    profileName: '',
+    // 非空时表示「正在等第二次点击确认」的那个配置 id
+    profileDeleteConfirming: ''
   };
 
   // 改动过就通知外面重画（首页的今日流水、统计页的月度数字都会变）。
@@ -335,10 +373,12 @@ export function openImportSheet({ onChanged } = {}) {
     state.rows = null;
     state.preset = null;
     state.headerIndex = null;
+    state.manualHeaderPick = false;
     state.mapping = blankMapping();
     state.defaultKind = null;
     state.mapped = null;
     state.prepared = null;
+    state.forceConfirming = false;
   }
 
   async function pickFile(file) {
@@ -358,8 +398,9 @@ export function openImportSheet({ onChanged } = {}) {
     let rows;
     try {
       const buf = await file.arrayBuffer();
-      // 微信导出的账单是 GBK，支付宝是 UTF-8：decodeBytes 先按 UTF-8 严格解码，
-      // 失败再回落 GBK——所以这里的解码顺序不能换。（UTF-16 的文件会在这一步被拦下并给出
+      // 国产账单导出常见 GBK 或 UTF-8/BOM，**不区分来源**：decodeBytes 先按 UTF-8 严格解码，
+      // 失败再回落 GBK，两者都吃——所以这里的解码顺序不能换，也不需要「微信走 GBK、
+      // 支付宝走 UTF-8」这类按来源猜的规则。（UTF-16 的文件会在这一步被拦下并给出
       // 「另存为 CSV UTF-8」的指引，而不是回落 GBK 解出一串乱码。）
       rows = parseCsv(decodeBytes(new Uint8Array(buf)));
     } catch (err) {
@@ -378,11 +419,11 @@ export function openImportSheet({ onChanged } = {}) {
     resetParsed();
     state.rows = rows;
     state.fileName = file.name || '';
-    const preset = detectPreset(rows);
-    if (preset) {
-      state.preset = preset;
-      state.headerIndex = presetHeaderIndex(rows, preset) ?? 0;
-      state.mapping = autoMapping(preset, buildColumnIndex(rows[state.headerIndex]));
+    const hit = detectPresetHeader(rows);
+    if (hit) {
+      state.preset = hit.preset;
+      state.headerIndex = hit.headerIndex;
+      state.mapping = autoMapping(hit.preset, buildColumnIndex(rows[hit.headerIndex]));
       await gotoMapping();
       return;
     }
@@ -400,6 +441,22 @@ export function openImportSheet({ onChanged } = {}) {
   }
 
   // ── 第 2 步 · 认表头 ─────────────────────────────────────────────────────
+
+  // 逃生口：预设判错了、或者用户就是想自己指认表头，都要能走到这一步。
+  // 清掉 headerIndex 与 mapping 是**故意**的：上一行的列对应关系来自预设，
+  // 若沿用就会「显示的是新表头的列名、映射指向旧索引」，比空着更难排查。
+  function gotoHeaderPick() {
+    state.manualHeaderPick = true;
+    state.headerIndex = null;
+    state.mapping = blankMapping();
+    state.defaultKind = null;
+    state.mapped = null;
+    state.prepared = null;
+    state.forceConfirming = false;
+    state.step = 2;
+    state.stepError = '';
+    render();
+  }
 
   function stepHeader() {
     const head = state.rows.slice(0, HEAD_ROW_PREVIEW);
@@ -420,10 +477,18 @@ export function openImportSheet({ onChanged } = {}) {
         onchange: () => {
           if (state.headerIndex !== i) {
             state.headerIndex = i;
+            state.manualHeaderPick = true;
             // 表头换了，旧的列对应关系与解析结果一律作废。
             state.mapping = blankMapping();
             state.defaultKind = null;
             state.mapped = null;
+            state.prepared = null;
+            state.forceConfirming = false;
+            // 命中了预设的文件只是判错/想改表头行，那么用预设的列名在这一行里试填一次：
+            // 用户少点五个下拉。列名对不上就是全空，无害。
+            if (state.preset) {
+              state.mapping = autoMapping(state.preset, buildColumnIndex(state.rows[i] ?? []));
+            }
           }
           // 只切这一个按钮的禁用态，不整页重渲染：重建 radio 会让刚点的那一行跳回未选中。
           nextBtn.disabled = false;
@@ -433,7 +498,13 @@ export function openImportSheet({ onChanged } = {}) {
     ]));
 
     return el('section', { class: 'card stack' }, [
-      el('div', { class: 'vault-hint', text: '这份账单没被自动认出来。请在下面点出哪一行是表头（写着「交易时间」「金额」这些字的那一行）。' }),
+      el('div', {
+        class: 'vault-hint',
+        dataset: { role: 'import-header-hint' },
+        text: state.preset
+          ? '自动认出来的表头可能不对。请在下面点出哪一行是表头（写着「交易时间」「金额」这些字的那一行）。'
+          : '这份账单没被自动认出来。请在下面点出哪一行是表头（写着「交易时间」「金额」这些字的那一行）。'
+      }),
       el('div', { class: 'vault-hint', text: `文件名：${state.fileName || '（未命名）'}` }),
       el('table', { class: 'import-table', dataset: { role: 'import-head-table' } }, rows),
       el('div', { class: 'form-actions' }, [
@@ -519,6 +590,10 @@ export function openImportSheet({ onChanged } = {}) {
       )
       : null;
 
+    const currentProfile = () => (state.profiles ?? []).find(p => p.id === state.profileId) ?? null;
+    // 删除要二次确认：配置是用户自己输名字存下来的，误删之后得重新指认五个下拉才能重建。
+    const confirmingDelete = Boolean(state.profileDeleteConfirming) && state.profileDeleteConfirming === state.profileId;
+
     return el('section', { class: 'card stack' }, [
       state.preset
         ? el('div', {
@@ -528,11 +603,20 @@ export function openImportSheet({ onChanged } = {}) {
         : null,
       el('div', { class: 'vault-hint', text: '下面是自动认出来的列对应关系，可以直接改。' }),
       ...fields,
+      // 逃生口：预设命中时第 2 步是被跳过的，没有这个入口，用户就只能接受「已识别为：支付宝账单」
+      // 和它带来的那套列映射——哪怕它认错了文件（银行式表头一度就落在这里）。
+      el('button', {
+        class: 'btn', type: 'button', text: '不对，我自己选表头',
+        dataset: { role: 'import-pick-header' },
+        onclick: () => { gotoHeaderPick(); }
+      }),
       el('div', { class: 'form-actions' }, [
         el('button', {
           class: 'btn', type: 'button', text: '返回上一步', dataset: { role: 'import-back' },
           onclick: () => {
-            state.step = state.preset ? 1 : 2;
+            // 预设命中且用户没自己指认过表头 → 上一步是「选文件」（第 2 步本来就没走过）；
+            // 否则回到用户真正的来路：第 2 步。
+            state.step = (state.preset && !state.manualHeaderPick) ? 1 : 2;
             state.stepError = '';
             if (state.step === 1) resetParsed();
             render();
@@ -547,7 +631,34 @@ export function openImportSheet({ onChanged } = {}) {
       }),
       el('div', { class: 'field' }, [el('label', { text: '配置名称' }), nameInput]),
       saveBtn,
-      profileSelect ? el('div', { class: 'field' }, [el('label', { text: '已保存的配置' }), profileSelect]) : null,
+      profileSelect
+        ? el('div', { class: 'field' }, [
+          el('label', { text: '已保存的配置' }),
+          el('div', { class: 'import-profile-row' }, [
+            profileSelect,
+            el('button', {
+              class: 'btn', type: 'button',
+              text: confirmingDelete ? '确定删除' : '删除',
+              dataset: { role: 'import-profile-delete' },
+              disabled: !state.profileId,
+              onclick: () => { deleteCurrentProfile(); }
+            }),
+            confirmingDelete
+              ? el('button', {
+                class: 'btn', type: 'button', text: '取消',
+                dataset: { role: 'import-profile-delete-cancel' },
+                onclick: () => { state.profileDeleteConfirming = ''; render(); }
+              })
+              : null
+          ]),
+          confirmingDelete
+            ? el('div', {
+              class: 'vault-warn', dataset: { role: 'import-profile-delete-confirm' },
+              text: `确定删除「${currentProfile()?.name ?? ''}」吗？删掉之后要重新指认五个下拉才能重建。`
+            })
+            : null
+        ])
+        : null,
       state.stepError ? errorLine() : null
     ]);
   }
@@ -572,12 +683,70 @@ export function openImportSheet({ onChanged } = {}) {
     render();
   }
 
+  // 套用格式配置。配置里存的是**列序号**，而列序号只对存它的那份文件有意义——
+  // 换一份列数更少的账单来套用时，越界的序号在下拉里根本不存在（`select.value = '5'`
+  // 匹配不到任何 option，界面显示成空的「（不使用）」或第一个选项），但 state.mapping
+  // 里仍然是 5 → mapRows 逐行报「时间无法识别（原始值（空））」，而用户看着他以为没选，
+  // 完全无从排查。所以这里按当前表头逐字段校验，越界的置 null 并明说。
   function applyProfile(id) {
     state.profileId = id;
+    state.profileDeleteConfirming = '';
     const profile = (state.profiles ?? []).find(p => p.id === id);
-    if (!profile) return;
-    state.mapping = { ...blankMapping(), ...profile.mapping };
+    if (!profile) {
+      state.stepError = '';
+      render();
+      return;
+    }
+    const idx = buildColumnIndex(state.rows?.[state.headerIndex] ?? []);
+    const valid = new Set(idx.values());
+    const next = blankMapping();
+    const outOfRange = [];
+    for (const field of FIELDS) {
+      const value = profile.mapping?.[field];
+      if (value == null) continue;
+      if (valid.has(value)) next[field] = value;
+      else outOfRange.push(FIELD_LABELS[field]);
+    }
+    state.mapping = next;
     state.mapped = null;
+    state.prepared = null;
+    state.forceConfirming = false;
+    // 方向列可能刚被换掉，上一次「这批金额全部算作」的回答不该被沿用（与预览页同一口径）。
+    state.defaultKind = null;
+    state.stepError = outOfRange.length
+      ? `该配置与当前文件的列不匹配，请重新指定：${outOfRange.join('、')}`
+      : '';
+    render();
+  }
+
+  function deleteCurrentProfile() {
+    const profile = (state.profiles ?? []).find(p => p.id === state.profileId);
+    if (!profile) return;
+    if (state.profileDeleteConfirming !== profile.id) {
+      state.profileDeleteConfirming = profile.id;
+      state.stepError = '';
+      render();
+      return;
+    }
+    doDeleteProfile(profile.id);
+  }
+
+  async function doDeleteProfile(id) {
+    state.profileDeleteConfirming = '';
+    state.stepError = '';
+    try {
+      await deleteProfile(id);
+    } catch (err) {
+      state.stepError = '删除格式配置失败：' + (err?.message || err);
+      console.error('删除格式配置失败', err);
+      render();
+      return;
+    }
+    // 读回一次，与保存路径同一纪律：让界面看到的就是 settings 里真实的那份列表。
+    state.profiles = null;
+    await ensureProfiles();
+    // 只清选中项，**不动** state.mapping：删掉配置不该把用户当前那套列对应关系一起清掉。
+    if (state.profileId === id) state.profileId = '';
     render();
   }
 
@@ -655,9 +824,47 @@ export function openImportSheet({ onChanged } = {}) {
       // 一条都没有可导入时按钮不可点：这时候点下去只会写进 0 条并弹一个「已导入 0 条」的浮层。
       // 方向没选定时同样不可点——那时 fresh 必然是 0（每一行都记成「未指定收支方向」），
       // 这里是显式的第二道闸：漏配方向列会让整批金额变成收入，绝不能不选就放行。
+      //
+      // 但「不可点」不等于「无路可走」：确有 M 条疑似重复时，下面还有一个次要出口
+      // 「仍然导入这 M 条」（见 forceEligible）——重复判据是保守的（同一份账单重导、
+      // 银行流水里同一天两笔同额同商户都可能命中），只给一条死路会把用户卡在这里。
       disabled: fresh.length === 0 || directionUnresolved,
       onclick: () => { confirmImport(confirmBtn); }
     });
+
+    // 出口的准入条件：没有可新增的（fresh 为空）、但确实拦下了重复、且方向已经明确
+    // （方向没明确时 fresh 为空是另一回事，得先去回答那个必选题）。
+    const forceEligible = fresh.length === 0 && duplicates.length > 0 && !directionUnresolved;
+    const forceConfirmBtn = el('button', {
+      class: 'btn btn-primary', type: 'button',
+      text: `确定导入这 ${duplicates.length} 条`,
+      dataset: { role: 'import-force-confirm' },
+      onclick: () => { forceImport(forceConfirmBtn); }
+    });
+    const forcePanel = forceEligible && state.forceConfirming
+      ? el('div', { class: 'stack', dataset: { role: 'import-force-panel' } }, [
+        el('div', {
+          class: 'vault-warn', dataset: { role: 'import-force-warn' },
+          text: '这些记录看起来和已有账目重复，强行导入会让账目数字变大——同一笔钱会被算两次，'
+            + '本月支出与统计页都跟着涨。确定要导入吗？'
+        }),
+        el('div', { class: 'form-actions' }, [
+          el('button', {
+            class: 'btn', type: 'button', text: '取消', dataset: { role: 'import-force-cancel' },
+            onclick: () => { state.forceConfirming = false; render(); }
+          }),
+          forceConfirmBtn
+        ])
+      ])
+      : null;
+    const forceBtn = forceEligible
+      ? el('button', {
+        class: 'btn', type: 'button',
+        text: state.forceConfirming ? '收起' : `仍然导入这 ${duplicates.length} 条`,
+        dataset: { role: 'import-force' },
+        onclick: () => { state.forceConfirming = !state.forceConfirming; render(); }
+      })
+      : null;
 
     const shown = fresh.slice(0, RECORD_PREVIEW);
 
@@ -719,13 +926,17 @@ export function openImportSheet({ onChanged } = {}) {
           value => { state.defaultAccountId = value || null; reprepare(); }
         )
       ]),
-      duplicates.length
-        ? el('div', {
-          class: 'vault-hint', dataset: { role: 'import-dup-note' },
-          text: '疑似重复是指时间、金额、收支方向、商户都一样的记录——同一笔钱重复导入两次、'
-            + '或者在微信和支付宝各导出一次，都会命中。宁可少导也不重复导。'
-        })
-        : null,
+      // 去重口径**无条件**印在界面上（规格第 9 节要求）：它不是「出问题了才显示的报警」，
+      // 而是一条必须让用户预先知道的口径——M = 0 的那次导入同样要能看懂「什么会被算成重复」，
+      // 否则用户只能从「跳过 M 条」这个数字反推规则。M > 0 时再追加本次跳过了几条。
+      el('div', {
+        class: 'vault-hint', dataset: { role: 'import-dup-note' },
+        text: '疑似重复是指时间、金额、收支方向、商户都一样的记录——同一笔钱重复导入两次、'
+          + '或者在微信和支付宝各导出一次，都会命中。比对精度取决于这份账单：'
+          + '只有日期没有时间的账单，同一天内同商户同金额同方向的记录都会被看成同一笔。'
+          + (duplicates.length ? `本次跳过 ${duplicates.length} 条。` : '')
+          + '宁可少导也不重复导；确实全都想要，用下面的「仍然导入」。'
+      }),
       skipped.length
         ? el('div', {
           class: 'vault-hint', dataset: { role: 'import-skipped-note' },
@@ -743,21 +954,35 @@ export function openImportSheet({ onChanged } = {}) {
       el('div', { class: 'form-actions' }, [
         el('button', {
           class: 'btn', type: 'button', text: '返回上一步', dataset: { role: 'import-back' },
-          onclick: () => { state.step = 3; state.stepError = ''; render(); }
+          onclick: () => { state.step = 3; state.forceConfirming = false; state.stepError = ''; render(); }
         }),
         confirmBtn
-      ])
+      ]),
+      // 强行导入出口：只在「一条都进不来、但确实拦下了重复」时出现。
+      forceBtn,
+      forcePanel
     ]);
   }
 
   const showCountLine = (shown, total) =>
     (total > shown ? `待导入记录（共 ${total} 条，这里只显示前 ${shown} 条）` : `待导入记录（共 ${total} 条）`);
 
+  // 预览表的金额带上方向符号。导入记录的 amountCents 一律存正数（方向由 kind 表达），
+  // 直接 formatCents 的话一列数字全是正数、收入与支出长得一模一样；方向列虽然单列了，
+  // 但扫一眼金额列就能看出收支比来回对照两列省事。formatCents 的 {symbol:true} 只在负数
+  // 前面加 '-'，所以支出要显式补一个负号、收入补一个正号。
+  function previewAmount(record) {
+    const text = formatCents(record.amountCents, { symbol: true });
+    if (record.kind === 'expense') return `-${text}`;
+    if (record.kind === 'income') return `+${text}`;
+    return text;
+  }
+
   function previewTable(shown) {
     const header = el('tr', {}, ['时间', '金额', '方向', '备注'].map(h => el('th', { text: h })));
     const rows = shown.map(r => el('tr', {}, [
       el('td', { class: 'import-cell num', text: formatTime(r.occurredAt) }),
-      el('td', { class: 'import-cell num', text: formatCents(r.amountCents) }),
+      el('td', { class: 'import-cell num', text: previewAmount(r) }),
       el('td', { class: 'import-cell', text: KIND_LABELS[r.kind] ?? r.kind }),
       el('td', { class: 'import-cell', text: r.note || '—' })
     ]));
@@ -784,28 +1009,25 @@ export function openImportSheet({ onChanged } = {}) {
     render();
   }
 
-  async function confirmImport(btn) {
+  // 整个向导里**唯一**的写入路径，两条入口（「确认导入」与「仍然导入」）都走这里，
+  // commitImport 在本模块只出现在这一个函数里——这是可以被探针直接断言的结构。
+  async function commitRecords(list, btn, { skipped = 0, forced = false } = {}) {
     if (state.committing) return;
-    const fresh = state.prepared?.fresh ?? [];
-    if (fresh.length === 0) return;
+    if (list.length === 0) return;
     state.committing = true;
     state.stepError = '';
     const original = btn.textContent;
     btn.disabled = true;
     btn.textContent = '正在写入…';
     try {
-      // 整个向导里唯一一次写入。走到这一行，用户已经在预览页看到三个数字并点过确认。
-      const ids = await commitImport(fresh);
-      state.committed = {
-        ids,
-        count: ids.length,
-        skipped: state.prepared?.duplicates?.length ?? 0
-      };
+      // 走到这一行，用户已经在预览页看到四个数字并点过确认。
+      const ids = await commitImport(list);
+      state.committed = { ids, count: ids.length, skipped, forced };
+      state.forceConfirming = false;
       state.step = 5;
       state.committing = false;
       render();
       showUndoToast({
-        count: ids.length,
         ids,
         onUndone: () => {
           state.reverted = true;
@@ -824,13 +1046,34 @@ export function openImportSheet({ onChanged } = {}) {
     }
   }
 
+  function confirmImport(btn) {
+    commitRecords(state.prepared?.fresh ?? [], btn, {
+      skipped: state.prepared?.duplicates?.length ?? 0
+    });
+  }
+
+  // 「仍然导入」：写进去的就是被判为重复的那批。它们与 fresh 走**同一份**构造逻辑
+  // （materializeImport 与 prepareImport 共用 toTransaction），所以字段完全一样、带着
+  // 新生成的 id——撤销照样能按 id 把这批删干净，不会写出删不掉的记录。
+  function forceImport(btn) {
+    const list = materializeImport(state.prepared?.duplicates ?? [], {
+      defaultCategoryId: state.defaultCategoryId,
+      defaultIncomeCategoryId: state.defaultIncomeCategoryId,
+      defaultAccountId: state.defaultAccountId
+    });
+    commitRecords(list, btn, { skipped: 0, forced: true });
+  }
+
   // ── 第 5 步 · 完成 / 撤销 ────────────────────────────────────────────────
 
   function stepDone() {
-    const c = state.committed ?? { count: 0, skipped: 0 };
+    const c = state.committed ?? { count: 0, skipped: 0, forced: false };
     const text = state.reverted
       ? `已撤销本次导入的 ${c.count} 条`
-      : `已导入 ${c.count} 条，跳过 ${c.skipped} 条重复`;
+      : (c.forced
+        // 强行导入时「跳过 0 条重复」是错的读数：这批本来就是被判重复的那些。
+        ? `已强行导入 ${c.count} 条（这些记录与已有账目重复）`
+        : `已导入 ${c.count} 条，跳过 ${c.skipped} 条重复`);
     return el('section', { class: 'card stack' }, [
       el('div', { class: 'vault-hint', dataset: { role: 'import-done' }, text }),
       state.reverted

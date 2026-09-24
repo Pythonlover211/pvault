@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PRESETS, DETECT_SCAN_LIMIT, detectPreset, buildColumnIndex, autoMapping, mapRows, FIELDS,
+  PRESETS, DETECT_SCAN_LIMIT, MIN_PRESET_COLUMN_HITS, detectPreset, detectPresetHeader,
+  buildColumnIndex, autoMapping, mapRows, FIELDS,
   UNRESOLVED_DIRECTION_REASON, TRANSFER_UNSUPPORTED_REASON, NO_DIRECTION_REASON
 } from '../app/import-schema.js';
+import { makeFingerprint } from '../app/import-parse.js';
 
 const wechatHeader = ['交易时间', '交易类型', '交易对方', '商品', '收/支', '金额(元)', '支付方式', '当前状态', '交易单号', '商户单号', '备注'];
 const wechatRows = [
@@ -244,4 +246,68 @@ test('detectPreset 只扫前 DETECT_SCAN_LIMIT 行（几十万行的文件不该
   // 在窗口内（第 50 行）仍然认得出来
   const inside = [...filler.slice(0, DETECT_SCAN_LIMIT - 1), wechatHeader];
   assert.equal(detectPreset(inside)?.id, 'wechat');
+});
+
+// ── A4 回归（评审必修）────────────────────────────────────────────────────────
+// 修复前：命中判据只要求「交易时间」+「金额」两个列名。银行导出 `交易时间,交易摘要,金额,余额`
+// 恰好满足，于是被判成 alipay、界面顶着「已识别为：支付宝账单」，而且走预设路径时第 2 步
+// 被跳过——用户连自己指认表头的机会都没有。
+
+test('detectPreset 不再把银行式表头认成支付宝（要求 ≥3 个专有列命中）', () => {
+  const bankRows = [
+    ['交易时间', '交易摘要', '金额', '余额'],
+    ['2026-08-01 10:00:00', '消费', '30.00', '1000.00']
+  ];
+  assert.equal(detectPreset(bankRows), null);
+  // 命中数的边界：只有 2 个专有列名对上就不算命中
+  assert.equal(MIN_PRESET_COLUMN_HITS, 3);
+  const twoHits = [['交易时间', '金额', '余额']];
+  assert.equal(detectPreset(twoHits), null);
+  // 3 个对上就算命中（真实账单偶尔缺一两列）
+  const threeHits = [['交易时间', '收/支', '金额', '余额']];
+  assert.equal(detectPreset(threeHits)?.id, 'alipay');
+});
+
+test('detectPreset：支付宝表头不会被抢判成微信（金额列名是区分依据）', () => {
+  // 两个预设共用「交易时间」「交易对方」「收/支」三列，只有金额列名不同
+  // （「金额(元)」vs「金额」）。若判据只看命中数，支付宝会以 5 个命中命中微信的 3 个，
+  // 而 PRESETS 里微信在前 → 整批支付宝账单被判成微信支付账单。
+  const alipayWithoutNote = [['交易时间', '交易对方', '收/支', '金额', '余额']];
+  assert.equal(detectPreset(alipayWithoutNote)?.id, 'alipay');
+  assert.equal(detectPreset(alipayRows)?.id, 'alipay');
+  assert.equal(detectPreset(wechatRows)?.id, 'wechat');
+});
+
+test('detectPresetHeader 把命中行号一起给出来（界面靠它进第 3 步）', () => {
+  const hit = detectPresetHeader(wechatRows);
+  assert.equal(hit.preset.id, 'wechat');
+  assert.equal(hit.headerIndex, 3);
+});
+
+// ── A1 回归（评审必修）：去重指纹两侧口径必须相同 ──────────────────────────────
+// 修复前：写入侧用「商户」列原文当指纹分量，读库侧用 note 第一个 ' · ' 之前那段反解。
+// 三个真实输入下两者不等价 → 同一份账单第二次导入 fresh 不为空、库里金额翻倍。
+
+test('mapRows 的指纹 = 从 note 反解出来的指纹（二次导入才认得出重复）', () => {
+  const header = ['交易时间', '交易对方', '商品', '收/支', '金额(元)'];
+  const dataRows = [
+    ['2026-03-15 12:30:45', '', '矿泉水', '支出', '¥3.00'],          // 交易对方为空、商品有值
+    ['2026-03-16 09:00:00', '', '备注', '支出', '¥8.00'],             // 商户不映射、只留备注
+    ['2026-03-17 10:00:00', '喜茶 · 深圳店', '奶茶', '支出', '¥18.00'] // 商户名自带 ' · '
+  ];
+  const mapping = { time: 0, merchant: 1, note: 2, direction: 3, amount: 4 };
+  const { records, errors } = mapRows([header, ...dataRows], 0, mapping);
+  assert.equal(errors.length, 0);
+  assert.equal(records.length, 3);
+  assert.deepEqual(records.map(r => r.note), ['矿泉水', '备注', '喜茶 · 深圳店 · 奶茶']);
+
+  for (const r of records) {
+    // 库里的那条交易**只有 note**：这是读库侧唯一能拿到的信息，两侧必须算出同一个指纹
+    assert.equal(
+      r.fingerprint,
+      makeFingerprint({ occurredAt: r.occurredAt, amountCents: r.amountCents, kind: r.kind, note: r.note })
+    );
+  }
+  // 三条互不相同：口径统一不会把不同记录挤成同一条
+  assert.equal(new Set(records.map(r => r.fingerprint)).size, 3);
 });

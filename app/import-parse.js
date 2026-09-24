@@ -39,9 +39,26 @@ export function parseDirection(input) {
   return null;
 }
 
+// note 的拼接分隔符，与 import-schema.js 的 mapRows（写入侧）必须是同一个字面量。
+export const NOTE_SEPARATOR = ' · ';
+
+// 从 note 反解商户：导入时 note 由 [merchant, note].filter(Boolean).join(' · ') 拼成
+// （见 import-schema.js 的 mapRows），而交易表里**没有**单独的 merchant 字段，
+// 所以读库比对时只能按同一个分隔符取回第一段。
+export function merchantFromNote(note) {
+  const s = String(note ?? '');
+  const at = s.indexOf(NOTE_SEPARATOR);
+  return (at === -1 ? s : s.slice(0, at)).trim();
+}
+
 // 指纹 = 时间 + 金额 + 收支方向 + 商户。方向必须参与：真实账单里「转账」双向往来、
 // 或「消费 + 即时退款」会在同一秒出现同金额同商户的一收一支，少了 kind 两条会被
 // 认成同一笔，去重时静默丢掉其中一条。
-export function makeFingerprint({ occurredAt, amountCents, merchant, kind }) {
-  return `${occurredAt}|${amountCents}|${String(kind ?? '')}|${String(merchant ?? '').trim()}`;
+//
+// 第四个分量**必须**从 note 派生，而不是接收调用方给的「商户原文」：库里的交易只有 note，
+// 写入侧若用商户原文、读库侧用 note 反解，两侧口径就不等价——商户列为空而商品列有值
+// （note 里没有分隔符）、商户名自带 ' · '（如「喜茶 · 深圳店」）这两种真实数据都会让
+// 同一笔账算出两个指纹，同一份账单二次导入会静默翻倍。两边都走 merchantFromNote 才不会分叉。
+export function makeFingerprint({ occurredAt, amountCents, kind, note }) {
+  return `${occurredAt}|${amountCents}|${String(kind ?? '')}|${merchantFromNote(note)}`;
 }

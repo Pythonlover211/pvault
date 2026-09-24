@@ -1,5 +1,18 @@
 # pvault 账单导入 实现计划（计划 3）
 
+> **本计划正文不是实现前基线。** 实现过程中它被**回填过**：下面代码块里贴着的是**当时的原文**，
+> 而实际交付的代码在这几处与它不同，事后也没有逐字改写这些代码块——
+> - `makeFingerprint` 的第四个参数：原文是 `merchant`（商户原文），实际交付是 `note`
+>   （由 `merchantFromNote` 反解，两侧口径才能对称，见第二轮评审 A1）
+> - `mapRows` 的方向列：原文有「按金额正负猜方向」与「静默跳过」两个分支，
+>   实际交付是**不猜**（记 `UNRESOLVED_DIRECTION_REASON`）与**越界报错**
+> - 预设命中判据：原文只要求「交易时间 + 金额」两列，实际交付要求
+>   「时间列与金额列都命中 + 专有列 ≥3」（见第二轮评审 A4）
+> - 预览页的「仍然导入」出口、格式配置的删除入口、累积撤销浮层都是实现之后补的
+>
+> 任务清单（25 处）已按已完成的提交勾上；**每一项的准确行为以代码与
+> `docs/手动验证清单.md` 为准**，不要拿这里的代码块当规格。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 把微信 / 支付宝导出的账单，以及任意来源的 CSV，批量导入成 pvault 的账目记录——带**预设解析器**、**手动列映射**、**去重**与**导入前预览**。
@@ -50,7 +63,7 @@
 
 **文件**：创建 `app/csv.js`、`tests/csv.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -112,11 +125,11 @@ test('decodeBytes：UTF-8 BOM 也认', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`node --test --test-isolation=none tests/csv.test.js` → `Cannot find module '../app/csv.js'`
 
-- [ ] **步骤 3：实现 `app/csv.js`**
+- [x] **步骤 3：实现 `app/csv.js`**
 
 ```js
 export function stripBom(text) {
@@ -181,9 +194,9 @@ export function decodeBytes(bytes) {
 > `node -e "console.log(new TextDecoder('gbk').decode(new Uint8Array([0xD6,0xD0,0xCE,0xC4])))"`
 > 输出 `中文` 就说明可用；若不可用，**停下来报告**（这会让微信/支付宝账单的导入在 Node 测不了，但浏览器里仍可用——需要重新商量测试策略）。
 
-- [ ] **步骤 4：运行测试验证通过** → 12 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 12 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/csv.js tests/csv.test.js
@@ -196,7 +209,7 @@ git commit -m "feat: CSV 解析与编码识别（UTF-8 优先、GBK 回退）"
 
 **文件**：创建 `app/import-parse.js`、`tests/import-parse.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -285,9 +298,9 @@ test('makeFingerprint 把收支方向纳入指纹', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
-- [ ] **步骤 3：实现 `app/import-parse.js`**
+- [x] **步骤 3：实现 `app/import-parse.js`**
 
 ```js
 export function parseImportAmount(input) {
@@ -339,9 +352,9 @@ export function makeFingerprint({ occurredAt, amountCents, merchant, kind }) {
 }
 ```
 
-- [ ] **步骤 4：运行测试验证通过** → 8 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 8 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/import-parse.js tests/import-parse.test.js
@@ -354,7 +367,7 @@ git commit -m "feat: 导入字段解析（金额、日期时间、收支方向�
 
 **文件**：创建 `app/import-schema.js`、`tests/import-schema.test.js`
 
-- [ ] **步骤 1：编写失败的测试**
+- [x] **步骤 1：编写失败的测试**
 
 ```js
 import { test } from 'node:test';
@@ -520,9 +533,9 @@ test('mapRows 不传 direction 列时按金额正负判断', () => {
 });
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
-- [ ] **步骤 3：实现 `app/import-schema.js`**
+- [x] **步骤 3：实现 `app/import-schema.js`**
 
 ```js
 import { parseImportAmount, parseImportDateTime, parseDirection, makeFingerprint } from './import-parse.js';
@@ -622,9 +635,9 @@ export function mapRows(rows, headerIndex, mapping) {
 }
 ```
 
-- [ ] **步骤 4：运行测试验证通过** → 12 个用例全过
+- [x] **步骤 4：运行测试验证通过** → 12 个用例全过
 
-- [ ] **步骤 5：Commit**
+- [x] **步骤 5：Commit**
 
 ```bash
 git add app/import-schema.js tests/import-schema.test.js
@@ -639,13 +652,13 @@ git commit -m "feat: 账单预设（微信/支付宝）与通用列映射"
 
 > 依赖 IndexedDB，不写单测，靠探针 + 手动清单。
 
-- [ ] **步骤 1：`app/schema.js` 的 `seedSettings()` 增加一项**
+- [x] **步骤 1：`app/schema.js` 的 `seedSettings()` 增加一项**
 
 ```js
     { key: 'importProfiles', value: [] },
 ```
 
-- [ ] **步骤 2：实现 `app/import-store.js`**
+- [x] **步骤 2：实现 `app/import-store.js`**
 
 | 函数 | 行为 |
 |---|---|
@@ -656,9 +669,9 @@ git commit -m "feat: 账单预设（微信/支付宝）与通用列映射"
 | `listProfiles()` / `saveProfile(profile)` | 读写 `settings.importProfiles`（形如 `[{ id, name, mapping }]`） |
 | `deleteProfile(id)` | — |
 
-**去重口径要写清楚**（并在手动清单里列为待确认项）：指纹 = **时间 + 金额 + 收支方向 + 商户**（`occurredAt|amountCents|kind|merchant`）。同一笔在微信和支付宝里各导出一次、或同一文件导入两次，都会被认成重复。方向参与指纹，所以同一秒同金额同商户的一收一支（转账双向往来、消费 + 即时退款）不会被误判；**但同一秒同一个商户同样金额同一个方向的两笔真实消费仍会被误判成重复**——这是取舍，宁可少导也不要重复导。向导里要**显示**「N 条疑似重复已跳过」，让用户能看到。
+**去重口径要写清楚**（并在手动清单里列为待确认项）：指纹 = **时间 + 金额 + 收支方向 + 商户**（`occurredAt|amountCents|kind|商户`，其中商户分量由 `merchantFromNote(note)` 从 note 反解——原文这里写的是直接传 `merchant`，见顶部说明）。同一笔在微信和支付宝里各导出一次、或同一文件导入两次，都会被认成重复。方向参与指纹，所以同一秒同金额同商户的一收一支（转账双向往来、消费 + 即时退款）不会被误判；**但碰撞窗口不是「同一秒」，而是「解析精度内」**：只有日期没有时间的账单（`2024-03-15`）解析成当天 `00:00:00.000`，同一天内同商户同金额同方向的记录**全部互为重复**（同一天两次买咖啡会被跳掉一笔）——这是取舍，宁可少导也不要重复导。向导里要**无条件**印出口径说明，M > 0 时追加「本次跳过 M 条」，并且一条都导不进来（M > 0、新增 0）时必须给出「**仍然导入这 M 条**」的出口（二次确认），让用户有得选而不是只有一条死路。
 
-- [ ] **步骤 3：探针验证**
+- [x] **步骤 3：探针验证**
 
 - 导入 5 条 → 库里 5 条、`source === 'import'`
 - **再导入同一文件** → `fresh` 为空、5 条全被认成重复、库里仍是 5 条
@@ -666,7 +679,7 @@ git commit -m "feat: 账单预设（微信/支付宝）与通用列映射"
 - profile 存取往返
 - 中途失败（人为让某条 key 非法）→ 一条都不落库（`putAll` 的单事务保证）
 
-- [ ] **步骤 4：Commit**
+- [x] **步骤 4：Commit**
 
 ```bash
 git add app/import-store.js app/schema.js app/db.js
@@ -716,12 +729,12 @@ git commit -m "feat: 账单导入仓库层（去重、单事务写入、可撤�
 
 ## 任务 6：入口接线与收尾
 
-- [ ] `app/ui/settings-sheet.js` 加第五行「账单导入」→ `openImportSheet(...)`
-- [ ] `sw.js`：`ASSETS` 加 `csv.js` / `import-parse.js` / `import-schema.js` / `import-store.js` / `ui/import-view.js`（**逐个核对路径真实存在**），`CACHE` 版本号 +1
-- [ ] `docs/手动验证清单.md` 追加「账单导入」小节（含：只支持 CSV 的说明、去重口径的取舍、撤销窗口）
-- [ ] `docs/superpowers/specs/2026-09-23-pvault-design.md` 第 9 节标记为已实现，并把「去重指纹 = 时间+金额+商户」与「导入记录 source='import'」写进去
-- [ ] 全量测试全绿 + dev-server 逐条核对 ASSETS 返回 200
-- [ ] Commit：`feat: 账单导入入口接线与交付收尾`
+- [x] `app/ui/settings-sheet.js` 加第五行「账单导入」→ `openImportSheet(...)`
+- [x] `sw.js`：`ASSETS` 加 `csv.js` / `import-parse.js` / `import-schema.js` / `import-store.js` / `ui/import-view.js`（**逐个核对路径真实存在**），`CACHE` 版本号 +1
+- [x] `docs/手动验证清单.md` 追加「账单导入」小节（含：只支持 CSV 的说明、去重口径的取舍、撤销窗口）
+- [x] `docs/superpowers/specs/2026-09-23-pvault-design.md` 第 9 节标记为已实现，并把「去重指纹 = 时间+金额+商户」与「导入记录 source='import'」写进去
+- [x] 全量测试全绿 + dev-server 逐条核对 ASSETS 返回 200
+- [x] Commit：`feat: 账单导入入口接线与交付收尾`
 
 ---
 
