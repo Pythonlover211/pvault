@@ -128,10 +128,19 @@ export function openBackupSheet({ onChanged } = {}) {
       // 系统存储权限有问题，这些都不会抛错。所以我们照旧记下这次导出（用户确实点过导出，
       // 该事实要落盘），但必须紧跟一句「请自己去确认文件在不在」——否则面板上写着
       // 「上次备份：今天」，用户以为有备份，真到要恢复那天才发现什么都没有。
-      mount(exportNoteArea, el('div', {
-        class: 'vault-warn', dataset: { role: 'export-note' },
-        text: '导出后请到「下载」目录确认文件真的在——浏览器或系统拦截下载时这里不会有任何提示。'
-      }));
+      mount(exportNoteArea, [
+        el('div', {
+          class: 'vault-warn', dataset: { role: 'export-note' },
+          text: '导出后请到「下载」目录确认文件真的在——浏览器或系统拦截下载时这里不会有任何提示。'
+        }),
+        // 面板底部的说明只讲了「打开文件看不到明文」，那句话容易读成「所以我很安全」，
+        // 于是有人把密码写在文件名里、或和文件存在同一个文件夹里。把它补全：文件安全，
+        // **配对**存放不安全——备份密码是这台设备之外唯一的入口，它也怕被一起拿走。
+        el('div', {
+          class: 'vault-warn', dataset: { role: 'export-pw-note' },
+          text: '这个文件本身是安全的（打开只有密文），但请把密码记在别处——密码和文件放在一起，等于没加密。'
+        })
+      ]);
       await refreshStatus();
       // 密码用完就清空：这两个输入框没有任何留在内存里的理由。
       pw = '';
@@ -181,8 +190,16 @@ export function openBackupSheet({ onChanged } = {}) {
   const exportNoteArea = el('div', { class: 'stack', dataset: { role: 'export-note-area' } });
 
   const exportSection = el('section', { class: 'card stack' }, [
-    el('div', { class: 'vault-hint', text: '这个密码只用于打开备份文件，可以和主密码不同。忘了它，备份文件同样打不开。' }),
+    el('div', { class: 'vault-hint', text: '这个密码只用于打开备份文件，可以和主密码不同。' }),
     el('div', { class: 'field' }, [el('label', { text: '备份密码（至少 8 位）' }), pwInput]),
+    // 「忘了它，备份文件同样打不开」原本混在上面那句说明里、同样是小字灰色——而它描述的
+    // 是一件**不可逆**的事：备份文件是这台设备之外唯一的数据副本，密码忘了就是永久打不开。
+    // 所以把它从说明段里提出来，独立成块放在**第一个密码输入框正下方**：手指正在打字的位置，
+    // 视线必然经过，且用警示色（.vault-warn）而不是普通说明色。
+    el('div', {
+      class: 'vault-warn', dataset: { role: 'backup-pw-warn' },
+      text: '忘了这个密码，备份文件同样打不开——没有任何找回方式。请现在就把它记在别处。'
+    }),
     el('div', { class: 'field' }, [el('label', { text: '再输一次' }), pw2Input]),
     exportBtn,
     exportNoteArea
