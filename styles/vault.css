@@ -103,3 +103,27 @@
 
 /* —— 修改主密码（app/ui/vault-view.js）—— */
 .vault-pwchange { display: flex; flex-direction: column; gap: 10px; }
+
+/* —— 账单导入（app/ui/import-view.js）—— */
+/* 步骤里的两张表（认表头 / 待导入记录）。列宽交给 auto 布局：时间列不能被截断，
+   备注列必须能换行——固定 table-layout 会在 360px 宽的手机上把这两个需求同时弄坏。
+   .import-cell 的 anywhere 是给「商户 · 备注」这种没有空格的超长串准备的。 */
+.import-table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); }
+.import-table th, .import-table td {
+  padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border);
+  text-align: left; vertical-align: top;
+}
+.import-table th { color: var(--text-2); font-weight: 600; }
+.import-cell { overflow-wrap: anywhere; }
+
+/* 预览页最上面那行「将导入 N 条；跳过 M 条疑似重复；K 条无法解析」：整个向导里
+   用户唯一需要真正读懂的一句话，给字号和行高，别让它沉进小字里。 */
+.import-summary { font-size: var(--font-md); font-weight: 600; line-height: 1.6; }
+
+/* 撤销浮层（.toast 主体样式在 ledger.css）。默认是一行「已导入 N 条 / 撤销」，
+   点撤销之后换成二次确认的竖向布局——确认文案有一整句话，横排放不下。 */
+.import-toast-slot { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.toast.import-confirming { align-items: stretch; }
+.toast.import-confirming .import-toast-slot { flex-direction: column; align-items: stretch; gap: 8px; }
+.import-toast-text { line-height: 1.5; }
+.import-toast-actions { display: flex; justify-content: flex-end; gap: 18px; }
