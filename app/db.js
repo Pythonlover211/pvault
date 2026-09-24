@@ -68,26 +68,36 @@ export async function put(store, value) {
   return value;
 }
 
-// 批量写入：一个事务里可以访问多个仓库，让「交易 + 派生应收」这类跨仓库的写入
-// 要么全成、要么全不成。entries 形如 [{ store, value }]。
-export async function putAll(entries) {
-  const db = await open();
-  const names = [...new Set(entries.map(e => e.store))];
-  const tx = db.transaction(names, 'readwrite');
+// 在事务里入队操作，并保证「同步抛出的错误」不会留下半截提交。
+// 为什么必须这么写：事务只对**异步**失败有效。objectStore.put() / .delete() / .clear()
+// **同步**抛出的 DataError（value 不是对象、取不出 keyPath、key 类型不合法）不会自动中止
+// 事务，先前入队的操作会照常提交——调用方以为「整批要么全成、要么全不成」，实际拿到的是
+// 半截数据（putAll 写交易、replaceAll 清库重写、removeAll 撤销导入都吃这一口）。
+// 所以同步抛错时显式 abort() 整批回滚，再把原始错误原样抛给调用方。
+// abort 自己也可能抛（事务已经不在活动态时抛 InvalidStateError）：那种情况下原始错误
+// 信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
+function enqueue(tx, fill) {
   try {
-    for (const e of entries) tx.objectStore(e.store).put(e.value);
+    fill();
   } catch (err) {
-    // 与 replaceAll 同一个洞，同样的处置：objectStore.put() **同步**抛出的 DataError
-    // （value 不是对象、取不出 keyPath、key 类型不合法）不会自动中止事务，先前入队的
-    // put() 会照常提交，调用方以为「整批要么全成、要么全不成」，实际拿到的是半截数据
-    // （导入正是这么用的：交易与派生应收在一个事务里写）。显式 abort() 把整批回滚掉。
-    // abort 自己也可能抛（事务已经不在活动态时抛 InvalidStateError）：那种情况下
-    // 原始错误信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
     try {
       tx.abort();
     } catch { /* 事务已经结束：没什么可回滚的 */ }
     throw err;
   }
+}
+
+// 批量写入：一个事务里可以访问多个仓库，让「交易 + 派生应收」这类跨仓库的写入
+// 要么全成、要么全不成。entries 形如 [{ store, value }]。
+// 注意：db.transaction([]) 抛的是 InvalidAccessError，**不是** no-op。所以「空数组不要
+// 调 putAll / removeAll」是隐式调用方契约——commitImport 与 undoImport 都各自挡住了空数组。
+export async function putAll(entries) {
+  const db = await open();
+  const names = [...new Set(entries.map(e => e.store))];
+  const tx = db.transaction(names, 'readwrite');
+  enqueue(tx, () => {
+    for (const e of entries) tx.objectStore(e.store).put(e.value);
+  });
   await txDone(tx);
 }
 
@@ -97,21 +107,10 @@ export async function replaceAll({ clears = [], puts = [] }) {
   const db = await open();
   const names = [...new Set([...clears, ...puts.map(e => e.store)])];
   const tx = db.transaction(names, 'readwrite');
-  try {
+  enqueue(tx, () => {
     for (const name of clears) tx.objectStore(name).clear();
     for (const e of puts) tx.objectStore(e.store).put(e.value);
-  } catch (err) {
-    // 事务只对**异步**失败有效：objectStore.put() 同步抛出的 DataError（value 不是对象、
-    // 取不出 keyPath / key 类型不合法）不会自动中止事务，先前入队的 clear() 与部分 put()
-    // 会照常提交，正好留下「旧数据已清、新数据不全」的空库——这是本函数唯一要避免的情形。
-    // 所以这里必须显式 abort() 把整个事务回滚掉，再把错误原样抛给调用方。
-    // abort 自己也可能抛（事务已经不在活动态时会抛 InvalidStateError）：那种情况下
-    // 原始错误信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
-    try {
-      tx.abort();
-    } catch { /* 事务已经结束：没什么可回滚的 */ }
-    throw err;
-  }
+  });
   await txDone(tx);
 }
 
@@ -153,10 +152,15 @@ export async function remove(store, key) {
 }
 
 // 批量删除：与 putAll 对称，同样在一个事务里跨仓库删除。entries 形如 [{ store, key }]。
+// 这里的 try/abort 不是照抄：store.delete() 同步抛 DataError（key 类型不合法）时事务不会
+// 自动中止，前面已入队的 delete 照常提交，于是「撤销一次导入」变成半截删除——用户看到的
+// 是记录还在，而浮层已经说了撤销成功。走 enqueue 与 putAll / replaceAll 保持同一处置。
 export async function removeAll(entries) {
   const db = await open();
   const names = [...new Set(entries.map(e => e.store))];
   const tx = db.transaction(names, 'readwrite');
-  for (const e of entries) tx.objectStore(e.store).delete(e.key);
+  enqueue(tx, () => {
+    for (const e of entries) tx.objectStore(e.store).delete(e.key);
+  });
   await txDone(tx);
 }
