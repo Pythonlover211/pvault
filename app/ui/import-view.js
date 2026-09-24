@@ -16,8 +16,11 @@
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import * as store from '../store.js';
-import { decodeBytes, parseCsv } from '../csv.js';
-import { FIELDS, detectPreset, buildColumnIndex, autoMapping, mapRows } from '../import-schema.js';
+import { decodeBytes, parseCsv, UNCLOSED_QUOTE_CODE, UTF16_CODE } from '../csv.js';
+import {
+  FIELDS, DETECT_SCAN_LIMIT, detectPreset, buildColumnIndex, autoMapping, mapRows,
+  UNRESOLVED_DIRECTION_REASON
+} from '../import-schema.js';
 import { prepareImport, commitImport, undoImport, listProfiles, saveProfile } from '../import-store.js';
 import { formatCents } from '../money.js';
 
@@ -28,6 +31,11 @@ const REQUIRED_FIELDS = new Set(['time', 'amount']);
 const HEAD_ROW_PREVIEW = 5;    // 让用户指认表头时，最多看前 5 行
 const RECORD_PREVIEW = 20;     // 待导入记录的预览条数（只影响渲染，不影响写入）
 const ERROR_PREVIEW = 5;       // 解析失败明细的显示条数
+
+// 20MB 上限：手机上一次读进内存在这个量级还稳，再大就开始出事。实测 26MB / 30 万行的纯解析
+// 时间是 ≈2.5 秒（parseCsv 1.2s + detectPreset 0.5s + mapRows 0.7s），期间界面完全无响应；
+// 2GB 的文件会直接把标签页 OOM 掉（白屏，什么都没了）。所以超限就在这里拒绝，根本不读文件。
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 // 撤销窗口。5 分钟是「刚导完发现选错了分类/账户」这类后悔的合理时长：
 // 再长用户已经去干别的了，浮层会一直赖在屏幕上（它盖在首页底部）。
@@ -52,12 +60,30 @@ function formatTime(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// 让出一帧再干重活：解析 30 万行要 2 秒多，不让出这一帧的话「正在读取…」根本没机会画出来，
+// 用户面对的是一段完全无反馈的卡顿。
+function nextFrame() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 0);
+  });
+}
+
+// 两类「文件本身有问题」的错误要给出可执行的处置办法。剩下的才是意外，照实说。
+function fileErrorMessage(err) {
+  if (err?.code === UTF16_CODE) return err.message;
+  if (err?.code === UNCLOSED_QUOTE_CODE) return '文件里有未闭合的引号，请用 Excel 重新另存为 CSV。';
+  return '读取文件失败：' + (err?.message || err);
+}
+
 // detectPreset 只回答「这份文件像哪种账单」，不告诉你是哪一行命中的，而后面
 // buildColumnIndex / mapRows 都要那一行。判据与 import-schema.js 里的 headerMatches 完全一致
 // （时间列与金额列都在），故意重复这两行而不是去改动已交付的模块签名。
 function presetHeaderIndex(rows, preset) {
   const { time, amount } = preset.columns;
-  for (let i = 0; i < rows.length; i++) {
+  // 与 detectPreset 同一个扫描窗口：命中既然在前 50 行内，就没理由为了「更完整」再扫几十万行。
+  const limit = Math.min(rows.length, DETECT_SCAN_LIMIT);
+  for (let i = 0; i < limit; i++) {
     const idx = buildColumnIndex(rows[i]);
     if (idx.has(time) && idx.has(amount)) return i;
   }
@@ -173,13 +199,18 @@ export function openImportSheet({ onChanged } = {}) {
     preset: null,
     headerIndex: null,
     mapping: blankMapping(),
-    mapped: null,        // { records, errors }：mapRows 的缓存，配置变一次才重算一次
+    // 「这批金额全部算作支出/收入」：只在收支方向列没被映射时才用得上。
+    // 故意不预选——见 import-schema.js 的 mapRows。
+    defaultKind: null,
+    mapped: null,        // { records, errors, skipped }：mapRows 的缓存，配置变一次才重算一次
     prepared: null,      // { fresh, duplicates }
     loading: false,
+    reading: false,
     committing: false,
     committed: null,     // { ids, count, skipped }
     reverted: false,
-    categories: null,
+    expenseCategories: null,
+    incomeCategories: null,
     accounts: null,
     profiles: null,
     profileId: '',
@@ -210,12 +241,20 @@ export function openImportSheet({ onChanged } = {}) {
   }
 
   async function ensureOptions() {
-    if (!state.categories) {
+    if (!state.expenseCategories) {
       try {
-        state.categories = await store.listCategories('expense');
+        state.expenseCategories = await store.listCategories('expense');
       } catch (err) {
         console.error('读取支出分类失败', err);
-        state.categories = [];
+        state.expenseCategories = [];
+      }
+    }
+    if (!state.incomeCategories) {
+      try {
+        state.incomeCategories = await store.listCategories('income');
+      } catch (err) {
+        console.error('读取收入分类失败', err);
+        state.incomeCategories = [];
       }
     }
     if (!state.accounts) {
@@ -228,7 +267,9 @@ export function openImportSheet({ onChanged } = {}) {
     }
     // 默认分类/账户取第一个：绝大多数导入都是「一律算作餐饮、一律走微信」，
     // 先给一个能直接用的值，比让用户先面对一个空下拉强。
-    if (state.defaultCategoryId == null) state.defaultCategoryId = state.categories[0]?.id ?? null;
+    // 支出与收入各一份：收入记录套用支出分类会让首页工资显示成「🍜 餐饮 +12000」。
+    if (state.defaultCategoryId == null) state.defaultCategoryId = state.expenseCategories[0]?.id ?? null;
+    if (state.defaultIncomeCategoryId == null) state.defaultIncomeCategoryId = state.incomeCategories[0]?.id ?? null;
     if (state.defaultAccountId == null) state.defaultAccountId = state.accounts[0]?.id ?? null;
   }
 
@@ -275,9 +316,13 @@ export function openImportSheet({ onChanged } = {}) {
       }),
       el('div', { class: 'vault-hint', text: '文件只在这台设备的浏览器里解析，不会上传到任何地方。' }),
       fileInput,
+      state.reading
+        ? el('div', { class: 'vault-hint', dataset: { role: 'import-reading' }, text: '正在读取并解析文件…' })
+        : null,
       el('button', {
         class: 'btn btn-primary', type: 'button', text: '选择账单文件',
         dataset: { role: 'import-file' },
+        disabled: state.reading,
         // .click() 必须从用户手势里发起：iOS Safari 与部分安卓浏览器会吞掉
         // 「非手势上下文打开的文件选择器」——点了没反应，且没有任何报错。
         onclick: () => { fileInput.click(); }
@@ -291,23 +336,39 @@ export function openImportSheet({ onChanged } = {}) {
     state.preset = null;
     state.headerIndex = null;
     state.mapping = blankMapping();
+    state.defaultKind = null;
     state.mapped = null;
     state.prepared = null;
   }
 
   async function pickFile(file) {
     state.stepError = '';
+    // 先看大小，再谈读文件：arrayBuffer() 面对 2GB 的文件会直接把标签页 OOM 掉（白屏），
+    // 而 26MB / 30 万行也要 2 秒多。这个上限必须在读之前挡住，读完了拦就晚了。
+    if (Number(file?.size) > MAX_FILE_BYTES) {
+      state.stepError = '文件超过 20MB，请先按月拆分后再导入';
+      render();
+      return;
+    }
+    // 先画出「正在读取…」再让出一帧，然后才开始解析：解析是同步的，不让出这一帧的话
+    // 这句话要等解析结束才可能被画出来，用户看到的只有卡顿。
+    state.reading = true;
+    render();
+    await nextFrame();
     let rows;
     try {
       const buf = await file.arrayBuffer();
       // 微信导出的账单是 GBK，支付宝是 UTF-8：decodeBytes 先按 UTF-8 严格解码，
-      // 失败再回落 GBK——所以这里的解码顺序不能换。
+      // 失败再回落 GBK——所以这里的解码顺序不能换。（UTF-16 的文件会在这一步被拦下并给出
+      // 「另存为 CSV UTF-8」的指引，而不是回落 GBK 解出一串乱码。）
       rows = parseCsv(decodeBytes(new Uint8Array(buf)));
     } catch (err) {
-      state.stepError = '读取文件失败：' + (err?.message || err);
+      state.reading = false;
+      state.stepError = fileErrorMessage(err);
       render();
       return;
     }
+    state.reading = false;
     if (!rows || rows.length === 0) {
       // 空文件：留在第 1 步。往后走只会得到一个「0 条记录」的预览页，白让用户点两次。
       state.stepError = '这个文件里没有读到任何行';
@@ -361,6 +422,7 @@ export function openImportSheet({ onChanged } = {}) {
             state.headerIndex = i;
             // 表头换了，旧的列对应关系与解析结果一律作废。
             state.mapping = blankMapping();
+            state.defaultKind = null;
             state.mapped = null;
           }
           // 只切这一个按钮的禁用态，不整页重渲染：重建 radio 会让刚点的那一行跳回未选中。
@@ -420,6 +482,9 @@ export function openImportSheet({ onChanged } = {}) {
           state.mapping[field] = value === '' ? null : Number(value);
           // 列映射变了，之前那次 mapRows 的结果作废：下次进预览步必须重算。
           state.mapped = null;
+          // 「这批金额全部算作支出/收入」也跟着作废：方向列一旦改了，用户上一次的那句
+          // 回答就不该被悄悄沿用到新配置上（预选本身就违反「不预选」）。
+          state.defaultKind = null;
           nextBtn.disabled = !FIELDS.every(f => !REQUIRED_FIELDS.has(f) || state.mapping[f] != null);
         }
       );
@@ -526,10 +591,21 @@ export function openImportSheet({ onChanged } = {}) {
     await ensureOptions();
     // mapRows 只在「配置刚变过」时跑：state.mapped 非空说明这一套表头 + 列映射已经解析过了。
     if (!state.mapped) {
-      state.mapped = mapRows(state.rows, state.headerIndex, state.mapping);
+      state.mapped = mapRows(state.rows, state.headerIndex, state.mapping, { defaultKind: state.defaultKind });
     }
     await refreshPrepared();
     state.loading = false;
+    render();
+  }
+
+  // 用户在预览页回答了「这批金额全部算作支出还是收入」。kind 既决定落库时用哪个默认分类，
+  // 也参与去重指纹，所以整份文件必须重跑一遍 mapRows。
+  async function reselectDefaultKind(value) {
+    state.defaultKind = value || null;
+    if (state.rows) {
+      state.mapped = mapRows(state.rows, state.headerIndex, state.mapping, { defaultKind: state.defaultKind });
+    }
+    await refreshPrepared();
     render();
   }
 
@@ -540,6 +616,7 @@ export function openImportSheet({ onChanged } = {}) {
     try {
       state.prepared = await prepareImport(state.mapped.records, {
         defaultCategoryId: state.defaultCategoryId,
+        defaultIncomeCategoryId: state.defaultIncomeCategoryId,
         defaultAccountId: state.defaultAccountId
       });
     } catch (err) {
@@ -559,16 +636,26 @@ export function openImportSheet({ onChanged } = {}) {
     const fresh = state.prepared?.fresh ?? [];
     const duplicates = state.prepared?.duplicates ?? [];
     const errors = state.mapped?.errors ?? [];
-    // 这三个数字是这一页的主角：导入是**一次性**的写操作，用户在点确认之前必须知道
-    // 有多少条会进来、有多少条被当成重复丢掉、有多少条根本读不懂。
-    const summary = `将导入 ${fresh.length} 条；跳过 ${duplicates.length} 条疑似重复；${errors.length} 条无法解析`;
+    const skipped = state.mapped?.skipped ?? [];
+    // 「未指定收支方向」不是文件读不懂，而是这一步的选择题还没做：把它从红字明细里分出去，
+    // 否则用户在没选方向时会看到满屏「无法解析」，以为文件坏了。
+    const parseErrors = errors.filter(e => e.reason !== UNRESOLVED_DIRECTION_REASON);
+    const needsDirection = state.mapping.direction == null;
+    const directionUnresolved = needsDirection && state.defaultKind == null;
+    // 这四个数字是这一页的主角：导入是**一次性**的写操作，用户在点确认之前必须知道
+    // 有多少条会进来、有多少条被当成重复丢掉、有多少条根本读不懂，以及有多少条是
+    // 「不计收支」被跳过的——第四个数字少了，那 50 条就凭空消失，界面一个字都不交代。
+    const summary = `将导入 ${fresh.length} 条；跳过 ${duplicates.length} 条疑似重复；`
+      + `${parseErrors.length} 条无法解析；${skipped.length} 条不计收支，已跳过`;
 
     const confirmBtn = el('button', {
       class: 'btn btn-primary', type: 'button',
       text: `确认导入 ${fresh.length} 条`,
       dataset: { role: 'import-confirm' },
       // 一条都没有可导入时按钮不可点：这时候点下去只会写进 0 条并弹一个「已导入 0 条」的浮层。
-      disabled: fresh.length === 0,
+      // 方向没选定时同样不可点——那时 fresh 必然是 0（每一行都记成「未指定收支方向」），
+      // 这里是显式的第二道闸：漏配方向列会让整批金额变成收入，绝不能不选就放行。
+      disabled: fresh.length === 0 || directionUnresolved,
       onclick: () => { confirmImport(confirmBtn); }
     });
 
@@ -576,23 +663,51 @@ export function openImportSheet({ onChanged } = {}) {
 
     return el('section', { class: 'card stack' }, [
       el('div', { class: 'import-summary', dataset: { role: 'import-summary' }, text: summary }),
-      duplicates.length
-        ? el('div', {
-          class: 'vault-hint', dataset: { role: 'import-dup-note' },
-          text: '疑似重复是指时间、金额、收支方向、商户都一样的记录——同一笔钱重复导入两次、'
-            + '或者在微信和支付宝各导出一次，都会命中。宁可少导也不重复导。'
-        })
+      // 方向列没被映射时，这一页必须先问清楚「这批金额算支出还是收入」，而且**不预选**：
+      // 微信/支付宝的金额列永远是正数，猜错一次就是整批 100% 变收入。
+      needsDirection
+        ? el('div', { class: 'field' }, [
+          el('label', { text: '这批金额全部算作（必选）' }),
+          columnSelect(
+            'import-default-kind',
+            [
+              { value: '', text: '（请选择）' },
+              { value: 'expense', text: '支出' },
+              { value: 'income', text: '收入' }
+            ],
+            state.defaultKind,
+            value => { reselectDefaultKind(value); }
+          ),
+          el('div', {
+            class: 'vault-warn', dataset: { role: 'import-direction-hint' },
+            text: '这份账单没有选「收/支」列，金额又都是正数——不选就没法知道每一笔是收还是支。'
+          })
+        ])
         : null,
-      errors.length ? errorList(errors) : null,
       el('div', { class: 'group-title', text: '这些记录统一算作' }),
-      el('div', { class: 'vault-hint', text: '导入的记录会统一用下面这个分类和账户；要改单条，导入后到统计页去改。' }),
+      el('div', {
+        class: 'vault-hint', dataset: { role: 'import-category-note' },
+        // 这句必须诚实：统计页只有月份/口径切换与分类高亮，没有任何编辑入口，分类管理也
+        // 改不到某一笔交易，store.updateTransaction 至今零调用点。承诺「导入后去统计页改」
+        // 会把人引到一个改不了的地方。
+        text: '导入的记录统一用下面这个分类和账户。当前版本不支持事后修改单条记录，选错只能撤销重导。'
+      }),
       el('div', { class: 'field' }, [
-        el('label', { text: '默认分类（支出）' }),
+        el('label', { text: '默认支出分类' }),
         columnSelect(
           'import-default-category',
-          (state.categories ?? []).map(c => ({ value: c.id, text: `${c.icon ? c.icon + ' ' : ''}${c.name}` })),
+          (state.expenseCategories ?? []).map(c => ({ value: c.id, text: `${c.icon ? c.icon + ' ' : ''}${c.name}` })),
           state.defaultCategoryId,
           value => { state.defaultCategoryId = value || null; reprepare(); }
+        )
+      ]),
+      el('div', { class: 'field' }, [
+        el('label', { text: '默认收入分类' }),
+        columnSelect(
+          'import-default-income-category',
+          (state.incomeCategories ?? []).map(c => ({ value: c.id, text: `${c.icon ? c.icon + ' ' : ''}${c.name}` })),
+          state.defaultIncomeCategoryId,
+          value => { state.defaultIncomeCategoryId = value || null; reprepare(); }
         )
       ]),
       el('div', { class: 'field' }, [
@@ -604,6 +719,21 @@ export function openImportSheet({ onChanged } = {}) {
           value => { state.defaultAccountId = value || null; reprepare(); }
         )
       ]),
+      duplicates.length
+        ? el('div', {
+          class: 'vault-hint', dataset: { role: 'import-dup-note' },
+          text: '疑似重复是指时间、金额、收支方向、商户都一样的记录——同一笔钱重复导入两次、'
+            + '或者在微信和支付宝各导出一次，都会命中。宁可少导也不重复导。'
+        })
+        : null,
+      skipped.length
+        ? el('div', {
+          class: 'vault-hint', dataset: { role: 'import-skipped-note' },
+          text: `${skipped.length} 条「不计收支」已跳过：零钱提现、信用卡还款、理财申购这类记录`
+            + '不参与收支统计，导入进来只会把支出总额搅乱。'
+        })
+        : null,
+      parseErrors.length ? errorList(parseErrors) : null,
       el('div', {
         class: 'group-title',
         text: showCountLine(shown.length, fresh.length)
