@@ -17,7 +17,10 @@
 // 备份面板里「忘了密码就打不开」那句从说明段上移到密码输入框下方（backup-view）。
 // v8：账单导入（csv / import-parse / import-schema / import-store / ui/import-view）
 // 进了预缓存清单，设置面板多了第五行入口。
-const CACHE = 'pvault-v8';
+// v9：账单导入评审后的 9 处修复——方向列未映射时必须由人选（不再按金额正负猜）、
+// 未闭合引号与 UTF-16 文件给出明确指引、20MB 上限、两个默认分类（支出/收入）、
+// 不计收支与转账行的计数与提示、db.removeAll 事务中止。
+const CACHE = 'pvault-v9';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
