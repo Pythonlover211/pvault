@@ -2,6 +2,8 @@ package dev.pvault.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
@@ -276,6 +278,44 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isAndroidShell() {
             return true;
+        }
+
+        /**
+         * 写系统剪贴板。
+         *
+         * WebView 里 navigator.clipboard.writeText 会直接 reject —— 安卓 WebView 没有
+         * 浏览器那套剪贴板权限模型。恢复码页只有一个「复制」按钮，而那串码只显示一次，
+         * 复制不出来就只能手抄，所以这里直接调系统 ClipboardManager 兜底。
+         */
+        @JavascriptInterface
+        public boolean copyText(String text) {
+            if (text == null) return false;
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (cm == null) return false;
+                cm.setPrimaryClip(ClipData.newPlainText("pvault", text));
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /**
+         * 读系统剪贴板，用于「清空前先确认那串内容还是自己刚写进去的」。
+         * 读不到（无权限、无内容、非前台）返回 null，页面侧据此选择不动它。
+         */
+        @JavascriptInterface
+        public String readClipboardText() {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (cm == null || !cm.hasPrimaryClip()) return null;
+                ClipData clip = cm.getPrimaryClip();
+                if (clip == null || clip.getItemCount() == 0) return null;
+                CharSequence cs = clip.getItemAt(0).coerceToText(MainActivity.this);
+                return cs == null ? null : cs.toString();
+            } catch (Exception e) {
+                return null;
+            }
         }
 
         @JavascriptInterface

@@ -23,7 +23,7 @@ import {
   ITEM_TYPES, FIELD_LABELS, SECRET_FIELDS,
   searchItems, groupItems, maskSecret, itemSummary
 } from '../vault-model.js';
-import { copyWithAutoClear } from './clipboard.js';
+import { copyWithAutoClear, writeClipboard } from './clipboard.js';
 import { openVaultEditor } from './vault-editor.js';
 import { openSheet } from './sheet.js';
 
@@ -270,12 +270,8 @@ function renderRecovery(root, seq, code) {
 // 而恢复码此刻就在屏幕上，手抄完全可行，弹一个红字反而更吓人。
 async function copy(text, btn) {
   const original = btn.textContent;
-  try {
-    await navigator.clipboard.writeText(text);
-    btn.textContent = '已复制';
-  } catch {
-    btn.textContent = '复制失败';
-  }
+  const ok = await writeClipboard(text);
+  btn.textContent = ok ? '已复制' : '复制失败';
   setTimeout(() => { btn.textContent = original; }, 1500);
 }
 
@@ -651,13 +647,10 @@ async function renderList(root, seq) {
 
 // 复制成功短暂显示「已复制」，失败（非安全上下文、权限被拒）时按钮自己说明结果，
 // 不弹 alert：按钮就在手指底下，是比弹窗更近的反馈位。
+// copyWithAutoClear 现在返回是否成功（内部已按桥 → navigator → execCommand 依次尝试）。
 async function doCopy(btn, value) {
-  try {
-    await copyWithAutoClear(value);
-    btn.textContent = '已复制';
-  } catch {
-    btn.textContent = '复制失败';
-  }
+  const ok = await copyWithAutoClear(value);
+  btn.textContent = ok ? '已复制' : '复制失败';
   setTimeout(() => { btn.textContent = '复制'; }, 1500);
 }
 

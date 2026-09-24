@@ -27,7 +27,10 @@
 // v11：安卓真机验证抓到的两个问题——① backup.js 不再依赖 structuredClone（旧版安卓
 // WebView 是 Chrome 83，没有这个 API，会导致「导出备份」整条不可用）② 安卓壳里跳过
 // Service Worker 注册（壳内资源本就在 APK 内，且注册必然失败、只会在控制台刷错误）。
-const CACHE = 'pvault-v11';
+// v12：剪贴板写入加三层兜底 —— 安卓 WebView 里 navigator.clipboard.writeText 会直接
+// reject（没有浏览器那套权限模型），真机上表现为恢复码「复制失败」；现在优先走壳的
+// Java 桥调系统 ClipboardManager，其次 navigator.clipboard，最后退回 execCommand。
+const CACHE = 'pvault-v12';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
