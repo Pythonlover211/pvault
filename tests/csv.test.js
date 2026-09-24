@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCsv, decodeBytes, stripBom } from '../app/csv.js';
+import { parseCsv, decodeBytes, stripBom, UNCLOSED_QUOTE_CODE, UTF16_CODE } from '../app/csv.js';
 
 test('parseCsv 解析基本表格', () => {
   const rows = parseCsv('a,b,c\n1,2,3\n');
@@ -54,4 +54,35 @@ test('decodeBytes：GBK 字节回退解出中文', () => {
 test('decodeBytes：UTF-8 BOM 也认', () => {
   const bytes = new Uint8Array([0xEF, 0xBB, 0xBF, 0x61]);
   assert.equal(decodeBytes(bytes), 'a');
+});
+
+test('parseCsv：未闭合的引号抛错，而不是吞掉文件余下所有行', () => {
+  // 真实形态：5000 行的账单里第 2 行金额多打了一个引号（`1.00 "`）。修复前这里只返回
+  // 2 行、第 2 行第 2 格有 12 万字符，预览页却说「将导入 1 条」，其余 4999 行无声消失。
+  const rows = ['时间,金额', '2026-09-01 12:30:00,1.00 "', '2026-09-02 12:30:00,2.00', '2026-09-03 12:30:00,3.00'];
+  assert.throws(() => parseCsv(rows.join('\n')), err => {
+    assert.equal(err.code, UNCLOSED_QUOTE_CODE);
+    // 错误信息要人能看懂：指出大概的行号，而不是抛一个英文异常
+    assert.match(err.message, /第 2 行/);
+    return true;
+  });
+});
+
+test('decodeBytes：UTF-16LE 的文件给出「另存为 CSV UTF-8」的指引', () => {
+  // Excel 的「Unicode 文本」导出就是 FF FE + UTF-16LE。不认它就会回落 GBK 解出一串
+  // 乱码，用户看到的是几千条「时间无法识别」，根本猜不到问题在编码上。
+  const bytes = new Uint8Array([0xFF, 0xFE, 0x31, 0x00, 0x2C, 0x00]);
+  assert.throws(() => decodeBytes(bytes), err => {
+    assert.equal(err.code, UTF16_CODE);
+    assert.match(err.message, /UTF-16/);
+    assert.match(err.message, /CSV UTF-8/);
+    return true;
+  });
+});
+
+test('decodeBytes：UTF-16BE 的 BOM 同样拦下', () => {
+  assert.throws(() => decodeBytes(new Uint8Array([0xFE, 0xFF, 0x00, 0x31])), err => {
+    assert.equal(err.code, UTF16_CODE);
+    return true;
+  });
 });
