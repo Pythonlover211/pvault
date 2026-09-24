@@ -51,8 +51,17 @@ function fingerprintOf(record) {
 
 // 过滤掉库里已有的（以及同一批里自己重复的），给剩下的补上入库所需的字段。
 // 只准备、不写入：用户要先在向导里看到「新增 N 条、跳过 M 条」再确认。
-export async function prepareImport(records, { defaultCategoryId = null, defaultAccountId = null } = {}) {
+//
+// defaultIncomeCategoryId 是 L1 修复加的参数：收入记录必须拿**收入**分类。原来所有记录
+// 都套用支出默认分类，导入一份含收入的账单（微信/支付宝必有「二维码收款」「退款」）就会
+// 写出 kind: 'income' + categoryId: 'cat-food'，而 summary.byCategory 只按交易的 kind 过滤、
+// 不校验分类自身的 kind —— 收入环形图里冒出「🍜 餐饮 ¥88」，首页工资显示成「🍜 餐饮 +12000」。
+// 兼容：不传它时回落到 defaultCategoryId（旧调用方的行为不变）。
+export async function prepareImport(records, {
+  defaultCategoryId = null, defaultIncomeCategoryId = undefined, defaultAccountId = null
+} = {}) {
   const existing = await existingFingerprints();
+  const incomeCategoryId = defaultIncomeCategoryId === undefined ? defaultCategoryId : defaultIncomeCategoryId;
   const fresh = [];
   const duplicates = [];
   const seen = new Set();
@@ -64,11 +73,16 @@ export async function prepareImport(records, { defaultCategoryId = null, default
       continue;
     }
     seen.add(fingerprint);
+    // 按收支方向取对应 kind 的默认分类；transfer 保持 null，由统计页的内置「转账」伪分类
+    // （summary.js 的 TRANSFER_CATEGORY_ID）兜住——它本来就没有真实分类。
+    let categoryId = null;
+    if (record.kind === 'expense') categoryId = defaultCategoryId ?? null;
+    else if (record.kind === 'income') categoryId = incomeCategoryId ?? null;
     fresh.push({
       id: uid(),
       kind: record.kind,
       amountCents: record.amountCents,
-      categoryId: defaultCategoryId ?? null,
+      categoryId,
       accountId: defaultAccountId ?? null,
       toAccountId: null,
       occurredAt: record.occurredAt,
@@ -87,12 +101,22 @@ export async function prepareImport(records, { defaultCategoryId = null, default
 // 不会留下「导入了一半」的库，用户重试也不会撞上重复。
 export async function commitImport(records) {
   const list = records ?? [];
+  // 空数组在这里就返回，是**隐式调用方契约的一半**：db.putAll([]) 的 db.transaction([])
+  // 抛的是 InvalidAccessError（不是 no-op），传空数组进来会 reject 而不是安静地不做。
   if (list.length === 0) return [];
+  for (const r of list) {
+    // 撤销靠 id 定位（undoImport 只删本次导入的 id）。少了 id 的记录写得进去却删不掉，
+    // 撤销会留下半截数据，所以宁可在写入前就整批拒绝。
+    if (typeof r?.id !== 'string' || r.id === '') {
+      throw new Error('导入记录缺少 id：请先经 prepareImport 生成记录再写入');
+    }
+  }
   await db.putAll(list.map(value => ({ store: 'txns', value })));
   return list.map(r => r.id);
 }
 
 // 只删本次导入生成的 id：撤销一次导入不会碰到用户已有的账。
+// 空数组直接返回的原因同 commitImport：db.removeAll([]) 会因 InvalidAccessError 而 reject。
 export async function undoImport(ids) {
   const list = ids ?? [];
   if (list.length === 0) return;
