@@ -74,7 +74,20 @@ export async function putAll(entries) {
   const db = await open();
   const names = [...new Set(entries.map(e => e.store))];
   const tx = db.transaction(names, 'readwrite');
-  for (const e of entries) tx.objectStore(e.store).put(e.value);
+  try {
+    for (const e of entries) tx.objectStore(e.store).put(e.value);
+  } catch (err) {
+    // 与 replaceAll 同一个洞，同样的处置：objectStore.put() **同步**抛出的 DataError
+    // （value 不是对象、取不出 keyPath、key 类型不合法）不会自动中止事务，先前入队的
+    // put() 会照常提交，调用方以为「整批要么全成、要么全不成」，实际拿到的是半截数据
+    // （导入正是这么用的：交易与派生应收在一个事务里写）。显式 abort() 把整批回滚掉。
+    // abort 自己也可能抛（事务已经不在活动态时抛 InvalidStateError）：那种情况下
+    // 原始错误信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
+    try {
+      tx.abort();
+    } catch { /* 事务已经结束：没什么可回滚的 */ }
+    throw err;
+  }
   await txDone(tx);
 }
 
