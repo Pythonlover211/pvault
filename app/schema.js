@@ -64,6 +64,7 @@ export function seedSettings() {
     { key: 'budgetTotalCents', value: 0 },
     { key: 'budgetByCategory', value: {} },
     { key: 'recurring', value: [] },
+    { key: 'importProfiles', value: [] },
     { key: 'lastBackupAt', value: null }
   ];
 }

@@ -649,14 +649,14 @@ git commit -m "feat: 账单预设（微信/支付宝）与通用列映射"
 
 | 函数 | 行为 |
 |---|---|
-| `existingFingerprints()` | 读全部交易，返回 `Set<fingerprint>`。交易的 fingerprint 用 `makeFingerprint({ occurredAt, amountCents, merchant })` 现算——**注意现有交易没有单独的 merchant 字段**，所以要用 `note` 的**第一个 ` · ` 之前**那一段当作 merchant，保证与导入时的算法一致 |
+| `existingFingerprints()` | 读全部交易（`db.getAll('txns')`），返回 `Set<fingerprint>`。交易的 fingerprint 用 `makeFingerprint({ occurredAt, amountCents, kind, merchant })` 现算——**注意现有交易没有单独的 merchant 字段**，所以要用 `note` 里**第一个 ` · ` 之前**那一段当作 merchant（与导入时 `[merchant, note].filter(Boolean).join(' · ')` 的写法对称），保证与导入时的算法一致 |
 | `prepareImport(records, { defaultCategoryId, defaultAccountId })` | 用 `existingFingerprints()` 过滤掉重复的；给每条补上 `id` / `categoryId` / `accountId` / `source: 'import'` / `createdAt` / `updatedAt`；返回 `{ fresh, duplicates }` |
 | `commitImport(records)` | **单事务批量写入**（复用 `db.putAll`）；返回写入的 id 列表 |
 | `undoImport(ids)` | 按 id 批量删除（`db.removeAll`） |
 | `listProfiles()` / `saveProfile(profile)` | 读写 `settings.importProfiles`（形如 `[{ id, name, mapping }]`） |
 | `deleteProfile(id)` | — |
 
-**去重口径要写清楚**（并在手动清单里列为待确认项）：指纹 = `occurredAt|amountCents|merchant`。同一笔在微信和支付宝里各导出一次、或同一文件导入两次，都会被认成重复。**但同一天同一个商户同样金额的两笔真实消费也会被误判成重复**——这是取舍，宁可少导也不要重复导。向导里要**显示**「N 条疑似重复已跳过」，让用户能看到。
+**去重口径要写清楚**（并在手动清单里列为待确认项）：指纹 = **时间 + 金额 + 收支方向 + 商户**（`occurredAt|amountCents|kind|merchant`）。同一笔在微信和支付宝里各导出一次、或同一文件导入两次，都会被认成重复。方向参与指纹，所以同一秒同金额同商户的一收一支（转账双向往来、消费 + 即时退款）不会被误判；**但同一秒同一个商户同样金额同一个方向的两笔真实消费仍会被误判成重复**——这是取舍，宁可少导也不要重复导。向导里要**显示**「N 条疑似重复已跳过」，让用户能看到。
 
 - [ ] **步骤 3：探针验证**
 
