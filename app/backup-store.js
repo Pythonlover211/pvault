@@ -1,8 +1,6 @@
 // 备份仓库层：把一个设备的全部数据打包成一个加密文件，以及从该文件恢复回来。
-//
 // 文件分两层：外层是「加密信封」，内层是 app/backup.js 定义的备份包（含记账数据与密码箱记录）。
 // 外层长这样：
-//
 //   { format: 'pvault-backup-encrypted', version: 1, createdAt,
 //     kdf: { name: 'PBKDF2-SHA256', iterations, salt }, iv, ct }
 //
@@ -17,6 +15,12 @@
 //    唯一一份密码箱密文，而备份文件里根本没有它的替补。
 // 5. 备份里带密码箱时，覆盖完成后立刻上锁：新记录的 DEK 与内存里的会话多半不配套，
 //    带着老会话继续写会把新密码箱的条目加密成一把再也解不开的钥匙（见 importBackup）。
+// 6. invoiceFiles **只在备份真的带了图片时才清空本机**（见 importBackup 的 clears）。
+//    备份里没有图片时（老备份根本没有这个键，或者是「不含图片」导出的），一律保留本机现有的原图。
+//    理由与第 4 条同源：**没有替补的东西，一律不删**。清空是为了「覆盖恢复之后不留下上一份数据的
+//    图片残留」，而备份里没有图片时压根没有可覆盖的东西，清空只会删掉本机唯一的一份原图——
+//    而备份文件里没有它们的替补。别为了跟 ARRAY_STORES 那些表「统一」把它改成有键就清：
+//    那等于把「恢复备份」这条唯一的救命通道变成一把毁数据的开关。
 //
 // 本模块依赖 db.js（IndexedDB）与 crypto.js（WebCrypto 全局），因此不能在 Node 里 import，
 // 也不写单测；验证方式见 docs/手动验证清单.md 的「备份与恢复」小节与临时探针。
@@ -40,6 +44,12 @@ const SALT_BYTES = 16;
 
 const VAULT_KEY = 'vault';
 const LAST_BACKUP_KEY = 'lastBackupAt';
+
+// 含图导出的内存峰值远大于备份体积本身：数据要在「编码数组 → JSON 字符串 → 字节数组 →
+// 密文 → base64 串 → 下载 Blob」这条链上被完整复制好几份，几百 MB 的串在安卓 WebView 上
+// 很可能直接把进程撑死。而失败发生在加密之后——用户等完 PBKDF2 的 60 万轮，换来的是
+// 「导出失败、一份备份都没有」。所以在动手之前就拦住，让他改用「不含图片」导出。
+const MAX_INLINE_FILES_BYTES = 45 * 1024 * 1024;   // 原图字节，约合 base64 后的 60MB
 
 // 参与备份的数组仓库：**显式列出来，不要从 Object.keys(STORES) 派生**。
 // 派生踩过一次：schema 里加了发票三张表之后，这个清单跟着变成 7 张，
@@ -120,6 +130,8 @@ function blobToBase64(blob) {
 // base64 字符串 → Blob。解不开时返回 null 而不是抛错：
 // 备份文件里某一张图的数据坏了（字符串被截断、字段是 null、base64 不合法），
 // 该丢的是这一张图，不是用户整份备份——恢复是数据已经丢了之后唯一的补救手段。
+//
+//
 function base64ToBlob(b64, mime) {
   if (typeof b64 !== 'string' || b64 === '') return null;
   try {
@@ -172,8 +184,44 @@ async function encodeFiles() {
   return { files: out, skipped };
 }
 
+// 含图导出之前的体量闸门：只看 invoiceFiles 的 size 元数据，不做任何编码。
+// 必须在任何编码动作之前调用（见 exportBackup 里的位置）。
+//
+// 两个为什么：
+// · 为什么必须在这之前：一旦开始 encodeFiles，Blob 已经被读成 base64 串、整包也进了 JSON，
+//   那时再发现太大就已经晚了——峰值内存已经吃到嘴里，恰恰是我们要躲开的那一下。
+// · 为什么算 size 而不是真的去量一遍：与 estimateExportSize 用同一把尺子（那里也是把所有
+//   record.size 加总后交给 estimateBackupMB）。两处口径必须一致——同一个 40MB 的库，
+//   面板说能导、导出时又说导不了，用户只会以为 app 坏了。
+//   size 缺失（老记录或脏数据）时按 0 计，与那边的实现一模一样。
+function inlineFilesBytes(files) {
+  let bytes = 0;
+  for (const f of files) {
+    const size = Number(f?.size) > 0 ? Number(f.size) : 0;
+    bytes += size;
+  }
+  return bytes;
+}
+
+// 超限时抛的中文错误。文案要说清两件事：多大、接下来怎么办——用户此刻只想要一份备份，
+// 只甩一句「图片太多」等于让他自己猜。
+// 数字用 estimateBackupMB：与面板上那行体积提示是同一个函数换算的，用户拿它去和界面上那个
+// 数字对得上；否则面板说「约 60 MB」、错误里说「约 45 MB」（原图字节），他只会以为这是两回事。
+function tooManyFilesError(bytes) {
+  const mb = estimateBackupMB([{ size: bytes }]);
+  return new Error(`图片太多，一次导不完（约 ${mb} MB）。可以勾选「不含图片」导出，或者先删掉一些旧图再试。`);
+}
+
 // 导出前的体积预估：读 invoiceFiles 的元数据（size 字段）就够了，不必真的读图片字节。
 // 界面用它告诉用户「这份备份大概多大」，并在体积大到下载会被拦掉时给出「不含图片」这条路。
+//
+// 已知代价：db.getAll 会把每条记录的 blob / thumbBlob 一并读进内存，而面板一打开就调它一次。
+// 本可以换成 openCursor 只取 size、把这几百 MB 的字节留在库里，但做不到，也不值得：
+// · db.js 没有游标封装，而 backup-store 只认 db.js 这一层（直接摸 indexedDB 全局就等于
+//   绕开它自己那句「薄封装、只做读写」的分层）；
+// · 为它加一张只存元数据的索引表，代价是 schema 迁移 + 每次 saveFile/deleteFile 都要同步维护，
+//   一旦漏同步，面板报的体积就是错的——用一个数据一致性的风险换一次面板打开的耗时。
+// 真到这一步再改，届时应该连同 db.js 一起加 cursor 接口。
 export async function estimateExportSize() {
   const files = await db.getAll('invoiceFiles');
   return { count: files.length, mb: estimateBackupMB(files) };
@@ -191,6 +239,16 @@ export async function exportBackup(password, now = Date.now(), { includeFiles = 
   // 只读这一个键，其余设置原样带走。
   const vault = (await db.get('settings', VAULT_KEY))?.value ?? null;
   const settings = (await db.getAll('settings')).filter(row => row?.key !== VAULT_KEY);
+
+  // 体量闸门：必须在 encodeFiles（真正开始读图、转 base64）之前。
+  // includeFiles 为 false 时一次都不查：「不含图片」这条路的体积与图片数量无关，没道理把它挡住，
+  // 更不该因为库里图片太多就让用户连一份保住账目的备份都导不出来（那正是最需要它的时候）。
+  // 这里读的是记录上的 size 字段（db.getAll 会把 blob 一起读进来，代价见 estimateExportSize 的注释），
+  // 但它不产生 base64 —— 真正的内存峰值在编码那一步，闸门要拦的就是那一步。
+  if (includeFiles) {
+    const usedBytes = inlineFilesBytes(await db.getAll('invoiceFiles'));
+    if (usedBytes > MAX_INLINE_FILES_BYTES) throw tooManyFilesError(usedBytes);
+  }
 
   // 图片单独转 base64（Blob 进不了 JSON，见 encodeFiles）。不含图片时直接给空数组：
   // 连读都不读，省掉把几十 MB 的 Blob 取出来转一遍的时间。

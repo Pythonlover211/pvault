@@ -359,14 +359,26 @@ export function openBackupSheet({ onChanged } = {}) {
       onclick: () => { doImport(confirmBtn); }
     });
     // 发票那一行的文案。「0 张」有两种意思，处置完全相反，所以必须分开说：
-    // 文件里压根没有这几项（加发票之前导出的老备份）→ 恢复时本机发票原样保留；
+    // 文件里压根没有这一项（加发票之前导出的老备份）→ 恢复时本机发票原样保留；
     // 文件里有这一项但是空的 → 本机发票会被清空。与下面密码箱那一行是同一种写法。
     const invoicesText = summary.hasInvoices
       ? String(summary.invoices)
       : '不包含（保留本机现有发票）';
+    // 图片这一行的判据必须与 backup-store 的 clears 严丝合缝地一致：
+    //   clears 里加 invoiceFiles 的条件是 `arrayOrEmpty(data.invoiceFiles).length > 0`，
+    //   也就是「没有**可恢复的**图片就一个字都不动本机」。
+    // 所以判据是 hasInvoiceFiles **且** invoiceFiles > 0，而不是只看「键在不在」：
+    //   · 键不在（老备份）                        → 保留本机
+    //   · 键在但是空数组（用「不含图片」导出的）  → 也保留本机
+    //   · 键在且有条目                            → 清空本机后写进备份里的这些
+    // 只按 hasInvoiceFiles 分辨（原来的写法）会把第二种说成「0（这份备份不带图片）」，
+    // 那句话读起来是「本机那几张没了」，而真实行为是原样保留——用户在确认页上没法判断
+    // 恢复之后自己的原图还在不在，两个方向都会读错。写反的代价是不可逆的：他可能因此
+    // 不敢用那份备份，或者反过来以为原图还在而被清掉。
+    // 反过来也绝不允许把实现改成「有键就清」去迁就文案：那是在删本机唯一一份原图（见文件头第 6 条）。
     const filesText = summary.invoiceFiles > 0
       ? String(summary.invoiceFiles)
-      : (summary.hasInvoiceFiles ? '0（这份备份不带图片）' : '不包含（保留本机现有图片）');
+      : '不包含（保留本机现有的图片）';
     return el('section', { class: 'card stack' }, [
       el('div', { class: 'group-title', text: '备份文件内容' }),
       el('div', { class: 'stack' }, [
@@ -396,6 +408,9 @@ export function openBackupSheet({ onChanged } = {}) {
         ]),
         el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '密码箱' }),
+          // 「包含」判据与导入侧的取值是同一件事：data.vault 是真值就用它覆盖本机，
+          // 是 null / 缺失就保留本机那一行（见 importBackup 的 vaultToWrite）。buildBackup 只可能
+          // 写出「对象」或「null」两种，所以这个判据在真实备份上不会有第三种情形。
           el('span', { text: summary.hasVault ? '包含' : '不包含（保留本机现有密码箱）' })
         ])
       ]),
