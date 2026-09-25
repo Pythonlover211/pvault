@@ -170,9 +170,14 @@ import {
 
 test('发票类型枚举有 7 项且 id 唯一', () => {
   assert.equal(INVOICE_TYPES.length, 7);
+  // 断言整份 id 清单：只抽查两个 id 的话，另外五个拼错（比如 e_invoice 写成 einvoice）
+  // 测试照样是绿的，而库里已经存进去的旧数据会突然变成「发票类型无效」。
+  assert.deepEqual(TYPE_IDS, [
+    'vat_special', 'vat_normal', 'e_invoice', 'itinerary', 'train', 'taxi', 'other'
+  ]);
   assert.equal(new Set(TYPE_IDS).size, 7);
-  assert.ok(TYPE_IDS.includes('vat_special'));
-  assert.ok(TYPE_IDS.includes('itinerary'));
+  // TYPE_IDS 是模块级共享数组，必须冻结：否则任何 import 方 push 一下就会污染全校验。
+  assert.ok(Object.isFrozen(TYPE_IDS), 'TYPE_IDS 应当是冻结的，避免被 import 方改动');
 });
 
 test('typeLabel：认识的类型给中文名，不认识的给兜底', () => {
@@ -196,22 +201,79 @@ test('validateInvoice：合法输入通过', () => {
   assert.deepEqual(r.errors, []);
 });
 
-test('validateInvoice：金额必须是整数分且非负', () => {
-  assert.equal(validateInvoice({ amountCents: 12.5 }).ok, false);
-  assert.equal(validateInvoice({ amountCents: -1 }).ok, false);
-  assert.equal(validateInvoice({ amountCents: null }).ok, false);
-  assert.equal(validateInvoice({ amountCents: '100' }).ok, false, '字符串不该被当作合法整数');
+test('validateInvoice：金额缺失和金额不合法给两种不同的提示', () => {
+  // 只拍照没填金额就点保存，是最常见的失败路径：keypad 返回 null，走「请先输入」这条。
+  // 界面上没有「分」这个单位，旧文案「金额必须是不小于 0 的整数分」用户不知道要改什么。
+  const missing = validateInvoice({ amountCents: null });
+  assert.deepEqual(missing.errors, ['请先输入价税合计金额']);
+  assert.deepEqual(validateInvoice({}).errors, ['请先输入价税合计金额'],
+    '字段整个缺失（undefined）也按「还没输入」处理');
+  assert.deepEqual(validateInvoice({ amountCents: undefined }).errors, ['请先输入价税合计金额']);
+
+  assert.deepEqual(validateInvoice({ amountCents: 12.5 }).errors, ['金额格式不对，请重新输入']);
+  assert.deepEqual(validateInvoice({ amountCents: -1 }).errors, ['金额格式不对，请重新输入']);
+  assert.deepEqual(validateInvoice({ amountCents: '100' }).errors, ['金额格式不对，请重新输入'],
+    '字符串不该被当作合法整数');
+  assert.deepEqual(validateInvoice({ amountCents: 1e21 }).errors, ['金额格式不对，请重新输入'],
+    '1e21 是整数但超出安全整数范围，存进 IndexedDB 再读出来就不是原来那个数了');
   assert.equal(validateInvoice({ amountCents: 0 }).ok, true, '0 元是合法的');
 });
 
-test('validateInvoice：税额不能大于价税合计', () => {
-  const r = validateInvoice({ amountCents: 100, taxCents: 101 });
-  assert.equal(r.ok, false);
-  assert.ok(r.errors.some(e => e.includes('税额')));
+test('validateInvoice：issuedAt 必须是毫秒安全整数', () => {
+  // 这里曾经写成 Number.isFinite(Number(x))，下面这些脏值会被全部放行，
+  // 而 new Date('2026') 只解析到 1970 年附近——按 issuedAt 倒序的列表会把它沉到最底。
+  for (const bad of ['', '   ', '2026', true, 1.5, NaN, [], '1700000000000']) {
+    const r = validateInvoice({ amountCents: 1, issuedAt: bad });
+    assert.equal(r.ok, false, `issuedAt=${JSON.stringify(bad)} 应当被拒`);
+    assert.deepEqual(r.errors, ['开票日期无效']);
+  }
+  assert.equal(validateInvoice({ amountCents: 1, issuedAt: 1700000000000 }).ok, true);
+  assert.equal(validateInvoice({ amountCents: 1, issuedAt: null }).ok, true, '没填日期由上层兜，这里不拦');
+  assert.equal(validateInvoice({ amountCents: 1, issuedAt: undefined }).ok, true);
 });
 
-test('validateInvoice：未知类型被拒，但号码格式不做校验', () => {
+test('validateInvoice：文本字段必须是字符串', () => {
+  // number 传数字 0 时编辑器里 state.number.trim() 会直接抛 TypeError；
+  // 传对象时 dedupeKey 得到 '[object Object]'，两张脏票互判「这张票已经录过了」。
+  assert.deepEqual(validateInvoice({ amountCents: 1, number: 0 }).errors, ['发票号码必须是文字']);
+  assert.deepEqual(validateInvoice({ amountCents: 1, number: {} }).errors, ['发票号码必须是文字']);
+  assert.deepEqual(validateInvoice({ amountCents: 1, seller: 5 }).errors, ['销售方必须是文字']);
+  assert.deepEqual(validateInvoice({ amountCents: 1, buyerTitle: 5 }).errors, ['购买方抬头必须是文字']);
+  assert.deepEqual(validateInvoice({ amountCents: 1, buyerTaxId: 5 }).errors, ['纳税人识别号必须是文字']);
+  assert.deepEqual(validateInvoice({ amountCents: 1, note: [] }).errors, ['备注必须是文字']);
+
+  assert.equal(validateInvoice({ amountCents: 1, number: '0' }).ok, true, '字符串 "0" 是合法的');
+  assert.equal(validateInvoice({ amountCents: 1, seller: '' }).ok, true);
+  // 缺省与 null 都放行：字段没填是常态，由订单据的界面自己决定必填与否。
+  assert.equal(validateInvoice({ amountCents: 1 }).ok, true);
+  assert.equal(validateInvoice({ amountCents: 1, note: null }).ok, true);
+});
+
+test('validateInvoice：输入不是对象时提示数据不完整，而不是怪金额', () => {
+  for (const bad of [null, undefined, 'x', 42]) {
+    const r = validateInvoice(bad);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.errors, ['发票数据不完整'], `${JSON.stringify(bad)} 应当报数据不完整`);
+  }
+});
+
+test('validateInvoice：税额不合法与税额大于总额给不同提示', () => {
+  const bigger = validateInvoice({ amountCents: 100, taxCents: 101 });
+  assert.equal(bigger.ok, false);
+  assert.deepEqual(bigger.errors, ['税额比价税合计还大，请核对这两项金额']);
+
+  assert.deepEqual(validateInvoice({ amountCents: 100, taxCents: -1 }).errors, ['税额格式不对，请重新输入']);
+  assert.deepEqual(validateInvoice({ amountCents: 100, taxCents: 1.5 }).errors, ['税额格式不对，请重新输入']);
+  assert.deepEqual(validateInvoice({ amountCents: 100, taxCents: '30' }).errors, ['税额格式不对，请重新输入']);
+  assert.equal(validateInvoice({ amountCents: 100, taxCents: 100 }).ok, true, '税额等于总额是允许的');
+  assert.equal(validateInvoice({ amountCents: 100, taxCents: null }).ok, true, '没填税额不参与判断');
+});
+
+test('validateInvoice：未知类型被拒，type 缺省放行，号码格式不做校验', () => {
   assert.equal(validateInvoice({ amountCents: 1, type: 'weird' }).ok, false);
+  // 缺省放行是刻意的：仓库层 saveInvoice 会兜成 'other'，编辑器 state.type 初值也是 'other'。
+  assert.equal(validateInvoice({ amountCents: 1 }).ok, true, '没给 type 应当放行');
+  assert.equal(validateInvoice({ amountCents: 1, type: null }).ok, true);
   // 发票号码格式各地不一（8 位 / 20 位都有），不校验格式是刻意的
   assert.equal(validateInvoice({ amountCents: 1, number: '随便什么' }).ok, true);
 });
@@ -221,6 +283,12 @@ test('sumCents：空数组与脏数据都安全', () => {
   assert.equal(sumCents(null), 0);
   assert.equal(sumCents([{ amountCents: 100 }, { amountCents: 250 }]), 350);
   assert.equal(sumCents([{ amountCents: 100 }, {}]), 100);
+  // 备份恢复会绕过 validateInvoice 把脏数据直接写进库，这里不能抛错，也不能把脏值算进来：
+  // 旧实现用 Number(x) || 0，会把 '5' 当成 5 分、把小数分照加，0.5 + 0.5 凭空多出一分钱。
+  assert.equal(sumCents([{ amountCents: '5' }, { amountCents: -3 }, { amountCents: 0.5 }, { amountCents: 0.5 }]), 0,
+    '字符串、负数、小数一律不计');
+  assert.equal(sumCents([{ amountCents: 100 }, { amountCents: '5' }]), 100);
+  assert.equal(sumCents([{ amountCents: 0 }]), 0);
 });
 
 test('invoiceTitle：优先用销售方，其次号码，最后兜底', () => {
@@ -254,7 +322,9 @@ export const INVOICE_TYPES = [
   { id: 'other', label: '其他' }
 ];
 
-export const TYPE_IDS = INVOICE_TYPES.map(t => t.id);
+// freeze 是必要的：这是模块级共享数组，任何 import 方 push 一下就会污染全校验，
+// 而且这种污染在测试里跑不出错（同一个进程内先污染后校验），排查起来极其费劲。
+export const TYPE_IDS = Object.freeze(INVOICE_TYPES.map(t => t.id));
 
 export function typeLabel(id) {
   return INVOICE_TYPES.find(t => t.id === id)?.label ?? '未知类型';
@@ -263,40 +333,93 @@ export function typeLabel(id) {
 // 查重键：只用发票号码，空号码不参与查重（返回 null）。
 // 刻意不做「号码 + 销售方」的组合键——同号不同销售方只可能是输错，
 // 那种情况也该提示，而不是放行。
+// 这里的 trim 必须与仓库写入侧的 app/invoice-store.js 里 saveInvoice 那句
+// String(input.number ?? '').trim() 保持一致：两边都 trim 才能让带空格的号码查得出来，
+// 只改其中一处，存进去的键和查出来的键就对不上，查重会静默失效（不报错、只是永不命中）。
 export function dedupeKey(invoice) {
   const n = String(invoice?.number ?? '').trim();
   return n === '' ? null : n;
 }
 
-// 发票号码的格式不做校验是刻意的：增值税发票 8 位、全电发票 20 位，各地还有差异，
-// 硬校验只会挡住正确的票。这里只保证字段类型正确、数值自洽。
+// 文本字段的中文名。校验失败时用它们拼提示语——提示是直接显示给用户的，
+// 说「number 字段类型不对」对用户没有任何意义。
+const TEXT_FIELDS = {
+  number: '发票号码',
+  seller: '销售方',
+  buyerTitle: '购买方抬头',
+  buyerTaxId: '纳税人识别号',
+  note: '备注'
+};
+
+// 校验只保证「能安全存进库、不会被下游用炸」，不保证业务上合理。
+// 提示语一律写「用户该做什么」而不是「哪个字段不合法」：界面上没有「分」这个单位，
+// 说「金额必须是整数分」用户无从下手（实测这是最容易撞上的一条——只拍照不填金额就点保存）。
+// 发票号码的格式不做校验也是刻意的：增值税发票 8 位、全电发票 20 位，各地还有差异，
+// 硬校验只会挡住正确的票。
 export function validateInvoice(input) {
   const errors = [];
-  const amountCents = input?.amountCents;
-
-  if (!Number.isInteger(amountCents) || amountCents < 0) {
-    errors.push('金额必须是不小于 0 的整数分');
+  // 传 null / undefined / 非对象是**调用方**写错了，不是用户填错了金额。分开报，
+  // 免得排查时被一句「金额不对」带到错的方向去。
+  if (input === null || typeof input !== 'object') {
+    return { ok: false, errors: ['发票数据不完整'] };
   }
-  if (input?.issuedAt != null && !Number.isFinite(Number(input.issuedAt))) {
+
+  const amountCents = input.amountCents;
+  if (amountCents === null || amountCents === undefined) {
+    errors.push('请先输入价税合计金额');
+  } else if (!Number.isSafeInteger(amountCents) || amountCents < 0) {
+    // isSafeInteger 而不是 isInteger：1e21 也是「整数」，但存进 IndexedDB 再读出来
+    // 已经不是原来那个数了。口径与 app/money.js 的 addCents 保持一致。
+    errors.push('金额格式不对，请重新输入');
+  }
+
+  // 时间戳必须是毫秒安全整数。这里曾经写成 Number.isFinite(Number(x))，它把 ''、'   '、
+  // '2026'、true、[] 全部放行；而 new Date('2026') 只解析到 1970 年附近的年份——
+  // 脏值入库后，按 issuedAt 倒序的发票列表会把它沉到最底，用户再也找不到这张票。
+  if (input.issuedAt !== null && input.issuedAt !== undefined
+      && !Number.isSafeInteger(input.issuedAt)) {
     errors.push('开票日期无效');
   }
-  if (input?.type != null && !TYPE_IDS.includes(input.type)) {
+
+  // 缺省放行是刻意的：仓库层 saveInvoice 会把它兜成 'other'，编辑器里 state.type 初值也是 'other'，
+  // 所以「没选类型」这种情况到不了这里。这里只拦「给了但给错」。
+  if (input.type !== null && input.type !== undefined && !TYPE_IDS.includes(input.type)) {
     errors.push('发票类型无效');
   }
-  if (input?.taxCents != null) {
-    const tax = input.taxCents;
-    if (!Number.isInteger(tax) || tax < 0) {
-      errors.push('税额必须是不小于 0 的整数分');
-    } else if (Number.isInteger(amountCents) && tax > amountCents) {
-      // 税额是价税合计的一部分，大于总额一定是输错了
-      errors.push('税额不能大于价税合计');
+
+  // 文本字段必须是字符串：它们会被 .trim()、会被拼进查重键、会被渲染进列表。
+  // number 传 0（数字而不是 '0'）时，编辑器里 state.number.trim() 会直接抛 TypeError；
+  // 传对象时 dedupeKey 会得到 '[object Object]'，两张脏票互判「这张票已经录过了」。
+  for (const [key, label] of Object.entries(TEXT_FIELDS)) {
+    const value = input[key];
+    if (value !== null && value !== undefined && typeof value !== 'string') {
+      errors.push(`${label}必须是文字`);
     }
   }
+
+  if (input.taxCents !== null && input.taxCents !== undefined) {
+    const tax = input.taxCents;
+    if (!Number.isSafeInteger(tax) || tax < 0) {
+      errors.push('税额格式不对，请重新输入');
+    } else if (Number.isSafeInteger(amountCents) && tax > amountCents) {
+      // 税额是价税合计的一部分，大于总额一定是输错了。提示语要带上「核对哪两项」，
+      // 光说「不能大于」用户还得自己回去比对。
+      errors.push('税额比价税合计还大，请核对这两项金额');
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
 export function sumCents(invoices) {
-  return (invoices ?? []).reduce((s, i) => s + (Number(i?.amountCents) || 0), 0);
+  // 非安全整数 / 负数一律按 0 计，与 app/money.js 的 addCents 同一口径。
+  // 这里刻意不抛错：备份恢复是把发票直接写进库的，读到脏数据不该让整页汇总炸掉。
+  // 但也不能像以前那样用 Number(x) || 0 —— 那会把字符串 '5' 当成 5 分、把小数分照加，
+  // 0.5 + 0.5 就凭空多出一分钱，显示成查不出来的错账。
+  return (invoices ?? []).reduce(
+    (sum, i) => sum + (Number.isSafeInteger(i?.amountCents) && i.amountCents > 0 ? i.amountCents : 0),
+    0
+  );
 }
 
 export function invoiceTitle(invoice) {
