@@ -6,7 +6,7 @@
 //   { format: 'pvault-backup-encrypted', version: 1, createdAt,
 //     kdf: { name: 'PBKDF2-SHA256', iterations, salt }, iv, ct }
 //
-// 五条不能破的约定：
+// 六条不能破的约定：
 // 1. 每次导出都用**新生成的随机 salt**。复用 salt 会让同一个备份密码在任何时间导出的文件
 //    用同一把密钥，那就等于把「一次泄露 = 全部历史文件可解」写死进格式里。
 // 2. 导出的加密与导入的解密都以文件里 kdf.salt / kdf.iterations 为准：迭代次数会随版本涨，
