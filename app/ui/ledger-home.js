@@ -18,12 +18,14 @@ import { openSettingsSheet } from './settings-sheet.js';
 import { openReceivableSheet } from './receivable-view.js';
 import { openBackupSheet, backupAge, isBackupOverdue, DEFAULT_BACKUP_REMINDER_DAYS } from './backup-view.js';
 import { getLastBackupAt } from '../backup-store.js';
+import * as invoiceStore from '../invoice-store.js';
+import { openInvoiceLinkSheet } from './invoice-view.js';
 
 export async function renderLedgerHome(root) {
   const now = Date.now();
   const { start, end } = monthRange(now);
   const day = dayRange(now);
-  const [monthTxns, todayTxns, accounts, categories, receivables, budgetTotal, hideAmounts, lastBackupAt, reminderDays] =
+  const [monthTxns, todayTxns, accounts, categories, receivables, budgetTotal, hideAmounts, lastBackupAt, reminderDays, invCounts] =
     await Promise.all([
       store.listTransactionsInRange(start, end),
       store.listTransactionsInRange(day.start, day.end),
@@ -37,7 +39,11 @@ export async function renderLedgerHome(root) {
       // 首页底部那行备份提醒要的三个值。全部走 getSetting 的兜底：备份时间可能刚从没有过（null），
       // 提醒天数在老板本的数据里根本不存在（schema 的种子只在新库里写）。
       getLastBackupAt(),
-      store.getSetting('backupReminderDays', DEFAULT_BACKUP_REMINDER_DAYS)
+      store.getSetting('backupReminderDays', DEFAULT_BACKUP_REMINDER_DAYS),
+      // 一次性整表统计，不要逐笔查：今日流水十几笔就是十几个事务，
+      // 而发票表在没有导入大备份时也就几十到几百条，一次 getAll 更省。
+      // 它返回 { [txnId]: 条数 }，没有发票的账根本不出现在这个对象里。
+      invoiceStore.countByTxn()
     ]);
 
   // 只有支出需要扣分摊；收入与转账原样透传（effectiveExpense 内部也判了 kind，这里显式写着更清楚）。
@@ -128,6 +134,20 @@ export async function renderLedgerHome(root) {
                 el('span', { text: `${catOf.get(t.categoryId)?.icon || '📦'} ${catOf.get(t.categoryId)?.name || (t.kind === 'transfer' ? '转账' : '未分类')}` }),
                 el('span', { class: 'muted tiny', text: accOf.get(t.accountId)?.name || '' })
               ]),
+              // 发票标记：只有挂了票的账才出现。行本身不可点（流水没有详情页），
+              // 所以能点开的入口就是这个小标记——aria-label 写清楚，别只留一个 emoji。
+              invCounts[t.id]
+                ? el('button', {
+                    class: 'inv-tag ledger-inv-tag', type: 'button',
+                    text: `🧾${invCounts[t.id]}`,
+                    'aria-label': `这笔账有 ${invCounts[t.id]} 张发票`,
+                    onclick: () => openInvoiceLinkSheet({
+                      txn: t,
+                      categoryName: catOf.get(t.categoryId)?.name || (t.kind === 'transfer' ? '转账' : ''),
+                      onChanged: () => { renderLedgerHome(root).catch(err => console.error('首页重渲染失败', err)); }
+                    })
+                  })
+                : null,
               // 单笔显示交易原始金额（不扣分摊），分摊只体现在上面的月度汇总里。
               // 转账既不是收入也不是支出，用 ⇄ 标记，不加正负号。
               el('span', { class: amountClass, text: `${t.kind === 'income' ? '+' : t.kind === 'transfer' ? '⇄ ' : '-'}${formatCents(t.amountCents)}` })

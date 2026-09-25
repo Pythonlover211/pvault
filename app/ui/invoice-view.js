@@ -6,6 +6,7 @@ import * as invoiceStore from '../invoice-store.js';
 import { formatCents } from '../money.js';
 import { typeLabel, invoiceTitle } from '../invoice-model.js';
 import { openInvoiceEditor } from './invoice-editor.js';
+import { openSheet } from './sheet.js';
 
 const FILTERS = [
   { id: 'all', label: '全部' },
@@ -145,4 +146,53 @@ export async function renderInvoices(root) {
 
 export function openNewInvoice(onSaved) {
   return openInvoiceEditor({ onSaved });
+}
+
+// 从记账页点「🧾N」进来的小面板：看这笔账挂了哪些票，也能当场补挂一张。
+// 与编辑器的分工：这里只管「挂靠」这一件事，看大图/改字段交给编辑器。
+// txn 由调用方直接传整条对象（ledger-home 手里就有），不再查一次库；
+// categoryName 同理已由调用方查好，这里不重复查分类表。
+export function openInvoiceLinkSheet({ txn, categoryName = '', onChanged } = {}) {
+  const body = el('div', { class: 'stack' });
+  const sheet = openSheet({ title: '这笔账的发票', body });
+
+  async function refresh() {
+    const list = await invoiceStore.listByTxn(txn.id);
+
+    const rows = list.map(inv => el('button', {
+      class: 'inv-row', type: 'button',
+      onclick: () => {
+        sheet.close();
+        openInvoiceEditor({ id: inv.id, onSaved: onChanged });
+      }
+    }, [
+      el('span', { class: 'inv-row-main' }, [
+        el('span', { text: inv.seller || inv.number || '未命名发票' }),
+        el('span', { class: 'muted tiny', text: `${inv.number || '无号码'} · ${formatCents(inv.amountCents ?? 0, { symbol: true })}` })
+      ]),
+      inv.archived
+        ? el('span', { class: 'inv-tag stored', text: '仅存档' })
+        : el('span', { class: 'inv-tag pending', text: inv.reimbursementId ? '已报销' : '待报销' })
+    ]));
+
+    mount(body,
+      el('div', { class: 'muted tiny', text: `${categoryName || '这笔账'} ${formatCents(txn.amountCents ?? 0, { symbol: true })}　已挂 ${list.length} 张` }),
+      // el(tag, props, children) 的 children 收数组（不能像 mount 那样变参展开）
+      list.length === 0
+        ? el('div', { class: 'empty', text: '这笔账还没有发票' })
+        : el('div', { class: 'stack' }, rows),
+      el('button', {
+        class: 'btn btn-primary', type: 'button', text: '＋ 新建发票并挂到这笔账',
+        // txnId 直接交给编辑器：saveInvoice 会把它写进发票，不必再调 linkToTxn。
+        onclick: () => {
+          sheet.close();
+          openInvoiceEditor({ txnId: txn.id, onSaved: onChanged });
+        }
+      })
+    );
+  }
+
+  refresh().catch(err => {
+    mount(body, el('div', { class: 'vault-error', text: String(err?.message || err) }));
+  });
 }

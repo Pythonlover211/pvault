@@ -78,3 +78,30 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+
+/* 今日流水行里的发票标记。复用 .inv-tag 的边框/圆角/字号，但它是个 <button>：
+   必须清掉按钮默认底色（否则在流水行里是一块突兀的灰底），并让字体继承行内字号。 */
+.ledger-inv-tag {
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 关联面板里的每张票：整行可点，所以是个铺满宽度的按钮，文字要左对齐。 */
+.inv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: left;
+}
+.inv-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
