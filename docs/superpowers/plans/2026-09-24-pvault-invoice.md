@@ -972,7 +972,9 @@ const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: re
 创建 `styles/invoice.css`：
 
 ```css
-/* 发票模块样式。沿用 base.css 的设计令牌，不引入新的色值。 */
+/* 发票模块样式。沿用 base.css 的设计令牌，不引入新的色值。
+   注意令牌名：base.css 里是 --surface / --border / --text-2（卡片底、分隔线、次要文字），
+   写错名字不会报错，只会静默失效——卡片没有底色、灰字变成全黑。 */
 
 .inv-summary {
   display: grid;
@@ -981,12 +983,12 @@ const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: re
   margin: 0 0 12px;
 }
 .inv-summary-cell {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
 }
-.inv-summary-cell .k { font-size: 12px; color: var(--muted); }
+.inv-summary-cell .k { font-size: 12px; color: var(--text-2); }
 .inv-summary-cell .v { font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
 
 .inv-filters { display: flex; gap: 6px; margin-bottom: 10px; }
@@ -994,9 +996,9 @@ const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: re
   flex: 1;
   padding: 7px 4px;
   font-size: 13px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--card);
+  background: var(--surface);
   color: var(--text);
 }
 .inv-filters button[aria-selected="true"] {
@@ -1011,8 +1013,8 @@ const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: re
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 6px;
 }
@@ -1028,26 +1030,26 @@ const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: re
   font-size: 20px;
 }
 .inv-title { font-size: 14.5px; }
-.inv-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.inv-meta { font-size: 12px; color: var(--text-2); margin-top: 2px; }
 .inv-amount { font-size: 15px; font-variant-numeric: tabular-nums; text-align: right; }
 .inv-tag {
   display: inline-block;
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  color: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--text-2);
   margin-top: 3px;
 }
 .inv-tag.pending { color: #b26a00; border-color: #e0b060; }
-.inv-tag.stored { color: var(--muted); }
+.inv-tag.stored { color: var(--text-2); }
 
 .inv-preview {
   width: 100%;
   max-height: 240px;
   object-fit: contain;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 ```
@@ -1085,6 +1087,12 @@ const FILTERS = [
 // 与统计页存口径是同一种做法。
 let filter = 'all';
 let keyword = '';
+
+// 当前列表渲染序号：每次 paint() 自增。paint 是逐行 await 取缩略图的异步循环，
+// 而切 Tab 会立刻发起新的一次渲染——main.js 的 renderSeq 只保证外壳（root）不被旧渲染盖，
+// 管不到这个 listBox。少了这道检查，先发起、后完成的那次会把新列表盖回去，
+// 用户切回来看到的是一份旧数据（点进去还会是已经被删掉的那张票）。
+let paintSeq = 0;
 
 function matches(inv, kw) {
   if (!kw) return true;
@@ -1124,10 +1132,12 @@ export async function renderInvoices(root) {
   }
 
   async function paint() {
+    const seq = ++paintSeq;
     paintFilters();
     const kw = keyword.trim().toLowerCase();
     const rows = all.filter(inv => inFilter(inv) && matches(inv, kw));
     if (rows.length === 0) {
+      if (seq !== paintSeq) return;
       mount(listBox, el('div', { class: 'empty' }, [
         all.length === 0 ? '还没有发票，点右下角拍一张' : '没有符合条件的发票'
       ]));
@@ -1136,6 +1146,9 @@ export async function renderInvoices(root) {
     const nodes = [];
     for (const inv of rows) {
       const thumbUrl = inv.fileId ? await invoiceStore.thumbUrlFor(inv.fileId).catch(() => null) : null;
+      // 每取一张缩略图都要重新对一次序号：一次列表可能有几十张票，等第一张的时候
+      // 用户完全来得及切走再切回来。这里停手而不是继续拼节点，省掉整轮无用的 IO。
+      if (seq !== paintSeq) return;
       nodes.push(el('button', {
         class: 'inv-item',
         type: 'button',
@@ -1152,6 +1165,7 @@ export async function renderInvoices(root) {
         el('div', { class: 'inv-amount', text: formatCents(inv.amountCents) })
       ]));
     }
+    if (seq !== paintSeq) return;
     mount(listBox, nodes);
   }
 
@@ -1176,7 +1190,14 @@ export async function renderInvoices(root) {
     searchInput,
     filterBox,
     listBox
-  ]));
+  ]),
+  // 右下角新建入口：类名、位置、观感都跟记账页的 FAB 保持一致。
+  // 少了它就等于没有入口——空态那句「点右下角拍一张」会指向一片空气。
+  el('button', {
+    class: 'fab', type: 'button', text: '+',
+    'aria-label': '新建发票',
+    onclick: () => openNewInvoice(refresh)
+  }));
 
   await paint();
 }
@@ -1231,11 +1252,9 @@ import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import * as invoiceStore from '../invoice-store.js';
-import * as store from '../store.js';
-import { prepareFile, saveFile, getFullUrl, revokeUrl } from '../image-store.js';
-import { INVOICE_TYPES, validateInvoice, findByNumberGuard } from '../invoice-model.js';
-import { formatCents, parseAmountToCents } from '../money.js';
-import { todayRange } from '../dates.js';
+import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl } from '../image-store.js';
+import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
+import { formatCents } from '../money.js';
 
 let activeSheet = null;
 
@@ -1260,21 +1279,33 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   const sheet = openSheet({ title: id ? '编辑发票' : '新建发票', body });
   activeSheet = sheet;
 
+  // 换预览内容时先记住旧节点：从图片换成 PDF 占位之后，旧图片那个 object URL 再没人持有，
+  // 不 revoke 就是每换一次文件泄漏一份内存（原来只在「图换图」那一支做了，漏了「图换 PDF」）。
+  function mountPreview(node) {
+    const old = previewBox.firstChild;
+    mount(previewBox, node);
+    if (old?.tagName === 'IMG') revokeUrl(old.src);
+  }
+
   async function paintPreview() {
     if (!state.fileId) {
-      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      return;
+    }
+    // PDF 不能塞进 <img>：getFullUrl 对任何存在的记录都返回一个 blob URL，
+    // 只判 `!url` 是拦不住它的——那样 <img src="blob:…pdf"> 加载失败，用户看到的是裂图加
+    // 一行浅灰的 alt 文字，比干脆不显示更糟。所以先取一次记录看 mime，只有图片才走 <img>。
+    const rec = await getFile(state.fileId).catch(() => null);
+    if (!rec || !String(rec.mime || '').startsWith('image/')) {
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
       return;
     }
     const url = await getFullUrl(state.fileId).catch(() => null);
     if (!url) {
-      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
       return;
     }
-    const img = el('img', { class: 'inv-preview', src: url, alt: '发票' });
-    // 图片换成新的之后要释放旧的 object URL，否则每换一次泄漏一份内存
-    const old = previewBox.firstChild;
-    mount(previewBox, img);
-    if (old?.tagName === 'IMG') revokeUrl(old.src);
+    mountPreview(el('img', { class: 'inv-preview', src: url, alt: '发票' }));
   }
 
   async function pickFile(file) {
@@ -1595,8 +1626,8 @@ import { openInvoiceLinkSheet } from './invoice-view.js';
   gap: 8px;
   width: 100%;
   padding: 8px 10px;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   text-align: left;
 }
