@@ -30,7 +30,10 @@
 // v12：剪贴板写入加三层兜底 —— 安卓 WebView 里 navigator.clipboard.writeText 会直接
 // reject（没有浏览器那套权限模型），真机上表现为恢复码「复制失败」；现在优先走壳的
 // Java 桥调系统 ClipboardManager，其次 navigator.clipboard，最后退回 execCommand。
-const CACHE = 'pvault-v12';
+// v13：发票功能的 7 个新文件（invoice-model / image-scale / image-store / invoice-store /
+// ui/invoice-view / ui/invoice-editor / invoice.css）进了预缓存清单。漏掉它们的后果和上面
+// v3 那次一样：离线时这几个 ES module 404，import 链一断，发票 Tab 直接打不开。
+const CACHE = 'pvault-v13';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -44,6 +47,7 @@ const ASSETS = [
   './manifest.webmanifest',
   './styles/base.css',
   './styles/components.css',
+  './styles/invoice.css',
   './styles/ledger.css',
   './styles/vault.css',
   './icons/icon.svg',
@@ -55,9 +59,13 @@ const ASSETS = [
   './app/csv.js',
   './app/dates.js',
   './app/db.js',
+  './app/image-scale.js',
+  './app/image-store.js',
   './app/import-parse.js',
   './app/import-schema.js',
   './app/import-store.js',
+  './app/invoice-model.js',
+  './app/invoice-store.js',
   './app/keypad-model.js',
   './app/main.js',
   './app/money.js',
@@ -78,6 +86,8 @@ const ASSETS = [
   './app/ui/dom.js',
   './app/ui/entry-panel.js',
   './app/ui/import-view.js',
+  './app/ui/invoice-editor.js',
+  './app/ui/invoice-view.js',
   './app/ui/keypad.js',
   './app/ui/ledger-home.js',
   './app/ui/receivable-view.js',
