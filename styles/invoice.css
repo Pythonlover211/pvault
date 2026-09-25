@@ -105,3 +105,43 @@
   text-align: left;
 }
 .inv-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+/* —— 编辑器里的「关联账目」一行（app/ui/invoice-editor.js）——
+   状态行说清现在挂着哪笔账；候选列表限高内滚，行与行之间只用一条 --border 细线分隔、
+   按下反馈才上 --surface-2——它本来就嵌在面板底色上，再铺一层卡片色就是套三层盒子。 */
+.inv-link-status { font-size: var(--font-sm); color: var(--text-2); }
+/* 「已关联的账目已不存在」的一句是要人看见的实话，用错误色而不是次要灰。 */
+.inv-link-missing { font-size: var(--font-sm); color: var(--error); }
+.inv-link-list {
+  /* 限高加内滚动：列表只取最近 50 笔，但不能靠「条数不多」来保证面板高度——
+     50 行铺开是一屏的几倍长，面板会变成一个翻不到底的抽屉。 */
+  max-height: 212px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+}
+/* 整行可点，所以是铺满宽度的按钮：要清掉按钮默认底色、让字体继承面板字号（与 .inv-row 同理）。 */
+.inv-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-sm);
+  text-align: left;
+}
+/* 行与行之间用一条细线分开，不靠底色：底色要留给按下时的反馈。 */
+.inv-link-row + .inv-link-row { border-top: 1px solid var(--border); }
+.inv-link-row:active { background: var(--surface-2); }
+/* 日期加分类名可能很长（分类名是用户自己起的）：让它省略号收尾，且不把右边的金额挤出去。
+   min-width 必须显式写 0——flex 项默认 min-width:auto，光有 overflow:hidden 是压不扁的。 */
+.inv-link-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 金额那一格不参与压缩。 */
+.inv-link-row span:last-child { flex: none; }

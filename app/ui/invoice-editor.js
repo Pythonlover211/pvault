@@ -8,8 +8,19 @@ import * as invoiceStore from '../invoice-store.js';
 import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile } from '../image-store.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
+import { formatDayLabel } from '../dates.js';
+// 关联账目要读流水与分类表，走仓库层（视图不直接碰 db.js）。
+import * as store from '../store.js';
 
 let activeSheet = null;
+
+// 关联账目的候选只列最近 50 笔：流水可能几百笔，全铺开会把这个面板撑得又长又慢，
+// 而「这张票该挂哪笔账」几乎总是最近那几笔。
+const MAX_TXN_OPTIONS = 50;
+// 「已经挂着的那笔账还在不在」用更宽的时间窗确认：仓库层没有按 id 查单笔交易的接口
+// （只有按时间范围取），而票往往是过后才挂上去的，那笔账完全可能比 6 个月还早。
+// 少了这一次查询，几个月前挂的票会被误报成「账目已不存在」。
+const LINKED_LOOKBACK_MONTHS = 120;
 
 export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   // 同一时刻只开一层：与项目其它 sheet 的约定一致
@@ -35,9 +46,44 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   // 用户看到的、以及将来保存下去的都会是错的那张。
   let previewSeq = 0;
 
+  // —— 关联账目 ——
+  // 候选流水与分类表在打开面板时取一次（loadTxns），分类只用来把 categoryId 翻成人看得懂的名字。
+  let txns = [];          // 已知的流水（含为确认老账目而多查回来的那一笔）
+  let txnByDate = [];     // 列表要画的那些：时间倒序、最多 MAX_TXN_OPTIONS 笔
+  let catOf = new Map();  // categoryId → 分类记录
+  // 用两个标志区分三态。读回来之前什么都不画：「未关联」会在一两秒后自己变成别的内容，
+  // 用户会以为面板在乱跳；而把「还没读回来」当成「已不存在」更糟——那是在报一个不存在的错。
+  let txnsLoaded = false;
+  let txnsFailed = false;
+  let pickerOpen = false;
+
+  // —— 删除（两段式确认）——
+  // delArmed 表示「已经点过一次」；delTimer 负责几秒后自动复原；deleting 防重入，
+  // 与 submit 的 saving / submitted 是同一套。
+  let delArmed = false;
+  let delTimer = null;
+  let deleting = false;
+
   const errorNode = el('div', { class: 'vault-error' });
   const previewBox = el('div', {});
   const body = el('div', { class: 'stack' });
+
+  // 关联账目这一行的三个节点：状态文案、点开后出现的候选列表、两个动作按钮。
+  // 它们都在构造期建好、之后只 mount 内容，这样 loadTxns 回来时不必整块重建面板
+  // （重建会把用户已经填好的字段和正在编辑的输入框一起换掉）。
+  const txnStatus = el('div', { class: 'inv-link-status' });
+  const txnPicker = el('div', {});
+  const txnActions = el('div', { class: 'row' });
+  const txnBox = el('div', { class: 'stack', style: 'gap:6px' }, [txnStatus, txnPicker, txnActions]);
+
+  // 删除按钮只在编辑已有发票时构造（新建时没什么可删的）。
+  // 它在「保存」下面单独占一行、不并排：两个按钮挨着时手指很容易点错，而这个操作不可逆。
+  const deleteBtn = id
+    ? el('button', {
+        class: 'btn btn-danger', type: 'button', text: '删除这张发票',
+        onclick: () => { removeInvoice(); }
+      })
+    : null;
 
   const sheet = openSheet({ title: id ? '编辑发票' : '新建发票', body });
   activeSheet = sheet;
@@ -239,6 +285,186 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     amountText.textContent = formatCents(inv.amountCents ?? 0, { symbol: true });
   }
 
+  // —— 关联账目 ——
+
+  // 分类名：转账本来就没有分类（categoryId 是 null），单独说「转账」；分类在设置里被删过
+  // 就退回「未分类」——留一段空白会让人以为是渲染坏了。
+  function txnNameOf(t) {
+    if (t.kind === 'transfer') return '⇄ 转账';
+    const cat = catOf.get(t.categoryId);
+    return `${cat?.icon || '📦'} ${cat?.name || '未分类'}`;
+  }
+
+  // 日期用 formatDayLabel：最近两天说「今天 / 昨天」，再往前是「M月D日」，
+  // 与首页流水行、发票列表是同一套说法。
+  function txnDateOf(t) {
+    return formatDayLabel(t.occurredAt, Date.now());
+  }
+
+  function txnCentsOf(t) {
+    // 金额坏掉时按 0 显示：formatCents(undefined) 会打出 ¥NaN，比一个 0 难看得多。
+    return formatCents(Number.isSafeInteger(t.amountCents) ? t.amountCents : 0, { symbol: true });
+  }
+
+  function renderPicker() {
+    if (txnsFailed) {
+      return el('div', { class: 'muted tiny', text: '账目列表读取失败，关掉面板重开一次再试' });
+    }
+    if (txnByDate.length === 0) {
+      return el('div', { class: 'muted tiny', text: '最近 6 个月还没有记账' });
+    }
+    return el('div', { class: 'inv-link-list' }, txnByDate.map(t => el('button', {
+      class: 'inv-link-row', type: 'button',
+      onclick: () => {
+        state.txnId = t.id;
+        // 选完就收起：留着列表只会把面板撑长，而这一次选择已经做完了。
+        pickerOpen = false;
+        paintTxnField();
+      }
+    }, [
+      el('span', { text: `${txnDateOf(t)} · ${txnNameOf(t)}` }),
+      el('span', { class: 'num', text: txnCentsOf(t) })
+    ])));
+  }
+
+  function paintTxnField() {
+    const linked = state.txnId ? txns.find(t => t.id === state.txnId) : null;
+
+    if (!txnsLoaded) {
+      txnStatus.className = 'inv-link-status';
+      txnStatus.textContent = '账目读取中…';
+    } else if (!state.txnId) {
+      txnStatus.className = 'inv-link-status';
+      txnStatus.textContent = '未关联';
+    } else if (linked) {
+      txnStatus.className = 'inv-link-status';
+      txnStatus.textContent = `${txnDateOf(linked)} · ${txnNameOf(linked)} · ${txnCentsOf(linked)}`;
+    } else {
+      // 账确实找不到了（被删掉，或这台设备上本来就没有它）。如实说出来，不留空白也不抛错。
+      // 这里**不**动 state.txnId：用户可能只是记错了，重新选一笔就好；真要清掉得他自己点
+      // 「取消关联」。面板里的改动一律以「保存」为准，所以此刻它还没有落库。
+      txnStatus.className = 'inv-link-missing';
+      txnStatus.textContent = '已关联的账目已不存在';
+    }
+
+    const actions = [el('button', {
+      class: 'btn', type: 'button', text: '选一笔账',
+      onclick: () => { pickerOpen = !pickerOpen; paintTxnField(); }
+    })];
+    if (state.txnId) {
+      actions.push(el('button', {
+        class: 'btn', type: 'button', text: '取消关联',
+        // 只把 state.txnId 置 null，不碰库：这个面板里所有改动都等「保存」才落盘
+        // （与改号码、改销售方一样），所以反悔的成本是零——关掉面板就行。
+        onclick: () => { state.txnId = null; pickerOpen = false; paintTxnField(); }
+      }));
+    }
+    mount(txnActions, actions);
+    mount(txnPicker, pickerOpen ? [renderPicker()] : []);
+  }
+
+  async function loadTxns() {
+    try {
+      // 两份数据一起取：分类只用来把 categoryId 翻成名字，串行 await 只是白等一个事务。
+      const [list, categories] = await Promise.all([
+        store.listTransactionsInMonths(6),
+        store.listAllCategories()
+      ]);
+      catOf = new Map(categories.map(c => [c.id, c]));
+      txns = list;
+      // 候选列表在副本上倒序（仓库层是按时间正序返回的），再截到最近 50 笔。
+      txnByDate = list.slice().sort((a, b) => b.occurredAt - a.occurredAt).slice(0, MAX_TXN_OPTIONS);
+
+      // 已经挂着的那笔可能比 6 个月还早（票是过后才挂上去的，也可能是备份恢复进来的）：
+      // 只看这 6 个月会把它当成「已删除」，报一句会吓到人的错话。仓库层没有按 id 查单笔交易的
+      // 接口，只能用一次更宽的时间窗确认它到底还在不在——只在「这 6 个月里找不到」时才多查一次。
+      if (state.txnId && !list.some(t => t.id === state.txnId)) {
+        const wider = await store.listTransactionsInMonths(LINKED_LOOKBACK_MONTHS);
+        const older = wider.find(t => t.id === state.txnId);
+        if (older) txns = list.concat([older]);
+      }
+    } catch (err) {
+      // 取不到不挡着存票：这一行退化成一句说明，发票本身照常能存能改。
+      txnsFailed = true;
+      console.error('关联账目的候选流水读取失败', err);
+    }
+    txnsLoaded = true;
+    paintTxnField();
+  }
+
+  // —— 删除这张发票 ——
+
+  // 复原确认态：按钮文字回到原样。超时与「点完第二次」都走这里，只此一份。
+  function disarmDelete() {
+    delArmed = false;
+    if (delTimer) { clearTimeout(delTimer); delTimer = null; }
+    if (deleteBtn) deleteBtn.textContent = '删除这张发票';
+  }
+
+  async function removeInvoice() {
+    // 与 submit 同一套两道锁：保存/删除还没走完、或已经存过/删过，都不许再进来。
+    if (saving || submitted || deleting) return;
+    if (!state.id) {
+      // 记录已经不在了（load 里刚把 state.id 清掉）。别去调仓库层——deleteInvoice(null)
+      // 会拿 null 当主键查库，抛出来的是一个英文的 IndexedDB 异常。
+      errorNode.textContent = '这张发票已经不在了，不必删除';
+      return;
+    }
+    // 图片还在 prepareFile / saveFile 里（手机上几百毫秒到数秒）时不许删，与 submit 同一道门槛。
+    // 放过去的话，那次选图会在面板关掉之后回来写 state.fileId、并挂上 setEditingFile 的
+    // 「正在编辑」标记——那个标记一走神就再没人摘，孤儿图清理会一直跳过这张图。
+    if (state.busy) {
+      errorNode.textContent = '图片还在处理，稍等一下再删除';
+      return;
+    }
+    // 两段式：第一次点只进入确认态，再点一次才真的删。刻意不用 window.confirm——
+    // 那是同步阻塞的系统弹窗，样式不可控、在 PWA 里还会打断整页，而这个项目所有交互
+    // 都不用系统弹窗（查重提示、密码箱的「确认删除？」都是改按钮文字），
+    // 按钮就长在手指底下，改文字是最轻的确认方式。
+    if (!delArmed) {
+      delArmed = true;
+      deleteBtn.textContent = '再点一次就删除';
+      // 几秒后自动复原：用户点了第一次又去改别的字段、然后顺手点「保存」是常见路径，
+      // 一个一直亮着「再点一次就删除」的按钮会让下一次误触直接删掉发票。
+      delTimer = setTimeout(disarmDelete, 3000);
+      return;
+    }
+    disarmDelete();
+    deleting = true;
+    deleteBtn.disabled = true;
+    errorNode.textContent = '';
+
+    try {
+      await invoiceStore.deleteInvoice(state.id);
+    } catch (err) {
+      // 删除失败绝不关面板：用户得知道为什么没删掉（配额、库被占用…）。
+      // 关掉面板会让他以为删成功了，下次进来发现票还在。
+      deleting = false;
+      deleteBtn.disabled = false;
+      errorNode.textContent = '删除失败：' + (err?.message || err);
+      console.error(err);
+      return;
+    }
+
+    // 删除**不可逆**：库里的记录连同它的图片一起没了（deleteInvoice 里连着删图），没有回收站。
+    // 所以成功之后用 submitted 把整块面板锁死——sheet.close() 之后节点还要留 ~180ms，
+    // 这期间再点「保存」会把这张刚删掉的发票原样写回去（state.id 还在）。
+    submitted = true;
+    // 那张图已经被删掉了，编辑器不再「正在编辑」任何东西，把孤儿图清理的保护摘掉。
+    setEditingFile(null);
+    sheet.close();
+    activeSheet = null;
+    // 回调必须自己吞异常：面板已经收起，把错误写进 errorNode 用户根本看不到
+    // （与保存成功后那段同一套约定）。
+    if (onSaved) {
+      try {
+        await onSaved();
+      } catch (err) {
+        console.error('发票删除后的回调失败', err);
+      }
+    }
+  }
+
   // mount(parent, ...nodes) 是变参（内部还会 flat），这里按项目其它视图的写法传变参。
   mount(body,
     errorNode,
@@ -260,8 +486,32 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       el('span', { text: '仅存档（不参与报销追踪）' })
     ]),
     field('备注', noteInput),
-    el('button', { class: 'btn btn-primary', type: 'button', text: '保存', onclick: submit })
+    // 关联账目：先有票、再决定挂到哪笔账上，这是更贴近真实使用顺序的入口。
+    // 记账首页那个「🧾N」标记只在某笔账**已经有票**时才出现（见 ledger-home.js），
+    // 所以「给一笔还没挂票的账挂上第一张票」这条路只有这里能走通。
+    // 这里不用 field()：它返回的是 <label>，包住按钮之后连点「关联账目」这几个字都会触发
+    // 第一个按钮（label 会把点击转给第一个可标记的后代），出现「点标题却打开了列表」。
+    el('div', { class: 'stack', style: 'gap:4px' }, [
+      el('span', { class: 'k', text: '关联账目' }),
+      txnBox
+    ]),
+    el('button', { class: 'btn btn-primary', type: 'button', text: '保存', onclick: submit }),
+    deleteBtn
   );
 
-  load().then(paintPreview).catch(err => { errorNode.textContent = String(err?.message || err); });
+  // 启动顺序是刻意的：先回填发票（load 会写 state.txnId），再取流水——「已关联的那笔账还在不在」
+  // 必须按回填后的 txnId 判断，顺序反了，编辑一张挂了老账的票会得出一句错的结论。
+  // 两份数据各兜各的异常：发票读不出来时不该再画预览（那会显示成「还没有图片」，是错的信息），
+  // 而流水仍然要取，否则「关联账目」那一行会永远停在「账目读取中…」。
+  (async () => {
+    let loaded = false;
+    try {
+      await load();
+      loaded = true;
+    } catch (err) {
+      errorNode.textContent = String(err?.message || err);
+    }
+    await loadTxns();
+    if (loaded) await paintPreview();
+  })().catch(err => { errorNode.textContent = String(err?.message || err); });
 }
