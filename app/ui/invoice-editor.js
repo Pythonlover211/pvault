@@ -5,8 +5,7 @@ import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import * as invoiceStore from '../invoice-store.js';
-import * as store from '../store.js';
-import { prepareFile, saveFile, getFullUrl, revokeUrl } from '../image-store.js';
+import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl } from '../image-store.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 
@@ -33,21 +32,33 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   const sheet = openSheet({ title: id ? '编辑发票' : '新建发票', body });
   activeSheet = sheet;
 
+  // 换预览内容时先记住旧节点：从图片换成 PDF 占位之后，旧图片那个 object URL 再没人持有，
+  // 不 revoke 就是每换一次文件泄漏一份内存（原来只在「图换图」那一支做了，漏了「图换 PDF」）。
+  function mountPreview(node) {
+    const old = previewBox.firstChild;
+    mount(previewBox, node);
+    if (old?.tagName === 'IMG') revokeUrl(old.src);
+  }
+
   async function paintPreview() {
     if (!state.fileId) {
-      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      return;
+    }
+    // PDF 不能塞进 <img>：getFullUrl 对任何存在的记录都返回一个 blob URL，
+    // 只判 `!url` 是拦不住它的——那样 <img src="blob:…pdf"> 加载失败，用户看到的是裂图加
+    // 一行浅灰的 alt 文字，比干脆不显示更糟。所以先取一次记录看 mime，只有图片才走 <img>。
+    const rec = await getFile(state.fileId).catch(() => null);
+    if (!rec || !String(rec.mime || '').startsWith('image/')) {
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
       return;
     }
     const url = await getFullUrl(state.fileId).catch(() => null);
     if (!url) {
-      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
       return;
     }
-    const img = el('img', { class: 'inv-preview', src: url, alt: '发票' });
-    // 图片换成新的之后要释放旧的 object URL，否则每换一次泄漏一份内存
-    const old = previewBox.firstChild;
-    mount(previewBox, img);
-    if (old?.tagName === 'IMG') revokeUrl(old.src);
+    mountPreview(el('img', { class: 'inv-preview', src: url, alt: '发票' }));
   }
 
   async function pickFile(file) {

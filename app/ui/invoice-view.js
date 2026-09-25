@@ -19,6 +19,12 @@ const FILTERS = [
 let filter = 'all';
 let keyword = '';
 
+// 当前列表渲染序号：每次 paint() 自增。paint 是逐行 await 取缩略图的异步循环，
+// 而切 Tab 会立刻发起新的一次渲染——main.js 的 renderSeq 只保证外壳（root）不被旧渲染盖，
+// 管不到这个 listBox。少了这道检查，先发起、后完成的那次会把新列表盖回去，
+// 用户切回来看到的是一份旧数据（点进去还会是已经被删掉的那张票）。
+let paintSeq = 0;
+
 function matches(inv, kw) {
   if (!kw) return true;
   const hay = [inv.seller, inv.number, inv.note, inv.buyerTitle].join(' ').toLowerCase();
@@ -57,10 +63,12 @@ export async function renderInvoices(root) {
   }
 
   async function paint() {
+    const seq = ++paintSeq;
     paintFilters();
     const kw = keyword.trim().toLowerCase();
     const rows = all.filter(inv => inFilter(inv) && matches(inv, kw));
     if (rows.length === 0) {
+      if (seq !== paintSeq) return;
       mount(listBox, el('div', { class: 'empty' }, [
         all.length === 0 ? '还没有发票，点右下角拍一张' : '没有符合条件的发票'
       ]));
@@ -69,6 +77,9 @@ export async function renderInvoices(root) {
     const nodes = [];
     for (const inv of rows) {
       const thumbUrl = inv.fileId ? await invoiceStore.thumbUrlFor(inv.fileId).catch(() => null) : null;
+      // 每取一张缩略图都要重新对一次序号：一次列表可能有几十张票，等第一张的时候
+      // 用户完全来得及切走再切回来。这里停手而不是继续拼节点，省掉整轮无用的 IO。
+      if (seq !== paintSeq) return;
       nodes.push(el('button', {
         class: 'inv-item',
         type: 'button',
@@ -85,6 +96,7 @@ export async function renderInvoices(root) {
         el('div', { class: 'inv-amount', text: formatCents(inv.amountCents) })
       ]));
     }
+    if (seq !== paintSeq) return;
     mount(listBox, nodes);
   }
 
@@ -109,7 +121,14 @@ export async function renderInvoices(root) {
     searchInput,
     filterBox,
     listBox
-  ]));
+  ]),
+  // 右下角新建入口：类名、位置、观感都跟记账页的 FAB 保持一致。
+  // 少了它就等于没有入口——空态那句「点右下角拍一张」会指向一片空气。
+  el('button', {
+    class: 'fab', type: 'button', text: '+',
+    'aria-label': '新建发票',
+    onclick: () => openNewInvoice(refresh)
+  }));
 
   await paint();
 }
