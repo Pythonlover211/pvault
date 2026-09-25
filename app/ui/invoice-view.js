@@ -92,15 +92,17 @@ export async function renderInvoices(root) {
   // 与 listBox 同样的做法：整页只 mount 一次，之后局部替换内容。
   const summaryBox = el('div', { class: 'inv-summary' });
 
+  // 展示金额一律带 ¥（formatCents 的 symbol 选项）：记账页与编辑器都带，
+  // 同一个屏幕上两个口径（列表带符号、汇总不带）会让人以为它们不是同一种数。
   function paintSummary(s) {
     mount(summaryBox,
       el('div', { class: 'inv-summary-cell' }, [
         el('div', { class: 'k', text: '本月发票' }),
-        el('div', { class: 'v', text: formatCents(s.monthCents) })
+        el('div', { class: 'v', text: formatCents(s.monthCents, { symbol: true }) })
       ]),
       el('div', { class: 'inv-summary-cell' }, [
         el('div', { class: 'k', text: `待报销（${s.pendingCount} 张）` }),
-        el('div', { class: 'v', text: formatCents(s.pendingCents) })
+        el('div', { class: 'v', text: formatCents(s.pendingCents, { symbol: true }) })
       ])
     );
   }
@@ -154,7 +156,7 @@ export async function renderInvoices(root) {
           el('div', { class: 'inv-meta', text: [typeLabel(inv.type), inv.number].filter(Boolean).join(' · ') }),
           el('div', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: inv.archived ? '仅存档' : (inv.reimbursementId ? '已报销' : '待报销') })
         ]),
-        el('div', { class: 'inv-amount', text: formatCents(inv.amountCents) })
+        el('div', { class: 'inv-amount', text: formatCents(inv.amountCents, { symbol: true }) })
       ]);
     });
     mount(listBox, items);

@@ -43,7 +43,8 @@ export async function renderLedgerHome(root) {
       // 一次性整表统计，不要逐笔查：今日流水十几笔就是十几个事务，
       // 而发票表在没有导入大备份时也就几十到几百条，一次 getAll 更省。
       // 它返回 { [txnId]: 条数 }，没有发票的账根本不出现在这个对象里。
-      invoiceStore.countByTxn()
+      // 兜成空对象：这只是行尾的一个「🧾N」角标，它失败不该让整个记账首页变成「页面加载失败」。
+      invoiceStore.countByTxn().catch(() => ({}))
     ]);
 
   // 只有支出需要扣分摊；收入与转账原样透传（effectiveExpense 内部也判了 kind，这里显式写着更清楚）。

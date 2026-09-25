@@ -29,7 +29,32 @@ export async function findByNumber(number) {
 
 export async function listByTxn(txnId) {
   if (!txnId) return [];
-  return db.getAllByIndex('invoices', 'by_txn', txnId);
+  const hits = await db.getAllByIndex('invoices', 'by_txn', txnId);
+  // 索引查询的顺序实际是随机的：同一个索引键下的多条记录按主键排，而主键是随机 uid，
+  // 于是「这笔账挂的三张票」每次打开顺序都不一样。与 listInvoices 用同一套排序：
+  // 开票日期倒序，同日的按录入时间倒序。
+  return hits.sort((a, b) => (b.issuedAt ?? 0) - (a.issuedAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+}
+
+/**
+ * 写发票记录。db.put 抛出来的英文异常不能原样丢给用户：界面上会显示
+ * 「保存失败：QuotaExceededError: …」，用户既不知道发生了什么，也不知道下一步该做什么。
+ * 翻译的口气与 image-store.js 的 saveFile 保持一致——同一个异常在图片和发票两处
+ * 必须说同一种人话，否则一处给建议、一处甩英文，政策就不统一了。
+ */
+async function putInvoice(record) {
+  try {
+    await db.put('invoices', record);
+  } catch (err) {
+    if (err?.name === 'QuotaExceededError') {
+      const quota = new Error('手机存储空间不够了，这张发票没存下。可以先去「记账 → 备份」导出一份并清理旧数据再试。');
+      // 沿用原 name：界面读的是 message（已经是中文人话），控制台与排查时仍认得出这是配额失败，
+      // 不至于退化成一个无从追查的普通 Error。
+      quota.name = err.name;
+      throw quota;
+    }
+    throw err;
+  }
 }
 
 /** 每笔账挂了发票的条数，形如 { [txnId]: n }。记账列表用它显示「发票（N）」。 */
@@ -75,7 +100,7 @@ export async function saveInvoice(input) {
 
   // 换了图就把旧图删掉，否则 invoiceFiles 会越攒越多、备份也跟着虚胖
   const oldFileId = existing?.fileId;
-  await db.put('invoices', inv);
+  await putInvoice(inv);
   if (oldFileId && oldFileId !== inv.fileId) {
     await deleteFile(oldFileId);
   }
@@ -86,7 +111,7 @@ export async function saveInvoice(input) {
 export async function linkToTxn(invoiceId, txnId) {
   const inv = await getInvoice(invoiceId);
   if (!inv) throw new Error('发票不存在');
-  await db.put('invoices', { ...inv, txnId: txnId ?? null, updatedAt: Date.now() });
+  await putInvoice({ ...inv, txnId: txnId ?? null, updatedAt: Date.now() });
 }
 
 export async function deleteInvoice(id) {
