@@ -1523,6 +1523,24 @@ const data = {
 
 `REQUIRED_ARRAYS` **不变**——新字段是可选扩展，老备份没有它也要能导入。
 
+- [ ] **步骤 1.5：把 `invoices` 加回 `ARRAY_STORES`（三个地方必须一起动）**
+
+`app/backup-store.js` 的 `ARRAY_STORES` 现在是**显式**列表 `['txns', 'accounts', 'categories', 'receivables']`——它刻意不从 `Object.keys(STORES)` 派生：加发票三张表时正是那次派生让这个清单悄悄变成 7 张，而 `buildBackup` 仍只打包 5 个键，于是导入任何既有备份文件都在 `for (const value of data[name])` 上抛 TypeError，「恢复备份」这条唯一的救命通道整体失效（`app/backup-store.js` 里记着这件事的完整注释）。
+
+本任务要让发票进备份，就在这里显式加上 `invoices`：
+
+```js
+const ARRAY_STORES = ['txns', 'accounts', 'categories', 'receivables', 'invoices'];
+```
+
+**但 `invoiceFiles` 不能加进这个清单**：它长得和记账那四张表不一样，`blob` / `thumbBlob` 是 Blob，直接进 `for (const value of data[name])` 循环会写进 `{}`（JSON 里的 Blob 就是这么来的）。它由下面的 `encodeFiles()` 与反解逻辑单独处理，相应地：
+
+1. 写库时单独 `puts.push({ store: 'invoiceFiles', value })`；
+2. 清库时必须显式列进去：`clears: [...ARRAY_STORES, 'invoiceFiles', 'settings']`——漏了它，「覆盖恢复」之后旧图片还会留在库里，新发票指向的图片 id 可能撞上这些残留；
+3. 反解循环要自己判空：老备份里根本没有 `invoiceFiles` 键，`for (const f of data.invoiceFiles)` 会抛（`ARRAY_STORES` 那个循环有 `?? []` 兜底，这条独立路径没有）。
+
+**这一步之后的回归验证（必做）**：导入一个**加发票之前导出的老备份文件**，必须仍然成功。这是本任务最容易打破的东西。
+
 - [ ] **步骤 2：导出时把图片转 base64**
 
 在 `app/backup-store.js` 的 `exportBackup` 里、组装 payload 处加：
@@ -1657,6 +1675,11 @@ adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>
 - [ ] **步骤 4：** 更新 `docs/手动验证清单.md`，加「发票」小节
 
 至少覆盖：第 4 个 Tab 存在、拍照、选 PDF、压缩后能看清字、查重提示（再点一次保存可强行存入）、仅存档、挂靠账目、流水行的「🧾N」标记与关联面板、含图备份导出与恢复后图片字节一致、不含图片备份恢复后发票记录仍在。
+
+另外补两条与这次加表直接相关的：
+
+- **老备份仍能导入**：用一个加发票之前导出的备份文件走一遍恢复，必须成功。加表那次差点把这条通道打掉（`ARRAY_STORES` 从 `STORES` 派生 → 多出三个键 → 老备份里没有 → `for...of undefined` 抛 TypeError），现在靠显式清单 + `?? []` 兜底守着，每次动备份结构都要手动回归一次。
+- **升级被多标签页挡住时要有明确提示**：同一浏览器里开两个 pvault 页面，把其中一个更新到新版本（`DB_VERSION` 变了）后刷新，应看到「数据库正在被另一个页面占用」这类明确文字，而**不是**页面卡在那儿一动不动、什么都不发生。这是 `app/db.js` 的 `onblocked` 那条错误唯一的实测机会。
 
 - [ ] **步骤 5：** Commit
 
