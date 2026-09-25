@@ -37,6 +37,16 @@ test('非法尺寸：不抛错，返回 0 尺寸让对方放弃压缩', () => {
   }
 });
 
+test('非法 maxEdge：不返回 1×1，也不返回 NaN', () => {
+  // maxEdge 是单独就能毁图的参数：0 会把发票缩成一像素；NaN 时 Math.max(1, NaN) 得到 NaN，
+  // 而调用方原先的守卫写的是 width === 0，NaN 会溜过去变成一块宽度 0 的画布。
+  for (const edge of [0, NaN, -100]) {
+    const r = computeTargetSize(4000, 3000, edge);
+    assert.deepEqual(r, { width: 0, height: 0, scale: 1 }, `maxEdge=${edge} 应当整体判非法`);
+  }
+  assert.equal(computeTargetSize(4000, 3000, 1600).width, 1600, '合法 maxEdge 不受影响');
+});
+
 test('shouldCompress：小文件不压', () => {
   assert.equal(shouldCompress(100 * 1024, 4000, 3000), false, '小于阈值直接不压');
   assert.equal(shouldCompress(SKIP_COMPRESS_BYTES, 4000, 3000), true);
@@ -44,6 +54,14 @@ test('shouldCompress：小文件不压', () => {
 
 test('shouldCompress：本来就不大的图不压', () => {
   assert.equal(shouldCompress(5 * 1024 * 1024, 800, 600), false, '尺寸已在上限内，压了也白压');
+});
+
+test('shouldCompress：目标尺寸取整后没有真的变小就不压', () => {
+  // 1600.6×10 配 1600 的上限：scale 是 0.9996 < 1，目标却是 1600×10，
+  // 和原图截断后的像素数一样大——压了只是白跑一次解码 + 重编码，还多损失一道画质。
+  assert.equal(shouldCompress(SKIP_COMPRESS_BYTES, 1600.6, 10), false);
+  assert.equal(shouldCompress(SKIP_COMPRESS_BYTES, 1601, 10), true, '真的少了 1 像素才算变小');
+  assert.equal(shouldCompress(SKIP_COMPRESS_BYTES, 1600, 10), false, '刚好等于上限，原样返回');
 });
 
 test('useCompressed：压完反而更大就不用', () => {
@@ -57,6 +75,7 @@ test('useCompressed：压完反而更大就不用', () => {
 test('estimateBackupMB：空集合与脏数据都安全', () => {
   assert.equal(estimateBackupMB([]), 0);
   assert.equal(estimateBackupMB(null), 0);
+  assert.equal(estimateBackupMB({}), 0, '非数组不能变成 reduce is not a function');
   const oneMB = 1024 * 1024;
   const mb = estimateBackupMB([{ size: oneMB }, { size: oneMB }]);
   assert.ok(mb > 2 && mb < 4, 'base64 会比原始字节大约 1/3，再加缩略图系数');

@@ -97,6 +97,29 @@ export async function deleteInvoice(id) {
   if (inv.fileId) await deleteFile(inv.fileId);
 }
 
+/**
+ * 清掉没有任何发票引用的图片记录（拍完照又取消保存会留下这种孤儿）。
+ * 上面「换图删旧图」「删发票删图」只覆盖了走得完的流程，取消保存那条路没人管——
+ * 用久了就是一堆白占配额的 blob，而手机上的配额恰恰是最缺的东西。
+ * 只清 24 小时之前的：刚刚拍好、还没点保存的那张图此刻也是「没人引用」的，
+ * 立刻清就等于把用户正在编辑的图删掉了。惰性调用，不需要定时器。
+ */
+export async function cleanupOrphanFiles(now = Date.now()) {
+  const cutoff = now - 24 * 60 * 60 * 1000;
+  const [files, invoices] = await Promise.all([db.getAll('invoiceFiles'), db.getAll('invoices')]);
+  const used = new Set(invoices.map(inv => inv.fileId).filter(Boolean));
+  let removed = 0;
+  for (const file of files) {
+    if (used.has(file.id)) continue;
+    // 写法刻意是「不是明确的旧记录就跳过」：createdAt 缺失或坏掉时 Number() 得到 NaN，
+    // NaN < cutoff 为 false，于是留下。清理是删数据，拿不准的时候宁可漏清也不能误删。
+    if (!(Number(file.createdAt) < cutoff)) continue;
+    await deleteFile(file.id);
+    removed += 1;
+  }
+  return removed;
+}
+
 /** 汇总：本月合计、待报销合计（「仅存档」的票不计入待报销）。 */
 export async function summary(now = Date.now()) {
   const all = await listInvoices();
@@ -127,3 +150,7 @@ export async function thumbUrlFor(fileId) {
 export async function fullUrlFor(fileId) {
   return getFullUrl(fileId);
 }
+
+// 同理转发：发票列表整页重绘前要回收上一批缩略图 URL，但这个动作属于图片模块的缓存，
+// 视图层不该自己 import image-store（也就不该知道「URL 是缓存出来的」这件事）。
+export { clearUrlCache } from './image-store.js';

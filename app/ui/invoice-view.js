@@ -41,6 +41,11 @@ function inFilter(inv) {
 }
 
 export async function renderInvoices(root) {
+  // 顺手清一次孤儿图（拍完照又取消保存留下的那份）。**故意不 await**：它要扫两张表、
+  // 可能要删掉几十条 blob，等它做完用户看到的就是一段白屏；而清理是「迟早会做」的事，
+  // 晚几百毫秒和立刻做完对用户没有区别。清理失败也不该让发票页打不开，所以整段 catch 掉。
+  invoiceStore.cleanupOrphanFiles().catch(() => {});
+
   const all = await invoiceStore.listInvoices();
   const sum = await invoiceStore.summary();
 
@@ -64,6 +69,11 @@ export async function renderInvoices(root) {
 
   async function paint() {
     const seq = ++paintSeq;
+    // 先回收上一批缩略图 URL，再取新的。paint 会被搜索框每敲一个字、每次切筛选触发一次，
+    // 不回收就是每敲一个字攒下一整屏的 blob URL（每个还 pin 住对应的 Blob），全部活到页面卸载。
+    // 此刻 revoke 是安全的：旧节点上的 <img> 早已解码完成，显示不受影响，
+    // 而它们马上会被下面那次 mount 整批换掉——新的那一批用的是这次新取的 URL。
+    invoiceStore.clearUrlCache();
     paintFilters();
     const kw = keyword.trim().toLowerCase();
     const rows = all.filter(inv => inFilter(inv) && matches(inv, kw));
