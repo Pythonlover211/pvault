@@ -12,6 +12,7 @@
 //
 // 状态：anchorTs 与 scope 都是模块级状态，切 Tab 后回来仍停在上次看的那个月、那个口径。
 import { el, mount } from './dom.js';
+import { currentTab } from '../router.js';
 import { donutSegments, donutPath } from '../chart.js';
 import { byCategory, monthlyTotals, compareWithPrev, trendSeries } from '../summary.js';
 import { lastNMonths, monthRange, formatMonthLabel, addMonths } from '../dates.js';
@@ -65,6 +66,10 @@ export async function renderStats(root) {
 function rerender(root) {
   return draw(root).catch(err => {
     console.error(err);
+    // 出错时同样要先确认「还在统计 Tab 上」再写 root：main.js 用同一个 view 元素渲染所有
+    // Tab，用户在这几个 await 期间切走的话，这一行会把别的页面换成一句统计页的报错。
+    // 这里不比序号：新的那一次渲染自己会重画，用户切回来时该看到的是它的结果，不是这次的异常。
+    if (currentTab() !== 'stats') return;
     mount(root, el('div', { class: 'empty' }, ['页面加载失败：' + (err?.message || err)]));
   });
 }
@@ -315,9 +320,15 @@ async function draw(root) {
     ])
   ]);
 
-  // 快速连点月份箭头会起两次并发渲染，先发起的不一定先完成（都要查 6 个月数据）。
-  // 没有这个序号就是「后完成者决定界面」，界面会停在用户没选的那个月。
-  // 与 main.js 里的 renderSeq 是同一套思路（那次防的是快速切 Tab）。
-  if (seq !== drawSeq) return;
+  // 两次检查缺一不可，写法照 vault-view.js 的 activeSeq：
+  // ① currentTab() !== 'stats' —— 拦住「切走」。main.js 用**同一个 view 元素**渲染所有 Tab，
+  //    这次渲染在 await 之后无条件 mount(root, …) 就会盖掉别的页面（切到记账却显示统计图），
+  //    而 main.js 的 renderSeq 只保证「最后一次发起者挂 tabbar」，拦不住视图在这个窗口里写 view；
+  //    此后也不会再有 hashchange 来自愈。这一条是序号拦不住的——切走不会让 drawSeq 变化
+  //    （本视图根本没被再次调用）。
+  // ② seq !== drawSeq —— 拦住「切走再切回」。那时已经又发起过一次统计渲染（快速连点月份箭头
+  //    也会起两次并发渲染），先发起的不一定先完成，交给新的那一次去画，界面才不会停在
+  //    用户没选的那个月/那个口径上。
+  if (currentTab() !== 'stats' || seq !== drawSeq) return;
   mount(root, tree);
 }
