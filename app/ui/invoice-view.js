@@ -2,6 +2,7 @@
 // 依赖 invoice-store（进而 IndexedDB），验证靠模拟器实测。
 
 import { el, mount } from './dom.js';
+import { currentTab } from '../router.js';
 import * as invoiceStore from '../invoice-store.js';
 import { formatCents } from '../money.js';
 import { typeLabel, invoiceTitle } from '../invoice-model.js';
@@ -20,11 +21,19 @@ const FILTERS = [
 let filter = 'all';
 let keyword = '';
 
-// 当前列表渲染序号：每次 paint() 自增。paint 是逐行 await 取缩略图的异步循环，
+// 当前列表渲染序号：每次 paint() 自增。paint 是分批 await 取缩略图的异步循环，
 // 而切 Tab 会立刻发起新的一次渲染——main.js 的 renderSeq 只保证外壳（root）不被旧渲染盖，
 // 管不到这个 listBox。少了这道检查，先发起、后完成的那次会把新列表盖回去，
 // 用户切回来看到的是一份旧数据（点进去还会是已经被删掉的那张票）。
 let paintSeq = 0;
+
+// 当前视图渲染序号：每次 renderInvoices 自增。它与 paintSeq 管的是两件事——
+// 这个管「哪一次渲染有权往 root 上写」，paintSeq 管「哪一份列表该留在 listBox 里」。
+// 必须有这一道：await 之后本文件自己会 mount(root, …)，而 main.js 的 renderSeq 只保证
+// 「最后一次发起者挂 tabbar」，拦不住视图在这个窗口里写 view。复现是——进发票页后立刻点「统计」，
+// 统计先画完并挂上高亮，发票那一次随后 mount 覆盖掉内容，「统计」高亮着却显示发票列表，
+// 且此后不会再有 hashchange 来自愈。写法照 vault-view.js 的 activeSeq。
+let viewSeq = 0;
 
 function matches(inv, kw) {
   if (!kw) return true;
@@ -42,13 +51,24 @@ function inFilter(inv) {
 }
 
 export async function renderInvoices(root) {
+  const seq = ++viewSeq;
+
   // 顺手清一次孤儿图（拍完照又取消保存留下的那份）。**故意不 await**：它要扫两张表、
   // 可能要删掉几十条 blob，等它做完用户看到的就是一段白屏；而清理是「迟早会做」的事，
   // 晚几百毫秒和立刻做完对用户没有区别。清理失败也不该让发票页打不开，所以整段 catch 掉。
   invoiceStore.cleanupOrphanFiles().catch(() => {});
 
-  const all = await invoiceStore.listInvoices();
-  const sum = await invoiceStore.summary();
+  // 列表与汇总一起取：两者是同一次渲染的两半，串行 await 只是白白多等一个事务。
+  const [invoices, sum] = await Promise.all([invoiceStore.listInvoices(), invoiceStore.summary()]);
+  // 等数据这段时间用户完全来得及切走（前面那次全表清理还在抢 IO）。两个条件都要过：
+  // ① 已经切到别的 Tab 就直接走人——main.js 用同一个 view 元素渲染所有 Tab，此时写进去
+  //    就是「统计」高亮着却显示发票列表，而且此后不会再有 hashchange 来自愈。
+  //    这一条是序号拦不住的：切走不会让 viewSeq 变化（本视图根本没被再次调用）。
+  //    与 vault-view.js 里那句「切走之后不去动别人的视图」是同一道检查。
+  // ② 还是本 Tab、但已经又发起过一次发票渲染（切走再切回），交给新的那次去画。
+  if (currentTab() !== 'invoice' || seq !== viewSeq) return;
+
+  const all = invoices;
 
   const searchInput = el('input', {
     type: 'search',
@@ -59,6 +79,22 @@ export async function renderInvoices(root) {
 
   const listBox = el('div', {});
   const filterBox = el('div', { class: 'inv-filters' });
+  // 汇总区要能单独重画（保存完发票后金额和张数都变了），所以留一个容器节点，
+  // 与 listBox 同样的做法：整页只 mount 一次，之后局部替换内容。
+  const summaryBox = el('div', { class: 'inv-summary' });
+
+  function paintSummary(s) {
+    mount(summaryBox,
+      el('div', { class: 'inv-summary-cell' }, [
+        el('div', { class: 'k', text: '本月发票' }),
+        el('div', { class: 'v', text: formatCents(s.monthCents) })
+      ]),
+      el('div', { class: 'inv-summary-cell' }, [
+        el('div', { class: 'k', text: `待报销（${s.pendingCount} 张）` }),
+        el('div', { class: 'v', text: formatCents(s.pendingCents) })
+      ])
+    );
+  }
 
   function paintFilters() {
     mount(filterBox, FILTERS.map(f => el('button', {
@@ -70,11 +106,6 @@ export async function renderInvoices(root) {
 
   async function paint() {
     const seq = ++paintSeq;
-    // 先回收上一批缩略图 URL，再取新的。paint 会被搜索框每敲一个字、每次切筛选触发一次，
-    // 不回收就是每敲一个字攒下一整屏的 blob URL（每个还 pin 住对应的 Blob），全部活到页面卸载。
-    // 此刻 revoke 是安全的：旧节点上的 <img> 早已解码完成，显示不受影响，
-    // 而它们马上会被下面那次 mount 整批换掉——新的那一批用的是这次新取的 URL。
-    invoiceStore.clearUrlCache();
     paintFilters();
     const kw = keyword.trim().toLowerCase();
     const rows = all.filter(inv => inFilter(inv) && matches(inv, kw));
@@ -83,52 +114,88 @@ export async function renderInvoices(root) {
       mount(listBox, el('div', { class: 'empty' }, [
         all.length === 0 ? '还没有发票，点右下角拍一张' : '没有符合条件的发票'
       ]));
+      // 这一屏一张缩略图都不需要，缓存里的全部作废（listBox 刚被整块换掉，旧节点上的 URL
+      // 已经没人看）。空集就是「一个都不留」。
+      invoiceStore.pruneUrlCache(new Set());
       return;
     }
-    const nodes = [];
-    for (const inv of rows) {
-      const thumbUrl = inv.fileId ? await invoiceStore.thumbUrlFor(inv.fileId).catch(() => null) : null;
-      // 每取一张缩略图都要重新对一次序号：一次列表可能有几十张票，等第一张的时候
-      // 用户完全来得及切走再切回来。这里停手而不是继续拼节点，省掉整轮无用的 IO。
-      if (seq !== paintSeq) return;
-      nodes.push(el('button', {
+
+    // 本批真的取到 URL 的 fileId，paint 结束时按它做差集回收。
+    // 不能再像原来那样开头一律清空：搜索框每敲一个字都跑一次 paint，
+    // 全量清空等于每按一个键都把可见缩略图重新读一遍 IndexedDB、重新建一遍 blob URL，
+    // 而其中绝大多数上一批刚取过。
+    const keep = new Set();
+    // 有图可取的行的占位节点：等 URL 回来逐个替换成 <img>。
+    const pending = [];
+
+    // ① 骨架先行：整页**同步**搭出来、一次 mount。原来是边 await 边拼节点、全部取完才 mount，
+    // 几十张票的时候 listBox 会在几百毫秒内完全是空的——而用户只是切回来看一眼列表。
+    // 缩略图位置先放占位节点，真实图片随后填进去。
+    const items = rows.map(inv => {
+      const thumb = el('div', { class: 'inv-thumb', text: inv.fileId ? '📄' : '🧾' });
+      if (inv.fileId) pending.push({ fileId: inv.fileId, thumb });
+      return el('button', {
         class: 'inv-item',
         type: 'button',
         onclick: () => openInvoiceEditor({ id: inv.id, onSaved: refresh })
       }, [
-        thumbUrl
-          ? el('img', { class: 'inv-thumb', src: thumbUrl, alt: '' })
-          : el('div', { class: 'inv-thumb', text: inv.fileId ? '📄' : '🧾' }),
+        thumb,
         el('div', {}, [
           el('div', { class: 'inv-title', text: invoiceTitle(inv) }),
           el('div', { class: 'inv-meta', text: [typeLabel(inv.type), inv.number].filter(Boolean).join(' · ') }),
           el('div', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: inv.archived ? '仅存档' : (inv.reimbursementId ? '已报销' : '待报销') })
         ]),
         el('div', { class: 'inv-amount', text: formatCents(inv.amountCents) })
-      ]));
+      ]);
+    });
+    mount(listBox, items);
+
+    // ② 分批并发取图。原来是一行一行串行 await：一张 200ms、三十张就是好几秒的空白；
+    // 而全部并发又会一次性往 IndexedDB 排几十个读 + 同时解码几十张图（手机最先在内存上撑不住）。
+    // 每批 6 个：首屏压到一个批次的时间，同时解码的图也不会太多。
+    const BATCH = 6;
+    for (let i = 0; i < pending.length; i += BATCH) {
+      const batch = pending.slice(i, i + BATCH);
+      const urls = await Promise.all(
+        batch.map(p => invoiceStore.thumbUrlFor(p.fileId).catch(() => null))
+      );
+      // 每批之后都要重新对一次序号：一次列表可能有几十张票，用户完全来得及切走再切回来。
+      // 这里停手而不是继续填图，省掉后面几批无用的 IO（新的那次 paint 会自己再取一遍）。
+      if (seq !== paintSeq) return;
+      batch.forEach((p, j) => {
+        const url = urls[j];
+        // 取不到不算异常：PDF 本来就没有缩略图，占位节点留着就是它应有的形态。
+        if (!url) return;
+        keep.add(p.fileId);
+        // 只替换这一个占位节点，不整块重挂列表：整块重挂会让列表闪一下，
+        // 也会把用户正按住的那一行从手指底下抽走。
+        p.thumb.replaceWith(el('img', { class: 'inv-thumb', src: url, alt: '' }));
+      });
     }
     if (seq !== paintSeq) return;
-    mount(listBox, nodes);
+    // ③ 差集回收：只 revoke 这一批不再需要的缩略图 URL，用户接着敲下一个字时
+    // 还在画面上的那些留在缓存里，命中就是零成本。full: 前缀不归这里管（见 image-store）。
+    invoiceStore.pruneUrlCache(keep);
   }
 
   async function refresh() {
-    const fresh = await invoiceStore.listInvoices();
+    // refresh 由编辑器的 onSaved 回调触发，跑在 renderInvoices 之外，所以这里取当前的 viewSeq
+    // 当作「我属于这一次渲染」的凭据：保存后用户可能已经切走，那时不该再往一个别人的 root 里写。
+    const seq = viewSeq;
+    // 汇总必须跟列表一起重取：保存成功后列表多了一行，而顶部「本月发票 / 待报销（N 张）」
+    // 若还是旧值，金额和张数都对不上——用户最容易在这里犯疑「我刚存的那张算进去了没」。
+    const [fresh, freshSum] = await Promise.all([invoiceStore.listInvoices(), invoiceStore.summary()]);
+    if (seq !== viewSeq) return;
     all.length = 0;
     all.push(...fresh);
+    paintSummary(freshSum);
     await paint();
   }
 
+  paintSummary(sum);
+
   mount(root, el('div', { class: 'stack' }, [
-    el('div', { class: 'inv-summary' }, [
-      el('div', { class: 'inv-summary-cell' }, [
-        el('div', { class: 'k', text: '本月发票' }),
-        el('div', { class: 'v', text: formatCents(sum.monthCents) })
-      ]),
-      el('div', { class: 'inv-summary-cell' }, [
-        el('div', { class: 'k', text: `待报销（${sum.pendingCount} 张）` }),
-        el('div', { class: 'v', text: formatCents(sum.pendingCents) })
-      ])
-    ]),
+    summaryBox,
     searchInput,
     filterBox,
     listBox

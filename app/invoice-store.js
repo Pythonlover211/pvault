@@ -151,6 +151,6 @@ export async function fullUrlFor(fileId) {
   return getFullUrl(fileId);
 }
 
-// 同理转发：发票列表整页重绘前要回收上一批缩略图 URL，但这个动作属于图片模块的缓存，
+// 同理转发：发票列表重画完一批后要回收这批不再需要的缩略图 URL，但这个动作属于图片模块的缓存，
 // 视图层不该自己 import image-store（也就不该知道「URL 是缓存出来的」这件事）。
-export { clearUrlCache } from './image-store.js';
+export { pruneUrlCache } from './image-store.js';

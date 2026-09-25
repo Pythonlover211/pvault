@@ -202,10 +202,24 @@ async function cachedUrl(kind, id, make) {
   return url;
 }
 
-/** 释放全部缓存 URL。整页重绘前调一次：旧的那批节点马上就被 mount 换掉，此时 revoke 是安全的。 */
-export function clearUrlCache() {
-  for (const url of urlCache.values()) URL.revokeObjectURL(url);
-  urlCache.clear();
+/**
+ * 回收缩略图 URL 中「这一批不再需要的」那些：keepIds 是本批列表真正用到（真的取到了 URL）的 fileId 集合。
+ *
+ * 为什么不是「整页重绘前一律清空」：发票列表每敲一个字都要重绘一次，全量清空等于每按一个键
+ * 就把可见的缩略图全部重新读一遍 IndexedDB、重新建一遍 blob URL，而其中绝大多数上一批刚取过。
+ * 差集回收之后，连续搜索基本只读新出现的那几张。
+ *
+ * 只动 thumb: 前缀：编辑器预览用的是 full:（同一张图的原图），那是它自己手里的资源——
+ * 列表页一次重绘顺手把它 revoke 掉，编辑器里的预览当场变成裂图。
+ */
+export function pruneUrlCache(keepIds) {
+  const keep = keepIds instanceof Set ? keepIds : new Set(keepIds ?? []);
+  for (const [key, url] of urlCache) {
+    if (!key.startsWith('thumb:')) continue;
+    if (keep.has(key.slice('thumb:'.length))) continue;
+    URL.revokeObjectURL(url);
+    urlCache.delete(key);
+  }
 }
 
 export function revokeUrl(url) {
@@ -220,7 +234,8 @@ export function revokeUrl(url) {
 
 /**
  * 列表页的缩略图地址。两条契约都得知道：
- * 1. 返回的 URL 由本模块统一缓存，调用方**不要**自己 revoke，整页重绘前调一次 clearUrlCache() 回收；
+ * 1. 返回的 URL 由本模块统一缓存，调用方**不要**自己 revoke；这一批画完时把本批用到的 id
+ *    交给 pruneUrlCache(keepIds)，由它差集回收——不再需要的那批 revoke 掉，还在用的留着命中缓存；
  * 2. 这条记录是 PDF（或压根没生成出缩略图）时返回 null，调用方据此改显示占位图标，
  *    不要拿 null 去当 src——`<img src="null">` 会去请求一个真叫 null 的地址。
  */
