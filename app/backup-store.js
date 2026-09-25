@@ -26,7 +26,6 @@ import * as vaultStore from './vault-store.js';
 import {
   DEFAULT_ITERATIONS, deriveKey, encryptJSON, decryptJSON, randomBytes, toBase64, fromBase64
 } from './crypto.js';
-import { STORES } from './schema.js';
 import { BACKUP_FORMAT, buildBackup, validateBackup, summarizeBackup } from './backup.js';
 
 export const ENCRYPTED_FORMAT = 'pvault-backup-encrypted';
@@ -39,8 +38,17 @@ const SALT_BYTES = 16;
 const VAULT_KEY = 'vault';
 const LAST_BACKUP_KEY = 'lastBackupAt';
 
-// 除 settings 外的四个数组仓库；settings 是 { key, value } 形状，单独处理。
-const ARRAY_STORES = Object.keys(STORES).filter(name => name !== 'settings');
+// 参与备份的数组仓库：**显式列出来，不要从 Object.keys(STORES) 派生**。
+// 派生踩过一次：schema 里加了发票三张表之后，这个清单跟着变成 7 张，
+// 而 buildBackup 仍然只打包 5 个键——导入老备份时 data.invoices 是 undefined，
+// 下面那句 `for (const value of data[name])` 直接抛 TypeError，
+// 于是「恢复备份」这条唯一的救命通道对所有既有备份文件全部失效。
+// 哪张表要进备份，就在这里一个一个加；加的时候必须同时改 app/backup.js 的
+// REQUIRED_ARRAYS 与 buildBackup（三处永远要一起动）。
+// 发票三张表刻意不在这里：发票图片是 Blob，JSON.stringify(blob) 得到 `{}`，
+// 进了备份包只会留下一个空壳；这也意味着导入时不会清空发票表——与「备份里没有密码箱
+// 就保留设备现有密码箱」是同一条纪律（见文件头第 4 条）。
+const ARRAY_STORES = ['txns', 'accounts', 'categories', 'receivables'];
 
 // 错误带上 code，UI 才区分得开「密码错」与「文件坏了」——两者的处置方式完全不同：
 // 前者让用户重输密码，后者只能换个文件。只用 message 做判断太脆。
@@ -186,7 +194,8 @@ export async function importBackup(text, password) {
 
   const puts = [];
   for (const name of ARRAY_STORES) {
-    for (const value of data[name]) puts.push({ store: name, value });
+    // `?? []` 是防老备份的兜底，理由见上面 ARRAY_STORES 的注释。
+    for (const value of data[name] ?? []) puts.push({ store: name, value });
   }
   // settings 是 { key, value } 形状、以 keyPath 为主键，所以 key 不是字符串时 put() 会**同步**
   // 抛 DataError。这种异常不会自动中止事务（见 db.replaceAll），因此必须在入队之前就拦下来：
