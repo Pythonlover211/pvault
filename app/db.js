@@ -165,6 +165,17 @@ export async function getByRange(store, indexName, lower, upper) {
   });
 }
 
+// 按索引取**全部**命中：一笔账可以挂多张票（by_txn），所以不能用 index().get()——
+// 它只返回第一条，调用方拿到的永远是「一张」。查重那种只要一条的场景自己取 [0]。
+export async function getAllByIndex(store, indexName, key) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).index(indexName).getAll(key);
+    req.onsuccess = () => resolve(req.result ?? []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 export async function remove(store, key) {
   const db = await open();
   const tx = db.transaction(store, 'readwrite');
