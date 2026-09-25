@@ -104,10 +104,10 @@ test('DB_NAME 与 DB_VERSION 符合约定', () => {
   assert.ok(Number.isInteger(DB_VERSION) && DB_VERSION > 0);
 });
 
-test('STORES 覆盖全部 5 个仓库且每个都有 keyPath', () => {
+test('STORES 覆盖全部 8 个仓库且每个都有 keyPath', () => {
   assert.deepEqual(
     Object.keys(STORES).sort(),
-    ['accounts', 'categories', 'receivables', 'settings', 'txns']
+    ['accounts', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'reimbursements', 'settings', 'txns']
   );
   for (const [name, def] of Object.entries(STORES)) {
     assert.equal(typeof def.keyPath, 'string', `${name} 缺少 keyPath`);
@@ -153,9 +153,46 @@ test('applyMigrations 不重复创建已存在的仓库', () => {
   applyMigrations(db, 1);
   assert.ok(!db.created.has('txns'));
   assert.ok(!db.created.has('settings'));
-  assert.deepEqual([...db.created.keys()], ['accounts', 'categories', 'receivables']);
+  assert.deepEqual(
+    [...db.created.keys()],
+    ['accounts', 'categories', 'receivables', 'invoices', 'invoiceFiles', 'reimbursements']
+  );
 });
 
 test('applyMigrations 返回传入的 oldVersion', () => {
   assert.equal(applyMigrations(fakeDb(), 3), 3);
+});
+
+test('STORES 里有发票相关的三张表', () => {
+  assert.ok(STORES.invoices, '缺少 invoices 表');
+  assert.ok(STORES.invoiceFiles, '缺少 invoiceFiles 表');
+  assert.ok(STORES.reimbursements, '缺少 reimbursements 表');
+  assert.equal(STORES.invoices.keyPath, 'id');
+  assert.equal(STORES.invoiceFiles.keyPath, 'id');
+  assert.equal(STORES.reimbursements.keyPath, 'id');
+});
+
+test('invoices 的索引齐全（查重与挂靠都要用）', () => {
+  const names = STORES.invoices.indexes.map(([n]) => n).sort();
+  assert.deepEqual(names, ['by_issuedAt', 'by_number', 'by_reimbursement', 'by_txn']);
+});
+
+test('DB_VERSION 已提到 2', () => {
+  assert.equal(DB_VERSION, 2);
+});
+
+test('迁移只建缺失的表，已有的表不重复创建', () => {
+  const created = [];
+  const fakeDb = {
+    objectStoreNames: { contains: (n) => n === 'accounts' },
+    createObjectStore: (name) => {
+      created.push(name);
+      return { createIndex: () => {} };
+    }
+  };
+  applyMigrations(fakeDb, 1);
+  assert.ok(!created.includes('accounts'), '已存在的表不该重建');
+  assert.ok(created.includes('invoices'));
+  assert.ok(created.includes('invoiceFiles'));
+  assert.ok(created.includes('reimbursements'));
 });

@@ -3,14 +3,30 @@
 // 因此在 Node 里可以直接 import 并单测（见 tests/schema.test.js）。
 
 export const DB_NAME = 'pvault';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const STORES = {
   txns: { keyPath: 'id', indexes: [['by_occurredAt', 'occurredAt'], ['by_kind', 'kind']] },
   accounts: { keyPath: 'id', indexes: [] },
   categories: { keyPath: 'id', indexes: [['by_kind', 'kind']] },
   receivables: { keyPath: 'id', indexes: [['by_settledAt', 'settledAt']] },
-  settings: { keyPath: 'key', indexes: [] }
+  settings: { keyPath: 'key', indexes: [] },
+  // 发票本体。报销状态不单独存，由 reimbursementId + 报销单状态推导，
+  // 否则报销单改了状态、发票里的冗余字段就成了一份会过期的副本。
+  invoices: {
+    keyPath: 'id',
+    indexes: [
+      ['by_issuedAt', 'issuedAt'],
+      ['by_number', 'number'],
+      ['by_txn', 'txnId'],
+      ['by_reimbursement', 'reimbursementId']
+    ]
+  },
+  // 发票的图片/PDF 单独一张表：列表页只加载缩略图，
+  // 不为显示一行把几 MB 的原图读进内存。
+  invoiceFiles: { keyPath: 'id', indexes: [] },
+  // 报销单。计划 4 只建表不用，计划 5 才填。
+  reimbursements: { keyPath: 'id', indexes: [['by_status', 'status']] }
 };
 
 export function applyMigrations(db, oldVersion) {
