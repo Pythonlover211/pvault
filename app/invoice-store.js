@@ -4,7 +4,7 @@
 import * as db from './db.js';
 import { uid } from './store.js';
 import { dedupeKey, validateInvoice } from './invoice-model.js';
-import { deleteFile, getThumbUrl, getFullUrl } from './image-store.js';
+import { deleteFile, getThumbUrl, getFullUrl, getEditingFile } from './image-store.js';
 
 export async function listInvoices() {
   const all = await db.getAll('invoices');
@@ -101,8 +101,13 @@ export async function deleteInvoice(id) {
  * 清掉没有任何发票引用的图片记录（拍完照又取消保存会留下这种孤儿）。
  * 上面「换图删旧图」「删发票删图」只覆盖了走得完的流程，取消保存那条路没人管——
  * 用久了就是一堆白占配额的 blob，而手机上的配额恰恰是最缺的东西。
- * 只清 24 小时之前的：刚刚拍好、还没点保存的那张图此刻也是「没人引用」的，
- * 立刻清就等于把用户正在编辑的图删掉了。惰性调用，不需要定时器。
+ *
+ * 两条保护，缺一不可：
+ * 1. **24 小时**只是概率保护（刚拍好的图此刻也是「没人引用」的），不是可靠边界——
+ *    页面活过一天（安卓 WebView 被系统挂着没杀）、或系统时间被往前调，它就形同虚设；
+ * 2. 真正护住「用户正在编辑那张图」的是 setEditingFile 这个标记：编辑器拿到 fileId 就挂上、
+ *    保存成功才摘掉，与时间无关，所以同时满足「无引用」和「够旧」的那张图也不会被删。
+ * 惰性调用，不需要定时器。
  */
 export async function cleanupOrphanFiles(now = Date.now()) {
   const cutoff = now - 24 * 60 * 60 * 1000;
@@ -111,6 +116,10 @@ export async function cleanupOrphanFiles(now = Date.now()) {
   let removed = 0;
   for (const file of files) {
     if (used.has(file.id)) continue;
+    // 编辑器正拿在手里的那张：删掉它，用户接下来点保存就会存下一条没有图的发票。
+    // 逐个问一次、而不是循环外读一份快照：这轮清理要 await 删掉几十条 blob，
+    // 期间用户完全可能刚在编辑器里选好一张新图。
+    if (file.id === getEditingFile()) continue;
     // 写法刻意是「不是明确的旧记录就跳过」：createdAt 缺失或坏掉时 Number() 得到 NaN，
     // NaN < cutoff 为 false，于是留下。清理是删数据，拿不准的时候宁可漏清也不能误删。
     if (!(Number(file.createdAt) < cutoff)) continue;

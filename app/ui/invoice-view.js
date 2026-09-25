@@ -35,6 +35,11 @@ let paintSeq = 0;
 // 且此后不会再有 hashchange 来自愈。写法照 vault-view.js 的 activeSeq。
 let viewSeq = 0;
 
+// 本次会话是否已经清过孤儿图。cleanupOrphanFiles 要扫两张表、可能删掉几十条 blob，
+// 而它跑的时候首屏那批缩略图正在读同一个 IndexedDB——每次切回发票页都全表扫一遍就是白跟首屏抢时间，
+// 而清理本身是「迟早会做」的事：一个会话做一次就够，这次之后新产生的孤儿留给下次会话。
+let cleanedOnce = false;
+
 function matches(inv, kw) {
   if (!kw) return true;
   const hay = [inv.seller, inv.number, inv.note, inv.buyerTitle].join(' ').toLowerCase();
@@ -56,7 +61,11 @@ export async function renderInvoices(root) {
   // 顺手清一次孤儿图（拍完照又取消保存留下的那份）。**故意不 await**：它要扫两张表、
   // 可能要删掉几十条 blob，等它做完用户看到的就是一段白屏；而清理是「迟早会做」的事，
   // 晚几百毫秒和立刻做完对用户没有区别。清理失败也不该让发票页打不开，所以整段 catch 掉。
-  invoiceStore.cleanupOrphanFiles().catch(() => {});
+  // 整个会话只发起一次（见 cleanedOnce）：置位放在发起之前，renderInvoices 并发两次时也只跑一遍。
+  if (!cleanedOnce) {
+    cleanedOnce = true;
+    invoiceStore.cleanupOrphanFiles().catch(() => {});
+  }
 
   // 列表与汇总一起取：两者是同一次渲染的两半，串行 await 只是白白多等一个事务。
   const [invoices, sum] = await Promise.all([invoiceStore.listInvoices(), invoiceStore.summary()]);

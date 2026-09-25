@@ -186,6 +186,14 @@ export async function deleteFile(id) {
   await db.removeAll([{ store: 'invoiceFiles', key: id }]);
 }
 
+// 编辑器正在使用、但还没保存进任何发票的那张图。
+// 没有它，cleanupOrphanFiles 只能靠「24 小时」这条时间线来保护用户刚拍的照片——
+// 而页面活过一天、或系统时间被往前调，这张图就会被当成孤儿删掉。
+let editingFileId = null;
+
+export function setEditingFile(id) { editingFileId = id; }
+export function getEditingFile() { return editingFileId; }
+
 // 同一份记录只建一次 URL，并记住它们，好让整页重绘时能一次性回收。
 // 为什么不让调用方自己 revoke：调用点在搜索框的 oninput 里（每敲一个字跑一遍），
 // 漏一次就是一批 URL 活到页面卸载，而每个 URL 都会 pin 住对应的 Blob。
