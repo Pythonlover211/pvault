@@ -10,6 +10,8 @@ export function open() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+    // 是否已经因 blocked 拒绝过调用方。见下面 onblocked 与 onsuccess 里的用法。
+    let blocked = false;
     req.onupgradeneeded = event => {
       applyMigrations(req.result, event.oldVersion);
     };
@@ -17,9 +19,20 @@ export function open() {
     // 新连接就永远停在「不 resolve 也不 reject」的状态：数据层此后静默无响应，用户看不到
     // 任何报错。以前 DB_VERSION 恒为 1、升级路径从没真正走过，所以这个坑一直没通电。
     // reject 之后由下面那个 .catch 把 dbPromise 置回 null，本次页面生命周期内还能再试一次打开。
-    req.onblocked = () => reject(new Error('数据库正在被另一个页面占用，升级被阻止。请关掉其它 pvault 页面后重试。'));
+    req.onblocked = () => {
+      // 标记与 reject 必须成对：blocked 之后升级仍有可能**随后**成功（用户真去关掉了那个页面），
+      // 那时 onsuccess 会拿到一个早已没人认领的连接。不认这个标记的话它会变成悬垂连接——
+      // 调用方已经收到错误、这把连接却一直开着，反过来继续挡着别人升级。
+      blocked = true;
+      reject(new Error('数据库正在被另一个页面占用，升级被阻止。请关掉其它 pvault 页面后重试。'));
+    };
     req.onsuccess = async () => {
       const db = req.result;
+      // blocked 之后才走到这里，说明调用方早就拿到了 reject：悄悄关掉，不留悬垂连接。
+      if (blocked) {
+        db.close();
+        return;
+      }
       // 别的页面要升级时，本页必须主动让路：升级只会在所有旧版本连接关闭后才开始，
       // 这里若一直握着旧连接不放，对方的 open 就永远卡在 blocked——两边互相等死。
       db.onversionchange = () => db.close();
