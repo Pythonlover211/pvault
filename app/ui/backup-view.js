@@ -13,17 +13,25 @@
 // 3. **任何一步失败都在面板里说人话**：BackupFileError 的 code 映射成固定中文，
 //    密码错、文件选错、文件损坏三种情况的处置方式完全不同，不能都糊成「导入失败」。
 // 4. 不引依赖、不碰 crypto.subtle：加解密全在 backup-store 里，本文件只管界面与流程。
+// 5. **导出前把体积说清楚，并给一条退路**：图片要转成 base64 才进得了 JSON，体积比原图还大
+//    三分之一，几百张图就是几十上百 MB，而手机上的下载被拦截是**不报错**的。所以这里既报数字，
+//    也给出「不含图片」的选项：账目先安全落地，比追一份完整但下不来的文件重要得多。
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import * as store from '../store.js';
 import {
   exportBackup, parseBackupFile, decryptBackupFile, importBackup,
-  getLastBackupAt, markBackedUp
+  getLastBackupAt, markBackedUp, estimateExportSize
 } from '../backup-store.js';
 
 // 备份密码下限。与主密码一致取 8 位：同一个派生的密码学约束，没必要给两条路径两套规矩。
 const MIN_PASSWORD = 8;
 const MS_PER_DAY = 86400000;
+
+// 超过这个体积就在导出前把话说死。20 MB 是手机上一次下载开始被浏览器或系统拦掉、
+// 或者用户自己在「另存为」里点取消的量级——而含图备份很容易到这一步（图片要转 base64，
+// 比原图还大三分之一，几百张图就是几十上百 MB）。拦下载是**不报错**的，所以只能提前提醒。
+const BIG_EXPORT_MB = 20;
 
 // 超过这个天数没备份就把提醒染成警示色。默认 14 天：一次备份的「保鲜期」大约两周——
 // 更久不备份，一旦清掉浏览器数据，丢的就是半个月的账。
@@ -89,6 +97,19 @@ export function openBackupSheet({ onChanged } = {}) {
     onclick: () => { doExport(); }
   });
 
+  // 「不含图片」选项：默认不勾，也就是默认含图片导出。
+  // 为什么要给这个选项：图片必须转成 base64 才进得了 JSON（见 backup-store 的 encodeFiles），
+  // 体积比原图还大三分之一，几百张图就是几十上百 MB——而手机上的下载**会**被浏览器或系统
+  // 静默拦掉，界面上看不出来。那种情况下用户至少还能先导一份不含图片的，把账目保住。
+  const noFilesCheck = el('input', { type: 'checkbox' });
+  const noFilesLabel = el('label', { class: 'vault-check', dataset: { role: 'export-no-files' } }, [
+    noFilesCheck,
+    el('span', { text: '这次导出不含图片（文件小很多）' })
+  ]);
+  // 体积提示那一行。文案与颜色都由 refreshSize() 决定：算得出具体数字才说得清「多大」，
+  // 说「可能比较大」等于没说。
+  const sizeHint = el('div', { class: 'vault-hint', dataset: { role: 'export-size-hint' } });
+
   // 只切按钮禁用态，不整页重渲染：重建 input 会让正在输入的那个框丢焦点。
   // 两个条件都必要——「至少 8 位」是密码强度，「两次一致」是防手误打错（打错的备份密码
   // 意味着文件永远打不开，而此刻没有任何办法验证它）。
@@ -112,6 +133,36 @@ export function openBackupSheet({ onChanged } = {}) {
     return age;
   }
 
+  // 导出前的体积提示 + 决定要不要给出「不含图片」这个选项。
+  // 读不出图片数不该拦住导出：那只是「体积说不准」，功能本身照旧。
+  async function refreshSize() {
+    try {
+      const { count, mb } = await estimateExportSize();
+      if (count === 0) {
+        // 一张图都没有就别放这个复选框：一个勾了也没区别的开关只会让人多点一下。
+        noFilesLabel.style.display = 'none';
+        sizeHint.className = 'vault-hint';
+        sizeHint.textContent = '本机还没有发票图片，导出的备份文件很小。';
+        return;
+      }
+      noFilesLabel.style.display = '';
+      if (mb >= BIG_EXPORT_MB) {
+        sizeHint.className = 'vault-warn';
+        sizeHint.textContent = `本机有 ${count} 张发票图片，含图片导出预计约 ${mb} MB：文件很大，`
+          + '浏览器或系统可能直接拦掉下载（这里不会有任何提示）。建议先用「不含图片」导一份保住账目，'
+          + '图片另找时间单独导一份。';
+      } else {
+        sizeHint.className = 'vault-hint';
+        sizeHint.textContent = `本机有 ${count} 张发票图片，含图片导出预计约 ${mb} MB`
+          + '（图片转成文字编码后比原图大约三分之一）。';
+      }
+    } catch (err) {
+      sizeHint.className = 'vault-hint';
+      sizeHint.textContent = '（暂时读不出发票图片的数量，导出仍可继续。）';
+      console.error('读取发票图片数量失败', err);
+    }
+  }
+
   async function doExport() {
     if (exporting || exportBtn.disabled) return;
     exporting = true;
@@ -120,8 +171,11 @@ export function openBackupSheet({ onChanged } = {}) {
     exportBtn.textContent = '正在导出…';
     refreshExport();
     try {
-      // 导出耗时不短（PBKDF2 600000 轮 + 整包加密），期间按钮锁死，避免双击导出两份。
-      const { filename, text } = await exportBackup(pw);
+      // 导出耗时不短（PBKDF2 600000 轮 + 整包加密 + 含图时逐张转 base64），期间按钮锁死，避免双击导出两份。
+      // includeFiles 默认 true（未勾选就是含图）：图片是这台设备上唯一的一份，
+      // 只有用户明确选了「不含图片」才省掉它。
+      const includeFiles = !noFilesCheck.checked;
+      const { filename, text, skipped } = await exportBackup(pw, Date.now(), { includeFiles });
       download(filename, text);
       await markBackedUp();
       // 「文件真的落盘了吗」网页里无从得知：浏览器拦截下载、用户在另存为里点了取消、
@@ -129,6 +183,17 @@ export function openBackupSheet({ onChanged } = {}) {
       // 该事实要落盘），但必须紧跟一句「请自己去确认文件在不在」——否则面板上写着
       // 「上次备份：今天」，用户以为有备份，真到要恢复那天才发现什么都没有。
       mount(exportNoteArea, [
+        // 这一条最要紧：不含图片是有代价的，而且代价要到换手机那天才看得见，必须在导出的当下说。
+        includeFiles ? null : el('div', {
+          class: 'vault-warn', dataset: { role: 'export-no-files-note' },
+          text: '这一份不含图片：换手机或重装后恢复，发票只剩条目，拍照存下的原图看不到。'
+        }),
+        // skipped 是「没能写进备份的图片数」（图片数据本身坏了、或记录里没有内容）。
+        // 不说出来的话，这份备份看起来一切正常，直到需要恢复时才发现少了几张。
+        skipped > 0 ? el('div', {
+          class: 'vault-warn', dataset: { role: 'export-skipped' },
+          text: `有 ${skipped} 张发票图片没能写进这份备份（图片数据本身有问题）。账目都在，但这几张图恢复后看不到。`
+        }) : null,
         el('div', {
           class: 'vault-warn', dataset: { role: 'export-note' },
           text: '导出后请到「下载」目录确认文件真的在——浏览器或系统拦截下载时这里不会有任何提示。'
@@ -201,6 +266,9 @@ export function openBackupSheet({ onChanged } = {}) {
       text: '忘了这个密码，备份文件同样打不开——没有任何找回方式。请现在就把它记在别处。'
     }),
     el('div', { class: 'field' }, [el('label', { text: '再输一次' }), pw2Input]),
+    // 体积提示放在按钮上方、复选框之前：先让用户看到「这份会多大」，再给出「小很多」的那条路。
+    sizeHint,
+    noFilesLabel,
     exportBtn,
     exportNoteArea
   ]);
@@ -290,6 +358,15 @@ export function openBackupSheet({ onChanged } = {}) {
       class: 'btn btn-primary', type: 'button', text: '确认覆盖并恢复',
       onclick: () => { doImport(confirmBtn); }
     });
+    // 发票那一行的文案。「0 张」有两种意思，处置完全相反，所以必须分开说：
+    // 文件里压根没有这几项（加发票之前导出的老备份）→ 恢复时本机发票原样保留；
+    // 文件里有这一项但是空的 → 本机发票会被清空。与下面密码箱那一行是同一种写法。
+    const invoicesText = summary.hasInvoices
+      ? String(summary.invoices)
+      : '不包含（保留本机现有发票）';
+    const filesText = summary.invoiceFiles > 0
+      ? String(summary.invoiceFiles)
+      : (summary.hasInvoiceFiles ? '0（这份备份不带图片）' : '不包含（保留本机现有图片）');
     return el('section', { class: 'card stack' }, [
       el('div', { class: 'group-title', text: '备份文件内容' }),
       el('div', { class: 'stack' }, [
@@ -310,11 +387,26 @@ export function openBackupSheet({ onChanged } = {}) {
           el('span', { class: 'num', text: String(summary.categories) })
         ]),
         el('div', { class: 'row' }, [
+          el('span', { class: 'muted tiny', text: '发票' }),
+          el('span', { class: summary.hasInvoices ? 'num' : '', text: invoicesText })
+        ]),
+        el('div', { class: 'row' }, [
+          el('span', { class: 'muted tiny', text: '发票图片' }),
+          el('span', { class: summary.invoiceFiles > 0 ? 'num' : '', text: filesText })
+        ]),
+        el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '密码箱' }),
           el('span', { text: summary.hasVault ? '包含' : '不包含（保留本机现有密码箱）' })
         ])
       ]),
-      el('div', { class: 'vault-warn', text: '导入会替换手机上现有的全部数据。' }),
+      // 这句话原来写的是「导入会替换手机上现有的全部数据」，而加了发票之后它不再准确：
+      // 老备份里没有发票这一项，恢复它并不会动本机发票。说错方向是有代价的——用户可能因此
+      // 不敢用老备份救急，或者反过来以为「不包含」的东西也会被清掉。所以按住上面那几行摘要来说。
+      el('div', {
+        class: 'vault-warn',
+        text: '导入会替换手机上现有的账目、账户、分类与设置，这一步不能撤销。'
+          + '上面写着「不包含」的那几项，本机现有的数据会保留。'
+      }),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn', type: 'button', text: '取消', onclick: () => { sheet.close(); } }),
         confirmBtn
@@ -383,6 +475,8 @@ export function openBackupSheet({ onChanged } = {}) {
     statusNode.textContent = '上次备份：读取失败';
     console.error('读取上次备份时间失败', err);
   });
+  // 体积提示同样是异步读出来的，失败也不该让面板打不开（refreshSize 自己会兜成一句说明）。
+  refreshSize();
   refreshExport();
 
   // 打开备份面板本身不算「有改动」，但导入成功后调用了 onChanged 会让首页重渲染，
