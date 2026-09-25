@@ -5,7 +5,7 @@ import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import * as invoiceStore from '../invoice-store.js';
-import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile } from '../image-store.js';
+import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile, getEditingFile } from '../image-store.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
@@ -85,7 +85,36 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       })
     : null;
 
-  const sheet = openSheet({ title: id ? '编辑发票' : '新建发票', body });
+  const sheet = openSheet({
+    title: id ? '编辑发票' : '新建发票',
+    body,
+    // onClose 在面板**开始收起**时触发，close() 自己也会走到这里（见 sheet.js），
+    // 所以「点保存」「点删除」那两条已经清过标记的路径会再清一次，是幂等的、无害的；
+    // 它真正兜住的是「拍了照又关掉面板」那条路——原来这里没接 onClose，那条路上
+    // setEditingFile 的标记会一直挂着，那张孤儿图此后**再也不会**被 cleanupOrphanFiles 收走
+    // （逐张问 getEditingFile()，见 invoice-store 的注释），不误删、但永久白占一份配额。
+    onClose: () => {
+      // ① 先让还在处理中的那张图作废：手机上压缩一张要几百毫秒到数秒，用户完全来得及在
+      //    它落库之前把面板关掉，而那次选图回来后会照旧 setEditingFile(fileId)——
+      //    标记就此挂在一张面板早已不管的图上，正是这一条要堵的漏。
+      //    递增 previewSeq 后，pickFile 里那道 `seq !== previewSeq` 的检查会让它连
+      //    state.fileId 都不写（沿用那里的既有写法，不加第二套机制）。
+      previewSeq += 1;
+      // ② 只清理**本面板**挂上的那个标记，且当前编辑的就是这张 sheet。
+      //    不能无条件 setEditingFile(null)：用户可能已经在别处打开了另一个发票编辑器
+      //    （比如从记账页的「🧾N」进来看另一张票），把它的标记清掉等于把它正拿在手里的图
+      //    交出去——那张图会提前 24 小时进入清理视野。加 state.fileId === getEditingFile()
+      //    这一判，误清就不可能发生。
+      //    activeSheet 必须等这一整套判断走完再置 null：顺序反了，第 27 行的
+      //    「同一时刻只开一层」就失效（那边靠 activeSheet 非空去关掉上一个面板）。
+      if (activeSheet === sheet) {
+        if (state.fileId && getEditingFile() === state.fileId) setEditingFile(null);
+        activeSheet = null;
+      }
+      // 保存成功与删除成功那两条路已经自己清过标记了（见 submit / removeInvoice），
+      // 重复清一次没有副作用——叶子状态就是「编辑器还拿在手里的那张图」。
+    }
+  });
   activeSheet = sheet;
 
   // 换预览内容时先记住旧节点：从图片换成 PDF 占位之后，旧图片那个 object URL 再没人持有，

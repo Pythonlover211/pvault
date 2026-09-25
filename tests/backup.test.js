@@ -41,14 +41,17 @@ test('buildBackup：发票条目与图片 base64 串原样带上', () => {
   assert.notEqual(b.data.invoices, src.invoices);
 });
 
-// 图片那一项刻意与上面相反：直接拿引用，不深拷贝。
+// 图片那一项刻意与上面相反：buildBackup 不深拷贝它，直接拿引用。
 // 一份带几百张图的备份光 base64 就有几十上百 MB，structuredClone 会把它整份复制一遍，
 // 手机上这一下就够触发内存告警——而导出失败等于用户没有任何备份。
 // 数组由 exportBackup 里的 encodeFiles() 现造现交，没有第二个人持有它，共享引用是安全的。
-test('buildBackup：图片的 base64 数组刻意不深拷贝（大数组复制第二遍会把内存打爆）', () => {
+// 这里断言的是**内容**，不是引用：拿不拿引用是实现细节（将来换成别的省内存写法都不该让测试红），
+// 「备份包里必须原样带上这些图」才是规格。原来那句 assert.equal(...) 比的是引用相等，
+// 等于把「不深拷贝」这个实现细节固化成了规格——反而会把优化这条路堵死。
+test('buildBackup：图片的 base64 数组原样进备份（内容一致，与是否共享引用无关）', () => {
   const src = { ...payload, invoiceFiles: [{ id: 'f1', blob: 'AAAA' }] };
   const b = buildBackup(src, 1);
-  assert.equal(b.data.invoiceFiles, src.invoiceFiles);
+  assert.deepEqual(b.data.invoiceFiles, src.invoiceFiles);
 });
 
 test('buildBackup 深拷贝，不引用原对象', () => {

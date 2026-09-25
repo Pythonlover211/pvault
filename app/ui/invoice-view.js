@@ -196,7 +196,12 @@ export async function renderInvoices(root) {
     // 汇总必须跟列表一起重取：保存成功后列表多了一行，而顶部「本月发票 / 待报销（N 张）」
     // 若还是旧值，金额和张数都对不上——用户最容易在这里犯疑「我刚存的那张算进去了没」。
     const [fresh, freshSum] = await Promise.all([invoiceStore.listInvoices(), invoiceStore.summary()]);
-    if (seq !== viewSeq) return;
+    // 两个条件都要查，与 renderInvoices 里那次检查保持一致（那里也是 currentTab() + 序号一起判）。
+    // 只查序号是不够的：切 Tab 不会让 viewSeq 变化（本视图压根没被再次调用），所以改完发票、
+    // 面板还开着的时候顺手切到「统计」，这次迟到的 refresh 会**照样**往下写——
+    // 把已经画好的统计页盖成发票列表和汇总，并且此后不会再有 hashchange 来自愈。
+    // seq 管的是「切走又切回来、已经有新的一次渲染在跑」那种情形，两者各管一头，缺一不可。
+    if (currentTab() !== 'invoice' || seq !== viewSeq) return;
     all.length = 0;
     all.push(...fresh);
     paintSummary(freshSum);

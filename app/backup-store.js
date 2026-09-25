@@ -1,6 +1,8 @@
 // 备份仓库层：把一个设备的全部数据打包成一个加密文件，以及从该文件恢复回来。
+//
 // 文件分两层：外层是「加密信封」，内层是 app/backup.js 定义的备份包（含记账数据与密码箱记录）。
 // 外层长这样：
+//
 //   { format: 'pvault-backup-encrypted', version: 1, createdAt,
 //     kdf: { name: 'PBKDF2-SHA256', iterations, salt }, iv, ct }
 //
@@ -131,11 +133,24 @@ function blobToBase64(blob) {
 // 备份文件里某一张图的数据坏了（字符串被截断、字段是 null、base64 不合法），
 // 该丢的是这一张图，不是用户整份备份——恢复是数据已经丢了之后唯一的补救手段。
 //
+// 为什么长度必须是 4 的倍数：base64 是「3 字节 → 4 字符」的定长编码，整串长度只可能是 4 的倍数。
+// 而 atob 对**长度不是 4 倍数**的截断串**不抛错**——'AAA' 会安安静静地解出 2 个字节。
+// 那比抛错更糟：库里会多出一条 size 不是 0、却只能显示半张图的记录，界面上是一张裂图，
+// 而且它占着 quota、跟着进下一次备份（那个 3/4 反推出来的 size 还是错的）。
+// 所以宁可在这里判成「解不开」返回 null，交给上面的「两个都解不出来就跳过」处理。
 //
+// 纯空白串也必须挡住：typeof 是 'string'、'   ' 又非空，能大摇大摆过掉类型检查，
+// 而 atob('   ') 返回空串 → 得到一个 size 为 0 的空 Blob。更糟的是它非 null，
+// 于是绕过调用方「原图和缩略图都解不出来才跳过」的判断，让一条空记录白白进库。
 function base64ToBlob(b64, mime) {
-  if (typeof b64 !== 'string' || b64 === '') return null;
+  if (typeof b64 !== 'string') return null;
+  const trimmed = b64.trim();
+  if (trimmed === '' || trimmed.length % 4 !== 0) return null;
   try {
-    const bin = atob(b64);
+    const bin = atob(trimmed);
+    // 长度合法但内容为空（理论上走不到，走到就是上游给了我们一段没用的东西）：
+    // 同样返回 null，不能让一个 0 字节的 Blob 冒充「这张图恢复出来了」。
+    if (bin.length === 0) return null;
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return new Blob([bytes], { type: mime || 'application/octet-stream' });

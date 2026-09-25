@@ -53,7 +53,13 @@ async function putInvoice(record) {
       quota.name = err.name;
       throw quota;
     }
-    throw err;
+    // 其余存储失败（UnknownError / AbortError / DatabaseClosedError……，以及 enqueue 里
+    // 同步抛出的 DataError）原来走的是最后那个 `throw err`：界面上直接显示
+    // 「UnknownError: …」那样的英文原文，用户既看不懂，也不知道是不是自己操作错了。
+    // 与上面配额那句同一个处置：给用户一句能照着做的中文，原文进控制台留给排查——
+    // 这里**不**沿用 err.name（这些错误的 name 对用户毫无信息量，界面只读 message）。
+    console.error('发票写入失败', err);
+    throw new Error('这张发票没存下来（手机存储出错）。请确认存储空间还够，然后重试一次。');
   }
 }
 
