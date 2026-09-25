@@ -1,6 +1,7 @@
 import { el, mount } from './ui/dom.js';
 import { tabs, currentTab, go, onChange, hashQuery } from './router.js';
 import { renderLedgerHome } from './ui/ledger-home.js';
+import { renderInvoices } from './ui/invoice-view.js';
 import { renderStats } from './ui/stats-view.js';
 import { renderVault } from './ui/vault-view.js';
 import { openEntryPanel, dueRecurringsToday } from './ui/entry-panel.js';
@@ -26,7 +27,7 @@ let renderSeq = 0;
 
 async function render(id) {
   const seq = ++renderSeq;
-  const renderers = { ledger: renderLedgerHome, stats: renderStats, vault: renderVault };
+  const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: renderStats, vault: renderVault };
   // 未注册的 Tab id 落到记账页，而不是抛 undefined is not a function。
   // （原来的 PLACEHOLDER 占位表在密码箱接上真实视图后就空了，已删掉。）
   const fn = renderers[id] || renderers.ledger;

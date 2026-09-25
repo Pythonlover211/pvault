@@ -1,8 +1,9 @@
-// hash 路由：三个 Tab 各对应一个 hash（#/ledger、#/stats、#/vault）。
+// hash 路由：四个 Tab 各对应一个 hash（#/ledger、#/invoice、#/stats、#/vault）。
 // 纯静态站点没有服务端改写，用 hash 是为了刷新后能停在同一 Tab，
 // 也让手机上「加到主屏」后直接打开某个视图成为可能。
 const TABS = [
   { id: 'ledger', label: '记账', icon: '📒' },
+  { id: 'invoice', label: '发票', icon: '🧾' },
   { id: 'stats', label: '统计', icon: '📊' },
   { id: 'vault', label: '密码箱', icon: '🔒' }
 ];

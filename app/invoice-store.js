@@ -4,7 +4,7 @@
 import * as db from './db.js';
 import { uid } from './store.js';
 import { dedupeKey, validateInvoice } from './invoice-model.js';
-import { deleteFile } from './image-store.js';
+import { deleteFile, getThumbUrl, getFullUrl } from './image-store.js';
 
 export async function listInvoices() {
   const all = await db.getAll('invoices');
@@ -116,4 +116,14 @@ export async function summary(now = Date.now()) {
     }
   }
   return { monthCents, pendingCents, pendingCount, total: all.length };
+}
+
+// UI 只认仓库层，不直接碰 image-store：发票列表要缩略图、编辑器要原图，
+// 由这里转发，将来换存储实现（比如改成 blob 直存）时改一处就够。
+export async function thumbUrlFor(fileId) {
+  return getThumbUrl(fileId);
+}
+
+export async function fullUrlFor(fileId) {
+  return getFullUrl(fileId);
 }
