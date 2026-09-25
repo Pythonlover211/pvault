@@ -1,0 +1,1679 @@
+# pvault 发票本体 实现计划（计划 4）
+
+> **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
+
+**目标：** 让 pvault 能存发票——拍照或选文件存进 App，记下号码/金额/销售方等标准字段，并能把多张票挂到某笔账上。
+
+**架构：** 新增三张 IndexedDB 表（发票、发票文件、报销单，本计划只用前两张；报销单表先建好、计划 5 再填），图片经 Canvas 压缩后与缩略图分开存放，列表页只加载缩略图。纯逻辑（字段校验、尺寸计算）抽成可单测的独立模块，Canvas 与 IndexedDB 部分靠模拟器实测。
+
+**技术栈：** 原生 ES Modules、IndexedDB（手写封装）、Canvas、零第三方依赖；测试用 `node --test --test-isolation=none`。
+
+**依据规格：** `docs/superpowers/specs/2026-09-24-pvault-invoice-design.md`
+
+---
+
+## 文件结构
+
+**创建**
+
+| 文件 | 职责 |
+|---|---|
+| `app/invoice-model.js` | 纯逻辑：发票类型枚举、字段校验、查重键、金额合计、显示标题 |
+| `app/image-scale.js` | 纯逻辑：压缩目标尺寸、是否需要压缩、备份体积估算 |
+| `app/image-store.js` | Canvas 压缩 + 缩略图生成 + `invoiceFiles` 表读写（依赖浏览器 API，不可在 Node import） |
+| `app/invoice-store.js` | 发票 CRUD、按号码查重、挂靠到账目（依赖 db.js，不可在 Node import） |
+| `app/ui/invoice-view.js` | 发票列表页（搜索、筛选、汇总、列表） |
+| `app/ui/invoice-editor.js` | 新建/编辑发票的半屏 sheet |
+| `styles/invoice.css` | 发票模块样式 |
+| `tests/invoice-model.test.js` | 上述纯逻辑的单测 |
+| `tests/image-scale.test.js` | 上述纯逻辑的单测 |
+
+**修改**
+
+| 文件 | 改动 |
+|---|---|
+| `app/schema.js` | `DB_VERSION` 1→2；`STORES` 加 `invoices` / `invoiceFiles` / `reimbursements` |
+| `app/router.js` | `TABS` 加第四项 `invoice` |
+| `app/main.js` | 注册 `invoice` 视图到 `renderers` |
+| `app/store.js` | 导出 `uid` 供 invoice-store 复用（已导出，无需改；确认即可） |
+| `index.html` | 引入 `styles/invoice.css` |
+| `sw.js` | `ASSETS` 加 7 个新文件；`CACHE` 从 `pvault-v12` 改成 `pvault-v13` |
+| `app/backup.js` | `buildBackup` 的 `data` 加 `invoices` / `invoiceFiles` |
+| `app/backup-store.js` | 导出/导入带上两张新表；图片走 base64 |
+| `app/ui/ledger-home.js` | 今日流水每行显示发票标记，点开看这笔账的发票 |
+| `docs/手动验证清单.md` | 加「发票」小节 |
+
+**只增不改**：`app/db.js` 新增一个 `getAllByIndex`（按索引取多条）。已核实它目前只有 `get` / `getAll` / `getByRange`，**没有**任何按索引取值的函数，而查重与挂靠都要用；除此之外 `app/money.js`、`app/crypto.js`、`app/dates.js`、`app/summary.js` 不动。
+
+---
+
+## 任务 1：数据表与迁移
+
+**文件：**
+- 修改：`app/schema.js`
+- 测试：`tests/schema.test.js`（追加）
+
+- [ ] **步骤 1：编写失败的测试**
+
+追加到 `tests/schema.test.js` 末尾：
+
+```js
+test('STORES 里有发票相关的三张表', () => {
+  assert.ok(STORES.invoices, '缺少 invoices 表');
+  assert.ok(STORES.invoiceFiles, '缺少 invoiceFiles 表');
+  assert.ok(STORES.reimbursements, '缺少 reimbursements 表');
+  assert.equal(STORES.invoices.keyPath, 'id');
+  assert.equal(STORES.invoiceFiles.keyPath, 'id');
+  assert.equal(STORES.reimbursements.keyPath, 'id');
+});
+
+test('invoices 的索引齐全（查重与挂靠都要用）', () => {
+  const names = STORES.invoices.indexes.map(([n]) => n).sort();
+  assert.deepEqual(names, ['by_issuedAt', 'by_number', 'by_reimbursement', 'by_txn']);
+});
+
+test('DB_VERSION 已提到 2', () => {
+  assert.equal(DB_VERSION, 2);
+});
+
+test('迁移只建缺失的表，已有的表不重复创建', () => {
+  const created = [];
+  const fakeDb = {
+    objectStoreNames: { contains: (n) => n === 'accounts' },
+    createObjectStore: (name) => {
+      created.push(name);
+      return { createIndex: () => {} };
+    }
+  };
+  applyMigrations(fakeDb, 1);
+  assert.ok(!created.includes('accounts'), '已存在的表不该重建');
+  assert.ok(created.includes('invoices'));
+  assert.ok(created.includes('invoiceFiles'));
+  assert.ok(created.includes('reimbursements'));
+});
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：`node --test --test-isolation=none tests/schema.test.js`
+预期：FAIL —— 断言 `STORES.invoices` 为 undefined。
+
+- [ ] **步骤 3：编写最少实现代码**
+
+把 `app/schema.js` 顶部的常量与 `STORES` 改成：
+
+```js
+export const DB_NAME = 'pvault';
+export const DB_VERSION = 2;
+
+export const STORES = {
+  txns: { keyPath: 'id', indexes: [['by_occurredAt', 'occurredAt'], ['by_kind', 'kind']] },
+  accounts: { keyPath: 'id', indexes: [] },
+  categories: { keyPath: 'id', indexes: [['by_kind', 'kind']] },
+  receivables: { keyPath: 'id', indexes: [['by_settledAt', 'settledAt']] },
+  settings: { keyPath: 'key', indexes: [] },
+  // 发票本体。报销状态不单独存，由 reimbursementId + 报销单状态推导（见规格第 6 节）。
+  invoices: {
+    keyPath: 'id',
+    indexes: [
+      ['by_issuedAt', 'issuedAt'],
+      ['by_number', 'number'],
+      ['by_txn', 'txnId'],
+      ['by_reimbursement', 'reimbursementId']
+    ]
+  },
+  // 发票的图片/PDF 单独一张表：列表页只加载缩略图，不为显示一行把几 MB 的原图读进内存。
+  invoiceFiles: { keyPath: 'id', indexes: [] },
+  // 报销单。计划 4 只建表不用，计划 5 才填。
+  reimbursements: { keyPath: 'id', indexes: [['by_status', 'status']] }
+};
+```
+
+`applyMigrations` **不需要改**：它已经是「表不存在才创建」，对老库是加表、对新库是全建，两种情况都正确。
+
+- [ ] **步骤 4：运行测试验证通过**
+
+运行：`node --test --test-isolation=none tests/schema.test.js`
+预期：PASS，且原有断言全绿。
+
+- [ ] **步骤 5：跑全量测试**
+
+运行：`node --test --test-isolation=none`
+预期：全部通过（186 条 + 新增 4 条）。
+
+- [ ] **步骤 6：Commit**
+
+```bash
+git add app/schema.js tests/schema.test.js
+git commit -m "feat(schema): 加发票三张表并把 DB_VERSION 提到 2"
+```
+
+---
+
+## 任务 2：发票纯逻辑模块
+
+**文件：**
+- 创建：`app/invoice-model.js`
+- 测试：`tests/invoice-model.test.js`
+
+- [ ] **步骤 1：编写失败的测试**
+
+创建 `tests/invoice-model.test.js`：
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  INVOICE_TYPES, TYPE_IDS, typeLabel,
+  dedupeKey, validateInvoice, sumCents, invoiceTitle
+} from '../app/invoice-model.js';
+
+test('发票类型枚举有 7 项且 id 唯一', () => {
+  assert.equal(INVOICE_TYPES.length, 7);
+  assert.equal(new Set(TYPE_IDS).size, 7);
+  assert.ok(TYPE_IDS.includes('vat_special'));
+  assert.ok(TYPE_IDS.includes('itinerary'));
+});
+
+test('typeLabel：认识的类型给中文名，不认识的给兜底', () => {
+  assert.equal(typeLabel('vat_special'), '增值税专用发票');
+  assert.equal(typeLabel('nope'), '未知类型');
+  assert.equal(typeLabel(undefined), '未知类型');
+});
+
+test('dedupeKey：只有非空号码才参与查重', () => {
+  assert.equal(dedupeKey({ number: '12345678' }), '12345678');
+  assert.equal(dedupeKey({ number: '  12345678  ' }), '12345678', '应去掉首尾空白');
+  assert.equal(dedupeKey({ number: '' }), null);
+  assert.equal(dedupeKey({ number: '   ' }), null);
+  assert.equal(dedupeKey({}), null);
+  assert.equal(dedupeKey(null), null);
+});
+
+test('validateInvoice：合法输入通过', () => {
+  const r = validateInvoice({ number: '123', amountCents: 10000, issuedAt: 1700000000000, type: 'vat_normal', taxCents: 300 });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.errors, []);
+});
+
+test('validateInvoice：金额必须是整数分且非负', () => {
+  assert.equal(validateInvoice({ amountCents: 12.5 }).ok, false);
+  assert.equal(validateInvoice({ amountCents: -1 }).ok, false);
+  assert.equal(validateInvoice({ amountCents: null }).ok, false);
+  assert.equal(validateInvoice({ amountCents: '100' }).ok, false, '字符串不该被当作合法整数');
+  assert.equal(validateInvoice({ amountCents: 0 }).ok, true, '0 元是合法的');
+});
+
+test('validateInvoice：税额不能大于价税合计', () => {
+  const r = validateInvoice({ amountCents: 100, taxCents: 101 });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some(e => e.includes('税额')));
+});
+
+test('validateInvoice：未知类型被拒，但号码格式不做校验', () => {
+  assert.equal(validateInvoice({ amountCents: 1, type: 'weird' }).ok, false);
+  // 发票号码格式各地不一（8 位 / 20 位都有），不校验格式是刻意的
+  assert.equal(validateInvoice({ amountCents: 1, number: '随便什么' }).ok, true);
+});
+
+test('sumCents：空数组与脏数据都安全', () => {
+  assert.equal(sumCents([]), 0);
+  assert.equal(sumCents(null), 0);
+  assert.equal(sumCents([{ amountCents: 100 }, { amountCents: 250 }]), 350);
+  assert.equal(sumCents([{ amountCents: 100 }, {}]), 100);
+});
+
+test('invoiceTitle：优先用销售方，其次号码，最后兜底', () => {
+  assert.equal(invoiceTitle({ seller: '某某公司', number: '1' }), '某某公司');
+  assert.equal(invoiceTitle({ seller: '  ', number: '12345678' }), '发票 12345678');
+  assert.equal(invoiceTitle({}), '未命名发票');
+});
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：`node --test --test-isolation=none tests/invoice-model.test.js`
+预期：FAIL —— 报 `Cannot find module '../app/invoice-model.js'`。
+
+- [ ] **步骤 3：编写最少实现代码**
+
+创建 `app/invoice-model.js`：
+
+```js
+// 发票的纯逻辑：类型枚举、字段校验、查重键、金额合计、显示标题。
+// 本模块是纯数据 + 纯函数，不引用 indexedDB / Canvas / DOM，
+// 因此可以在 Node 里直接 import 并单测（见 tests/invoice-model.test.js）。
+
+export const INVOICE_TYPES = [
+  { id: 'vat_special', label: '增值税专用发票' },
+  { id: 'vat_normal', label: '增值税普通发票' },
+  { id: 'e_invoice', label: '电子发票' },
+  { id: 'itinerary', label: '行程单' },
+  { id: 'train', label: '火车票' },
+  { id: 'taxi', label: '出租车票' },
+  { id: 'other', label: '其他' }
+];
+
+export const TYPE_IDS = INVOICE_TYPES.map(t => t.id);
+
+export function typeLabel(id) {
+  return INVOICE_TYPES.find(t => t.id === id)?.label ?? '未知类型';
+}
+
+// 查重键：只用发票号码，空号码不参与查重（返回 null）。
+// 刻意不做「号码 + 销售方」的组合键——同号不同销售方只可能是输错，
+// 那种情况也该提示，而不是放行。
+export function dedupeKey(invoice) {
+  const n = String(invoice?.number ?? '').trim();
+  return n === '' ? null : n;
+}
+
+// 发票号码的格式不做校验是刻意的：增值税发票 8 位、全电发票 20 位，各地还有差异，
+// 硬校验只会挡住正确的票。这里只保证字段类型正确、数值自洽。
+export function validateInvoice(input) {
+  const errors = [];
+  const amountCents = input?.amountCents;
+
+  if (!Number.isInteger(amountCents) || amountCents < 0) {
+    errors.push('金额必须是不小于 0 的整数分');
+  }
+  if (input?.issuedAt != null && !Number.isFinite(Number(input.issuedAt))) {
+    errors.push('开票日期无效');
+  }
+  if (input?.type != null && !TYPE_IDS.includes(input.type)) {
+    errors.push('发票类型无效');
+  }
+  if (input?.taxCents != null) {
+    const tax = input.taxCents;
+    if (!Number.isInteger(tax) || tax < 0) {
+      errors.push('税额必须是不小于 0 的整数分');
+    } else if (Number.isInteger(amountCents) && tax > amountCents) {
+      // 税额是价税合计的一部分，大于总额一定是输错了
+      errors.push('税额不能大于价税合计');
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function sumCents(invoices) {
+  return (invoices ?? []).reduce((s, i) => s + (Number(i?.amountCents) || 0), 0);
+}
+
+export function invoiceTitle(invoice) {
+  const seller = String(invoice?.seller ?? '').trim();
+  if (seller) return seller;
+  const n = String(invoice?.number ?? '').trim();
+  return n ? `发票 ${n}` : '未命名发票';
+}
+```
+
+- [ ] **步骤 4：运行测试验证通过**
+
+运行：`node --test --test-isolation=none tests/invoice-model.test.js`
+预期：PASS，9 条全绿。
+
+- [ ] **步骤 5：Commit**
+
+```bash
+git add app/invoice-model.js tests/invoice-model.test.js
+git commit -m "feat(invoice): 发票纯逻辑模块（类型/校验/查重键/合计）"
+```
+
+---
+
+## 任务 3：图片尺寸纯逻辑
+
+**文件：**
+- 创建：`app/image-scale.js`
+- 测试：`tests/image-scale.test.js`
+
+- [ ] **步骤 1：编写失败的测试**
+
+创建 `tests/image-scale.test.js`：
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  MAX_EDGE, THUMB_EDGE, SKIP_COMPRESS_BYTES,
+  computeTargetSize, shouldCompress, useCompressed, estimateBackupMB
+} from '../app/image-scale.js';
+
+test('常态：长边超过上限时按比例缩小，宽高比不变', () => {
+  const r = computeTargetSize(4000, 3000, 1600);
+  assert.equal(r.width, 1600);
+  assert.equal(r.height, 1200);
+  assert.equal(r.scale, 0.4);
+});
+
+test('竖图：高的那边是长边', () => {
+  const r = computeTargetSize(1200, 3600, 1600);
+  assert.equal(r.height, 1600);
+  assert.equal(r.width, 533);
+});
+
+test('不超过上限：原样返回，scale 为 1', () => {
+  const r = computeTargetSize(800, 600, 1600);
+  assert.deepEqual(r, { width: 800, height: 600, scale: 1 });
+});
+
+test('极端尺寸：缩完也不会变成 0 像素', () => {
+  const r = computeTargetSize(100000, 10, 1600);
+  assert.ok(r.width >= 1 && r.height >= 1);
+  assert.equal(r.width, 1600);
+});
+
+test('非法尺寸：不抛错，返回 0 尺寸让对方放弃压缩', () => {
+  for (const [w, h] of [[0, 0], [-1, 100], [NaN, 100], [undefined, undefined]]) {
+    const r = computeTargetSize(w, h, 1600);
+    assert.equal(r.width, 0);
+    assert.equal(r.scale, 1);
+  }
+});
+
+test('shouldCompress：小文件不压', () => {
+  assert.equal(shouldCompress(100 * 1024, 4000, 3000), false, '小于阈值直接不压');
+  assert.equal(shouldCompress(SKIP_COMPRESS_BYTES, 4000, 3000), true);
+});
+
+test('shouldCompress：本来就不大的图不压', () => {
+  assert.equal(shouldCompress(5 * 1024 * 1024, 800, 600), false, '尺寸已在上限内，压了也白压');
+});
+
+test('useCompressed：压完反而更大就不用', () => {
+  assert.equal(useCompressed(1000, 900), true);
+  assert.equal(useCompressed(1000, 1000), false);
+  assert.equal(useCompressed(1000, 1200), false, '压完更大必须回退原图');
+  assert.equal(useCompressed(1000, 0), false);
+  assert.equal(useCompressed(1000, NaN), false);
+});
+
+test('estimateBackupMB：空集合与脏数据都安全', () => {
+  assert.equal(estimateBackupMB([]), 0);
+  assert.equal(estimateBackupMB(null), 0);
+  const oneMB = 1024 * 1024;
+  const mb = estimateBackupMB([{ size: oneMB }, { size: oneMB }]);
+  assert.ok(mb > 2 && mb < 4, 'base64 会比原始字节大约 1/3，再加缩略图系数');
+});
+
+test('常量取值与规格一致', () => {
+  assert.equal(MAX_EDGE, 1600);
+  assert.equal(THUMB_EDGE, 240);
+  assert.equal(SKIP_COMPRESS_BYTES, 300 * 1024);
+});
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：`node --test --test-isolation=none tests/image-scale.test.js`
+预期：FAIL —— 报 `Cannot find module '../app/image-scale.js'`。
+
+- [ ] **步骤 3：编写最少实现代码**
+
+创建 `app/image-scale.js`：
+
+```js
+// 图片压缩的尺寸计算与取舍判断。纯函数，可在 Node 里单测。
+// 真正的 Canvas 压缩在 image-store.js 里，那部分只能在浏览器 / WebView 里跑。
+
+/** 原图长边上限。发票上的字要看得清，1600 足够，再大只是浪费体积。 */
+export const MAX_EDGE = 1600;
+/** 缩略图长边。列表页只加载它。 */
+export const THUMB_EDGE = 240;
+export const JPEG_QUALITY = 0.72;
+export const THUMB_QUALITY = 0.7;
+/** 小于这个体积就不压：压完未必更小，还白白损失一次画质。 */
+export const SKIP_COMPRESS_BYTES = 300 * 1024;
+
+/**
+ * 算压缩后的目标尺寸。长边超过 maxEdge 时等比缩小，否则原样返回。
+ * 非法尺寸返回 0 尺寸而不是抛错——调用方据此放弃压缩、回退原图。
+ */
+export function computeTargetSize(width, height, maxEdge = MAX_EDGE) {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return { width: 0, height: 0, scale: 1 };
+  }
+  const longest = Math.max(w, h);
+  if (longest <= maxEdge) {
+    return { width: Math.round(w), height: Math.round(h), scale: 1 };
+  }
+  const scale = maxEdge / longest;
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+    scale
+  };
+}
+
+/** 该不该压：既要够大（否则白损失画质），又要确实会缩小。 */
+export function shouldCompress(bytes, width, height) {
+  if (!Number.isFinite(bytes) || bytes < SKIP_COMPRESS_BYTES) return false;
+  return computeTargetSize(width, height).scale < 1;
+}
+
+/** 压完比原图还大就不用压缩版——宁可占点体积，也不要把图弄糊。 */
+export function useCompressed(originalBytes, compressedBytes) {
+  if (!Number.isFinite(compressedBytes) || compressedBytes <= 0) return false;
+  return compressedBytes < originalBytes;
+}
+
+/**
+ * 估算含图备份的体积（MB）。base64 比二进制大约 1/3，
+ * 再加缩略图与 JSON 结构，用 1.4 的系数偏高估——导出前宁可说大一点。
+ */
+export function estimateBackupMB(files) {
+  const bytes = (files ?? []).reduce((s, f) => s + (Number(f?.size) || 0), 0);
+  return Math.round((bytes * 1.4) / (1024 * 1024) * 10) / 10;
+}
+```
+
+- [ ] **步骤 4：运行测试验证通过**
+
+运行：`node --test --test-isolation=none tests/image-scale.test.js`
+预期：PASS，10 条全绿。
+
+- [ ] **步骤 5：Commit**
+
+```bash
+git add app/image-scale.js tests/image-scale.test.js
+git commit -m "feat(invoice): 图片压缩的尺寸与取舍纯逻辑"
+```
+
+---
+
+## 任务 4：图片压缩与存取
+
+**文件：**
+- 创建：`app/image-store.js`
+
+本任务**没有单测**：Canvas 与 Blob 在 Node 里不存在。可单测的部分已在任务 3 抽走，本文件只剩「调用浏览器 API」的胶水。验证靠任务 10 的模拟器实测。
+
+- [ ] **步骤 1：编写实现**
+
+创建 `app/image-store.js`：
+
+```js
+// 发票图片的压缩与存取。
+// 依赖 Canvas / Blob / indexedDB，**不能在 Node 里 import**。
+// 所有纯计算已抽到 image-scale.js 单测，这里只做浏览器 API 的编排。
+
+import * as db from './db.js';
+import { uid } from './store.js';
+import {
+  MAX_EDGE, THUMB_EDGE, JPEG_QUALITY, THUMB_QUALITY,
+  computeTargetSize, shouldCompress, useCompressed, estimateBackupMB
+} from './image-scale.js';
+
+export { estimateBackupMB };
+
+/** 把 File/Blob 解码成可绘制的位图。优先 createImageBitmap，失败时退回 <img>。 */
+async function decode(blob) {
+  if (typeof createImageBitmap === 'function') {
+    return await createImageBitmap(blob);
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** 画到指定长边并导出 JPEG Blob。 */
+async function drawTo(source, maxEdge, quality) {
+  const w = source.width ?? source.naturalWidth;
+  const h = source.height ?? source.naturalHeight;
+  const target = computeTargetSize(w, h, maxEdge);
+  if (target.width === 0) throw new Error('图片尺寸无效');
+  const canvas = document.createElement('canvas');
+  canvas.width = target.width;
+  canvas.height = target.height;
+  const ctx = canvas.getContext('2d');
+  // 发票多为白底黑字，缩放后最容易出现的是一圈灰边；铺白底再画能干净不少
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, target.width, target.height);
+  ctx.drawImage(source, 0, 0, target.width, target.height);
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  if (!blob) throw new Error('canvas.toBlob 返回空');
+  return blob;
+}
+
+/**
+ * 读入用户选的发票文件，返回可直接落库的形态。
+ * 任何一步失败都回退原图——不能因为省体积就把用户的发票弄丢。
+ */
+export async function prepareFile(inputFile) {
+  const mime = inputFile.type || '';
+  const size = inputFile.size;
+
+  if (mime === 'application/pdf') {
+    // PDF 不压缩，原样存；也没有缩略图
+    return { blob: inputFile, thumbBlob: null, mime, size, compressed: false };
+  }
+
+  try {
+    const img = await decode(inputFile);
+    const thumbBlob = await drawTo(img, THUMB_EDGE, THUMB_QUALITY);
+
+    if (!shouldCompress(size, img.width, img.height)) {
+      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, compressed: false };
+    }
+    const out = await drawTo(img, MAX_EDGE, JPEG_QUALITY);
+    if (!useCompressed(size, out.size)) {
+      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, compressed: false };
+    }
+    return {
+      blob: out, thumbBlob, mime: 'image/jpeg',
+      size: out.size, originalSize: size, compressed: true
+    };
+  } catch (err) {
+    console.error('发票图片压缩失败，按原样保存', err);
+    return {
+      blob: inputFile, thumbBlob: null,
+      mime: mime || 'application/octet-stream', size, compressed: false, failed: true
+    };
+  }
+}
+
+/** 把 prepareFile 的结果写进 invoiceFiles，返回 fileId。 */
+export async function saveFile(prepared) {
+  const id = uid();
+  await db.put('invoiceFiles', {
+    id,
+    blob: prepared.blob,
+    thumbBlob: prepared.thumbBlob,
+    mime: prepared.mime,
+    size: prepared.size ?? prepared.blob.size,
+    createdAt: Date.now()
+  });
+  return id;
+}
+
+export async function getFile(id) {
+  if (!id) return null;
+  return (await db.get('invoiceFiles', id)) ?? null;
+}
+
+export async function deleteFile(id) {
+  if (!id) return;
+  await db.removeAll([{ store: 'invoiceFiles', key: id }]);
+}
+
+/** 列表页只需要缩略图。取不到缩略图（PDF 或压缩失败）时返回 null，由界面显示占位图标。 */
+export async function getThumbUrl(id) {
+  const rec = await getFile(id);
+  if (!rec) return null;
+  const blob = rec.thumbBlob ?? null;
+  if (!blob) return null;
+  return URL.createObjectURL(blob);
+}
+
+export async function getFullUrl(id) {
+  const rec = await getFile(id);
+  if (!rec) return null;
+  return URL.createObjectURL(rec.blob);
+}
+
+export function revokeUrl(url) {
+  if (url) URL.revokeObjectURL(url);
+}
+```
+
+- [ ] **步骤 2：语法检查**
+
+运行：`node --check app/image-store.js`
+预期：无输出（语法通过）。
+
+- [ ] **步骤 3：确认没有纯逻辑漏在外面**
+
+运行：`node --test --test-isolation=none`
+预期：全绿（本任务不新增测试；若报错说明误改了别的模块）。
+
+- [ ] **步骤 4：Commit**
+
+```bash
+git add app/image-store.js
+git commit -m "feat(invoice): 图片压缩（Canvas）与 invoiceFiles 存取"
+```
+
+---
+
+## 任务 5：发票仓库层
+
+**文件：**
+- 创建：`app/invoice-store.js`
+
+- [ ] **步骤 1：编写实现**
+
+创建 `app/invoice-store.js`：
+
+```js
+// 发票仓库层：UI 与 IndexedDB 之间的唯一通道。
+// 依赖 db.js（进而依赖 indexedDB），**不能在 Node 里 import**；验证靠 fake-IndexedDB 探针与真机。
+
+import * as db from './db.js';
+import { uid } from './store.js';
+import { dedupeKey, validateInvoice } from './invoice-model.js';
+import { deleteFile } from './image-store.js';
+
+export async function listInvoices() {
+  const all = await db.getAll('invoices');
+  // 开票日期倒序；同日的按录入时间倒序，保证顺序稳定
+  return all.sort((a, b) => (b.issuedAt ?? 0) - (a.issuedAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+}
+
+export async function getInvoice(id) {
+  return (await db.get('invoices', id)) ?? null;
+}
+
+/**
+ * 按发票号码查已有记录。空号码一律返回 null（不查重）。
+ * 只做精确匹配——号码是印在票上的，不需要模糊。
+ */
+export async function findByNumber(number) {
+  const key = dedupeKey({ number });
+  if (key === null) return null;
+  const hits = await db.getAllByIndex('invoices', 'by_number', key);
+  return hits[0] ?? null;
+}
+
+export async function listByTxn(txnId) {
+  if (!txnId) return [];
+  return db.getAllByIndex('invoices', 'by_txn', txnId);
+}
+
+/** 每笔账挂了发票的条数，形如 { [txnId]: n }。记账列表用它显示「发票（N）」。 */
+export async function countByTxn() {
+  const all = await db.getAll('invoices');
+  const out = {};
+  for (const inv of all) {
+    if (!inv.txnId) continue;
+    out[inv.txnId] = (out[inv.txnId] ?? 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * 新建或更新一张发票。fileId 为 null 表示「没图」；传 undefined 表示「不改动图片」。
+ * 调用方负责先调 prepareFile/saveFile 拿到 fileId。
+ */
+export async function saveInvoice(input) {
+  const now = Date.now();
+  const existing = input.id ? await getInvoice(input.id) : null;
+
+  const inv = {
+    id: input.id ?? uid(),
+    number: String(input.number ?? '').trim(),
+    issuedAt: input.issuedAt ?? now,
+    amountCents: input.amountCents,
+    seller: String(input.seller ?? '').trim(),
+    type: input.type ?? 'other',
+    buyerTitle: String(input.buyerTitle ?? '').trim(),
+    buyerTaxId: String(input.buyerTaxId ?? '').trim(),
+    taxCents: input.taxCents ?? null,
+    note: String(input.note ?? '').trim(),
+    fileId: input.fileId === undefined ? (existing?.fileId ?? null) : input.fileId,
+    txnId: input.txnId === undefined ? (existing?.txnId ?? null) : input.txnId,
+    reimbursementId: existing?.reimbursementId ?? null,
+    archived: input.archived ?? existing?.archived ?? false,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+
+  const check = validateInvoice(inv);
+  if (!check.ok) throw new Error(check.errors.join('；'));
+
+  // 换了图就把旧图删掉，否则 invoiceFiles 会越攒越多、备份也跟着虚胖
+  const oldFileId = existing?.fileId;
+  await db.put('invoices', inv);
+  if (oldFileId && oldFileId !== inv.fileId) {
+    await deleteFile(oldFileId);
+  }
+  return inv;
+}
+
+/** 只改挂靠关系，不碰其它字段。传 null 表示解除挂靠。 */
+export async function linkToTxn(invoiceId, txnId) {
+  const inv = await getInvoice(invoiceId);
+  if (!inv) throw new Error('发票不存在');
+  await db.put('invoices', { ...inv, txnId: txnId ?? null, updatedAt: Date.now() });
+}
+
+export async function deleteInvoice(id) {
+  const inv = await getInvoice(id);
+  if (!inv) return;
+  await db.removeAll([{ store: 'invoices', key: id }]);
+  // 图片跟着发票走：没有别的发票引用它，留着就是垃圾
+  if (inv.fileId) await deleteFile(inv.fileId);
+}
+
+/** 汇总：本月合计、待报销合计（「仅存档」的票不计入待报销）。 */
+export async function summary(now = Date.now()) {
+  const all = await listInvoices();
+  const d = new Date(now);
+  const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+
+  let monthCents = 0;
+  let pendingCents = 0;
+  let pendingCount = 0;
+  for (const inv of all) {
+    const amt = Number(inv.amountCents) || 0;
+    if ((inv.issuedAt ?? 0) >= monthStart && (inv.issuedAt ?? 0) < monthEnd) monthCents += amt;
+    if (!inv.archived && !inv.reimbursementId) {
+      pendingCents += amt;
+      pendingCount += 1;
+    }
+  }
+  return { monthCents, pendingCents, pendingCount, total: all.length };
+}
+```
+
+- [ ] **步骤 2：** 给 `app/db.js` 新增 `getAllByIndex`
+
+已核实：`app/db.js` 现有 `put` / `putAll` / `replaceAll` / `get` / `getAll` / `getByRange` / `remove` / `removeAll`，**没有** `getByIndex` 一类的按索引取值函数——本任务与任务 8 都要用，必须新增一个。不写「单条版 `getByIndex`」：`by_txn` 索引下一笔账可能挂多张票，`index().get()` 只会返回第一条，那样「这笔账有几张票」永远显示 1。统一用返回数组的 `getAllByIndex`，查重处取 `hits[0]` 即可。
+
+在 `app/db.js` 的 `getByRange` 之后插入：
+
+```js
+// 按索引取**全部**命中：一笔账可以挂多张票（by_txn），所以不能用 index().get()——
+// 它只返回第一条，调用方拿到的永远是「一张」。查重那种只要一条的场景自己取 [0]。
+export async function getAllByIndex(store, indexName, key) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).index(indexName).getAll(key);
+    req.onsuccess = () => resolve(req.result ?? []);
+    req.onerror = () => reject(req.error);
+  });
+}
+```
+
+`get` 已存在且签名就是 `get(store, key)`，`findByNumber` 之外还用它的只有 `getInvoice`——本任务直接用，不用补。
+
+- [ ] **步骤 3：语法检查**
+
+运行：`node --check app/invoice-store.js`
+预期：无输出。
+
+- [ ] **步骤 4：Commit**
+
+```bash
+git add app/invoice-store.js app/db.js
+git commit -m "feat(invoice): 发票仓库层（CRUD / 查重 / 挂靠 / 汇总）"
+```
+
+---
+
+## 任务 6：发票列表页与第四个 Tab
+
+**文件：**
+- 创建：`app/ui/invoice-view.js`、`styles/invoice.css`
+- 修改：`app/router.js:4-8`、`app/main.js:29`、`index.html:14`
+
+- [ ] **步骤 1：加第四个 Tab**
+
+`app/router.js` 的 `TABS` 改成：
+
+```js
+const TABS = [
+  { id: 'ledger', label: '记账', icon: '📒' },
+  { id: 'invoice', label: '发票', icon: '🧾' },
+  { id: 'stats', label: '统计', icon: '📊' },
+  { id: 'vault', label: '密码箱', icon: '🔒' }
+];
+```
+
+同时把文件头注释里的「三个 Tab」改成「四个 Tab」。
+
+- [ ] **步骤 2：注册视图**
+
+`app/main.js` 顶部 import 区加：
+
+```js
+import { renderInvoices } from './ui/invoice-view.js';
+```
+
+`render` 函数里的 `renderers` 改成：
+
+```js
+const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: renderStats, vault: renderVault };
+```
+
+- [ ] **步骤 3：创建样式文件**
+
+创建 `styles/invoice.css`：
+
+```css
+/* 发票模块样式。沿用 base.css 的设计令牌，不引入新的色值。 */
+
+.inv-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.inv-summary-cell {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.inv-summary-cell .k { font-size: 12px; color: var(--muted); }
+.inv-summary-cell .v { font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.inv-filters { display: flex; gap: 6px; margin-bottom: 10px; }
+.inv-filters button {
+  flex: 1;
+  padding: 7px 4px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+}
+.inv-filters button[aria-selected="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.inv-item {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+.inv-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+.inv-title { font-size: 14.5px; }
+.inv-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.inv-amount { font-size: 15px; font-variant-numeric: tabular-nums; text-align: right; }
+.inv-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  margin-top: 3px;
+}
+.inv-tag.pending { color: #b26a00; border-color: #e0b060; }
+.inv-tag.stored { color: var(--muted); }
+
+.inv-preview {
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+```
+
+- [ ] **步骤 4：引入样式**
+
+`index.html` 在 `styles/vault.css` 那一行后面加：
+
+```html
+<link rel="stylesheet" href="./styles/invoice.css">
+```
+
+- [ ] **步骤 5：实现列表页**
+
+创建 `app/ui/invoice-view.js`：
+
+```js
+// 发票 Tab：搜索、筛选、汇总、列表。
+// 依赖 invoice-store（进而 IndexedDB），验证靠模拟器实测。
+
+import { el, mount } from './dom.js';
+import * as invoiceStore from '../invoice-store.js';
+import { formatCents } from '../money.js';
+import { typeLabel, invoiceTitle } from '../invoice-model.js';
+import { openInvoiceEditor } from './invoice-editor.js';
+
+const FILTERS = [
+  { id: 'all', label: '全部' },
+  { id: 'pending', label: '待报销' },
+  { id: 'stored', label: '仅存档' },
+  { id: 'unlinked', label: '未挂账' }
+];
+
+// 筛选状态按 Tab 生命周期保存在模块级：切走再回来不该被重置，
+// 与统计页存口径是同一种做法。
+let filter = 'all';
+let keyword = '';
+
+function matches(inv, kw) {
+  if (!kw) return true;
+  const hay = [inv.seller, inv.number, inv.note, inv.buyerTitle].join(' ').toLowerCase();
+  return hay.includes(kw);
+}
+
+function inFilter(inv) {
+  switch (filter) {
+    case 'pending': return !inv.archived && !inv.reimbursementId;
+    case 'stored': return !!inv.archived;
+    case 'unlinked': return !inv.txnId;
+    default: return true;
+  }
+}
+
+export async function renderInvoices(root) {
+  const all = await invoiceStore.listInvoices();
+  const sum = await invoiceStore.summary();
+
+  const searchInput = el('input', {
+    type: 'search',
+    placeholder: '搜索销售方、号码、备注',
+    value: keyword,
+    oninput: (e) => { keyword = e.target.value; paint(); }
+  });
+
+  const listBox = el('div', {});
+  const filterBox = el('div', { class: 'inv-filters' });
+
+  function paintFilters() {
+    mount(filterBox, FILTERS.map(f => el('button', {
+      type: 'button',
+      'aria-selected': String(f.id === filter),
+      onclick: () => { filter = f.id; paint(); }
+    }, [f.label])));
+  }
+
+  async function paint() {
+    paintFilters();
+    const kw = keyword.trim().toLowerCase();
+    const rows = all.filter(inv => inFilter(inv) && matches(inv, kw));
+    if (rows.length === 0) {
+      mount(listBox, el('div', { class: 'empty' }, [
+        all.length === 0 ? '还没有发票，点右下角拍一张' : '没有符合条件的发票'
+      ]));
+      return;
+    }
+    const nodes = [];
+    for (const inv of rows) {
+      const thumbUrl = inv.fileId ? await invoiceStore.thumbUrlFor(inv.fileId).catch(() => null) : null;
+      nodes.push(el('button', {
+        class: 'inv-item',
+        type: 'button',
+        onclick: () => openInvoiceEditor({ id: inv.id, onSaved: refresh })
+      }, [
+        thumbUrl
+          ? el('img', { class: 'inv-thumb', src: thumbUrl, alt: '' })
+          : el('div', { class: 'inv-thumb', text: inv.fileId ? '📄' : '🧾' }),
+        el('div', {}, [
+          el('div', { class: 'inv-title', text: invoiceTitle(inv) }),
+          el('div', { class: 'inv-meta', text: [typeLabel(inv.type), inv.number].filter(Boolean).join(' · ') }),
+          el('div', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: inv.archived ? '仅存档' : (inv.reimbursementId ? '已报销' : '待报销') })
+        ]),
+        el('div', { class: 'inv-amount', text: formatCents(inv.amountCents) })
+      ]));
+    }
+    mount(listBox, nodes);
+  }
+
+  async function refresh() {
+    const fresh = await invoiceStore.listInvoices();
+    all.length = 0;
+    all.push(...fresh);
+    await paint();
+  }
+
+  mount(root, el('div', { class: 'stack' }, [
+    el('div', { class: 'inv-summary' }, [
+      el('div', { class: 'inv-summary-cell' }, [
+        el('div', { class: 'k', text: '本月发票' }),
+        el('div', { class: 'v', text: formatCents(sum.monthCents) })
+      ]),
+      el('div', { class: 'inv-summary-cell' }, [
+        el('div', { class: 'k', text: `待报销（${sum.pendingCount} 张）` }),
+        el('div', { class: 'v', text: formatCents(sum.pendingCents) })
+      ])
+    ]),
+    searchInput,
+    filterBox,
+    listBox
+  ]));
+
+  await paint();
+}
+
+export function openNewInvoice(onSaved) {
+  return openInvoiceEditor({ onSaved });
+}
+```
+
+**注意**：上面用到 `invoiceStore.thumbUrlFor`，请在 `app/invoice-store.js` 末尾补这个转发函数，避免 UI 直接依赖 image-store：
+
+```js
+import { getThumbUrl, getFullUrl } from './image-store.js';
+
+export async function thumbUrlFor(fileId) {
+  return getThumbUrl(fileId);
+}
+
+export async function fullUrlFor(fileId) {
+  return getFullUrl(fileId);
+}
+```
+
+- [ ] **步骤 6：语法检查**
+
+运行：`node --check app/ui/invoice-view.js`
+预期：无输出（`invoice-editor.js` 尚不存在，但 `node --check` 只查语法、不解析 import，所以会通过）。
+
+- [ ] **步骤 7：Commit**
+
+```bash
+git add app/router.js app/main.js app/ui/invoice-view.js styles/invoice.css index.html app/invoice-store.js
+git commit -m "feat(invoice): 发票列表页与第四个 Tab"
+```
+
+---
+
+## 任务 7：发票编辑器
+
+**文件：**
+- 创建：`app/ui/invoice-editor.js`
+
+- [ ] **步骤 1：实现编辑器**
+
+创建 `app/ui/invoice-editor.js`：
+
+```js
+// 新建 / 编辑发票的半屏 sheet。
+// 复用项目既有的 openSheet 与 createKeypad，不另造一套。
+
+import { el, mount } from './dom.js';
+import { openSheet } from './sheet.js';
+import { createKeypad } from './keypad.js';
+import * as invoiceStore from '../invoice-store.js';
+import * as store from '../store.js';
+import { prepareFile, saveFile, getFullUrl, revokeUrl } from '../image-store.js';
+import { INVOICE_TYPES, validateInvoice, findByNumberGuard } from '../invoice-model.js';
+import { formatCents, parseAmountToCents } from '../money.js';
+import { todayRange } from '../dates.js';
+
+let activeSheet = null;
+
+export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
+  // 同一时刻只开一层：与项目其它 sheet 的约定一致
+  if (activeSheet) { activeSheet.close(); activeSheet = null; }
+
+  const state = {
+    id,
+    number: '', issuedAt: Date.now(), amountCents: null,
+    seller: '', type: 'other', buyerTitle: '', buyerTaxId: '',
+    taxCents: null, note: '', fileId: null, txnId,
+    archived: false, busy: false
+  };
+  // 查重提示只弹一次（见 submit）：用户第二次点「保存」就放行。
+  let dupWarned = false;
+
+  const errorNode = el('div', { class: 'vault-error' });
+  const previewBox = el('div', {});
+  const body = el('div', { class: 'stack' });
+
+  const sheet = openSheet({ title: id ? '编辑发票' : '新建发票', body });
+  activeSheet = sheet;
+
+  async function paintPreview() {
+    if (!state.fileId) {
+      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      return;
+    }
+    const url = await getFullUrl(state.fileId).catch(() => null);
+    if (!url) {
+      mount(previewBox, el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
+      return;
+    }
+    const img = el('img', { class: 'inv-preview', src: url, alt: '发票' });
+    // 图片换成新的之后要释放旧的 object URL，否则每换一次泄漏一份内存
+    const old = previewBox.firstChild;
+    mount(previewBox, img);
+    if (old?.tagName === 'IMG') revokeUrl(old.src);
+  }
+
+  async function pickFile(file) {
+    if (!file) return;
+    state.busy = true;
+    errorNode.textContent = '';
+    try {
+      const prepared = await prepareFile(file);
+      const fileId = await saveFile(prepared);
+      state.fileId = fileId;
+      if (prepared.failed) {
+        errorNode.textContent = '图片未能压缩，已按原样保存';
+      } else if (prepared.compressed) {
+        const saved = Math.round((1 - prepared.size / prepared.originalSize) * 100);
+        errorNode.textContent = `已压缩，省了约 ${saved}%`;
+      }
+      await paintPreview();
+    } catch (err) {
+      errorNode.textContent = '图片保存失败：' + (err?.message || err);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  function fileInput(accept, capture) {
+    const input = el('input', {
+      type: 'file', accept,
+      ...(capture ? { capture } : {}),
+      style: 'display:none',
+      onchange: (e) => { pickFile(e.target.files?.[0]); e.target.value = ''; }
+    });
+    return input;
+  }
+
+  const cameraInput = fileInput('image/*', 'environment');
+  const albumInput = fileInput('image/*,application/pdf');
+
+  const amountText = el('div', { class: 'vault-code', text: '¥0.00' });
+  const keypad = createKeypad({
+    onChange: ({ cents }) => {
+      state.amountCents = cents;
+      amountText.textContent = cents === null ? '¥0.00' : formatCents(cents, { symbol: true });
+    }
+  });
+
+  const numberInput = el('input', {
+    type: 'text', placeholder: '发票号码',
+    oninput: (e) => { state.number = e.target.value; }
+  });
+
+  function field(label, node) {
+    return el('label', { class: 'stack', style: 'gap:4px' }, [
+      el('span', { class: 'k', text: label }),
+      node
+    ]);
+  }
+
+  const typeSelect = el('select', {
+    onchange: (e) => { state.type = e.target.value; }
+  }, INVOICE_TYPES.map(t => el('option', { value: t.id, text: t.label })));
+
+  // 这几个输入框要具名：load() 回填时必须逐个写回控件的 value，
+  // 只把值塞进 state 是不够的（state 有值 ≠ 界面上有值）。
+  const sellerInput = el('input', { type: 'text', placeholder: '开票单位名称', oninput: (e) => { state.seller = e.target.value; } });
+  const buyerTitleInput = el('input', { type: 'text', oninput: (e) => { state.buyerTitle = e.target.value; } });
+  const buyerTaxIdInput = el('input', { type: 'text', oninput: (e) => { state.buyerTaxId = e.target.value; } });
+  const noteInput = el('input', { type: 'text', oninput: (e) => { state.note = e.target.value; } });
+  const archivedCheck = el('input', { type: 'checkbox', onchange: (e) => { state.archived = e.target.checked; } });
+
+  async function submit() {
+    errorNode.textContent = '';
+    const check = validateInvoice(state);
+    if (!check.ok) { errorNode.textContent = check.errors.join('；'); return; }
+
+    // 查重：**只提示、不阻止**（规格第 5 节）。号码为空时不查。
+    // 两段式：第一次点「保存」只提示，再点一次才真的存进去。直接用 return 拦住是不对的——
+    // 同一张票补扫一次、纸质票号码撞了，都是真会遇到的合法情况，用户必须能强行存。
+    if (state.number.trim()) {
+      const dup = await invoiceStore.findByNumber(state.number);
+      if (dup && dup.id !== state.id && !dupWarned) {
+        dupWarned = true;
+        errorNode.textContent = `这张票已经录过了（${dup.seller || dup.number}，${formatCents(dup.amountCents, { symbol: true })}）。要再存一张就再点一次「保存」。`;
+        return;
+      }
+    }
+
+    try {
+      await invoiceStore.saveInvoice(state);
+      sheet.close();
+      activeSheet = null;
+      if (onSaved) await onSaved();
+    } catch (err) {
+      errorNode.textContent = String(err?.message || err);
+    }
+  }
+
+  async function load() {
+    if (!id) return;
+    const inv = await invoiceStore.getInvoice(id);
+    if (!inv) return;
+    Object.assign(state, inv);
+    // 逐个写回控件：少这几行，编辑已有发票时所有字段都是空白，
+    // 用户随便改一个字段再保存，就把原来的号码/销售方/抬头全清了。
+    numberInput.value = inv.number ?? '';
+    typeSelect.value = inv.type ?? 'other';
+    sellerInput.value = inv.seller ?? '';
+    buyerTitleInput.value = inv.buyerTitle ?? '';
+    buyerTaxIdInput.value = inv.buyerTaxId ?? '';
+    noteInput.value = inv.note ?? '';
+    archivedCheck.checked = inv.archived === true;
+    // 金额只能走 setFromCents（纪律 3）：formatCents 的输出带 ¥，键盘解析不了会变空。
+    keypad.setFromCents(inv.amountCents ?? 0);
+    amountText.textContent = formatCents(inv.amountCents ?? 0, { symbol: true });
+  }
+
+  // mount(parent, ...nodes) 是变参（内部还会 flat），这里按项目其它视图的写法传变参。
+  mount(body,
+    errorNode,
+    previewBox,
+    el('div', { class: 'stack', style: 'gap:6px' }, [
+      el('button', { class: 'btn', type: 'button', text: '拍照', onclick: () => cameraInput.click() }),
+      el('button', { class: 'btn', type: 'button', text: '选图片或 PDF', onclick: () => albumInput.click() })
+    ]),
+    cameraInput, albumInput,
+    field('发票号码', numberInput),
+    field('价税合计', amountText),
+    keypad.node,
+    field('销售方', sellerInput),
+    field('发票类型', typeSelect),
+    field('购买方抬头', buyerTitleInput),
+    field('纳税人识别号', buyerTaxIdInput),
+    el('label', { class: 'vault-check' }, [
+      archivedCheck,
+      el('span', { text: '仅存档（不参与报销追踪）' })
+    ]),
+    field('备注', noteInput),
+    el('button', { class: 'btn btn-primary', type: 'button', text: '保存', onclick: submit })
+  );
+
+  load().then(paintPreview).catch(err => { errorNode.textContent = String(err?.message || err); });
+}
+```
+
+- [ ] **步骤 2：** 核对 `createKeypad` 的返回字段名（已核实，不用改）
+
+已核实：`app/ui/keypad.js` 的 `createKeypad({ onChange })` 返回 `{ node, clearAll, setFromCents, cents, text }`，字段名就是 `node`——上面代码里的 `keypad.node` 写法正确，**不要改成 `keypad.el`**。想自己看一眼可运行 `grep -n "return {" -A 6 app/ui/keypad.js`。
+
+同时复核两条纪律（`app/ui/entry-panel.js` 文件头第 3、4 条）：回填金额只能用 `keypad.setFromCents(cents)`（`formatCents` 的输出带 `¥`，`parseAmountToCents` 解析不了会变空）；`onChange` 回调里只能读回调参数，不能引用 `const keypad` 自身（创建时会同步首调一次，那时还在 TDZ）。
+
+- [ ] **步骤 3：** 删掉上面 import 里用不到的两个符号
+
+运行：`node --check app/ui/invoice-editor.js`（预期通过；`node --check` 不解析 import，所以这一步必须人工确认——**import 了不存在的导出会在运行时抛 SyntaxError 级别的链接错误，整个编辑器打不开**）。
+
+把 `import { INVOICE_TYPES, validateInvoice, findByNumberGuard } from '../invoice-model.js';` 改成
+
+```js
+import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
+```
+
+查重不靠 `invoice-model` 里的纯函数，而是直接调 `invoiceStore.findByNumber`（见下面 `submit()`）——号码查重要读库，纯逻辑模块读不到。
+
+再删掉 `import { todayRange } from '../dates.js';` 这一行：编辑器里没有任何地方用它（时间字段直接用时间戳）。
+
+- [ ] **步骤 4：Commit**
+
+```bash
+git add app/ui/invoice-editor.js
+git commit -m "feat(invoice): 发票编辑器（拍照/选文件/字段/查重提示）"
+```
+
+---
+
+## 任务 8：记账侧显示发票
+
+**背景（已核实，这一条改变了做法）：** pvault 的记账流水**没有详情页**。`app/ui/ledger-home.js` 里的今日流水行是一个纯展示的 `div.row.ledger-txn-row`，点它没有任何反应；全项目唯一的交易交互入口是右下角 FAB 的「记一笔」（`openEntryPanel`），而 `store.updateTransaction` 至今零调用点（`app/ui/import-view.js` 里有一行注释专门记着这件事）。所以「在流水详情里加一行发票数」在当前结构下无处可挂。
+
+**本任务改为：** 今日流水行里显示一个可点的「🧾N」标记，点它打开**发票关联面板**（列出这笔账已挂的票、可当场补挂）。不新增交易详情页——那是一次独立的界面扩展，超出本计划范围。
+
+**文件：**
+- 修改：`app/ui/invoice-view.js`（追加 `openInvoiceLinkSheet`）
+- 修改：`app/ui/ledger-home.js`（取计数 + 行内标记）
+- 修改：`styles/invoice.css`（补两个类）
+
+### 步骤 1：在 `app/ui/invoice-view.js` 末尾追加关联面板
+
+- [ ] 先补一个 import。该文件目前**没有**引入 `openSheet`（任务 6 的列表页自己不开 sheet），所以在文件头 import 区加一行：
+
+```js
+import { openSheet } from './sheet.js';
+```
+
+`el` / `mount` / `formatCents` / `openInvoiceEditor` 该文件已在用，不必再加。
+
+- [ ] 再追加这段代码：
+
+```js
+// 从记账页点「🧾N」进来的小面板：看这笔账挂了哪些票，也能当场补挂一张。
+// 与编辑器的分工：这里只管「挂靠」这一件事，看大图/改字段交给编辑器。
+// txn 由调用方直接传整条对象（ledger-home 手里就有），不再查一次库；
+// categoryName 同理已由调用方查好，这里不重复查分类表。
+export function openInvoiceLinkSheet({ txn, categoryName = '', onChanged } = {}) {
+  const body = el('div', { class: 'stack' });
+  const sheet = openSheet({ title: '这笔账的发票', body });
+
+  async function refresh() {
+    const list = await invoiceStore.listByTxn(txn.id);
+
+    const rows = list.map(inv => el('button', {
+      class: 'inv-row', type: 'button',
+      onclick: () => {
+        sheet.close();
+        openInvoiceEditor({ id: inv.id, onSaved: onChanged });
+      }
+    }, [
+      el('span', { class: 'inv-row-main' }, [
+        el('span', { text: inv.seller || inv.number || '未命名发票' }),
+        el('span', { class: 'muted tiny', text: `${inv.number || '无号码'} · ${formatCents(inv.amountCents ?? 0, { symbol: true })}` })
+      ]),
+      inv.archived
+        ? el('span', { class: 'inv-tag stored', text: '仅存档' })
+        : el('span', { class: 'inv-tag pending', text: inv.reimbursementId ? '已报销' : '待报销' })
+    ]));
+
+    mount(body,
+      el('div', { class: 'muted tiny', text: `${categoryName || '这笔账'} ${formatCents(txn.amountCents ?? 0, { symbol: true })}　已挂 ${list.length} 张` }),
+      // el(tag, props, children) 的 children 收数组（不能像 mount 那样变参展开）
+      list.length === 0
+        ? el('div', { class: 'empty', text: '这笔账还没有发票' })
+        : el('div', { class: 'stack' }, rows),
+      el('button', {
+        class: 'btn btn-primary', type: 'button', text: '＋ 新建发票并挂到这笔账',
+        // txnId 直接交给编辑器：saveInvoice 会把它写进发票，不必再调 linkToTxn。
+        onclick: () => {
+          sheet.close();
+          openInvoiceEditor({ txnId: txn.id, onSaved: onChanged });
+        }
+      })
+    );
+  }
+
+  refresh().catch(err => {
+    mount(body, el('div', { class: 'vault-error', text: String(err?.message || err) }));
+  });
+}
+```
+
+- [ ] 确认 `onChanged` 允许为 undefined：`openInvoiceEditor({ onSaved: undefined })` 内部是 `if (onSaved) await onSaved();`（见任务 7），不会炸。
+
+### 步骤 2：`app/ui/ledger-home.js` 取发票计数
+
+- [ ] 加两个 import（放在现有 import 区末尾）：
+
+```js
+import * as invoiceStore from '../invoice-store.js';
+import { openInvoiceLinkSheet } from './invoice-view.js';
+```
+
+- [ ] 在 `renderLedgerHome` 的 `Promise.all` 里多要一项，解构末尾加 `invCounts`：
+
+```js
+  const [monthTxns, todayTxns, accounts, categories, receivables, budgetTotal, hideAmounts, lastBackupAt, reminderDays, invCounts] =
+    await Promise.all([
+      // …原有九项保持不变…
+      store.getSetting('backupReminderDays', DEFAULT_BACKUP_REMINDER_DAYS),
+      // 一次性整表统计，不要逐笔查：今日流水十几笔就是十几个事务，
+      // 而发票表在没有导入大备份时也就几十到几百条，一次 getAll 更省。
+      // 它返回 { [txnId]: 条数 }，没有发票的账根本不出现在这个对象里。
+      invoiceStore.countByTxn()
+    ]);
+```
+
+### 步骤 3：流水行加标记
+
+- [ ] 今日流水那一行现在是「名称 + 金额」两个子节点，在**金额之前**插入标记（阅读顺序：名称 → 🧾N → 金额）：
+
+```js
+              // 发票标记：只有挂了票的账才出现。行本身不可点（流水没有详情页），
+              // 所以能点开的入口就是这个小标记——aria-label 写清楚，别只留一个 emoji。
+              invCounts[t.id]
+                ? el('button', {
+                    class: 'inv-tag ledger-inv-tag', type: 'button',
+                    text: `🧾${invCounts[t.id]}`,
+                    'aria-label': `这笔账有 ${invCounts[t.id]} 张发票`,
+                    onclick: () => openInvoiceLinkSheet({
+                      txn: t,
+                      categoryName: catOf.get(t.categoryId)?.name || (t.kind === 'transfer' ? '转账' : ''),
+                      onChanged: () => { renderLedgerHome(root).catch(err => console.error('首页重渲染失败', err)); }
+                    })
+                  })
+                : null,
+              el('span', { class: amountClass, text: `${t.kind === 'income' ? '+' : t.kind === 'transfer' ? '⇄ ' : '-'}${formatCents(t.amountCents)}` })
+```
+
+`onChanged` 里必须自己吞掉异常，理由与底部备份提醒那处相同（见该文件现有注释）：面板已经关掉了，首页渲染失败不该把整个流程带崩。
+
+### 步骤 4：补样式
+
+- [ ] 追加到 `styles/invoice.css` 末尾：
+
+```css
+/* 今日流水行里的发票标记。复用 .inv-tag 的边框/圆角/字号，但它是个 <button>：
+   必须清掉按钮默认底色（否则在流水行里是一块突兀的灰底），并让字体继承行内字号。 */
+.ledger-inv-tag {
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 关联面板里的每张票：整行可点，所以是个铺满宽度的按钮，文字要左对齐。 */
+.inv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: left;
+}
+.inv-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+```
+
+`.inv-tag` 的 `margin-top: 3px` 是给列表页竖排用的，在横排的流水行里会把标记顶偏，所以 `.ledger-inv-tag` 里 `margin: 0` 覆盖掉它——两条规则特异性相同（都是单类），靠**书写顺序**取胜：`.ledger-inv-tag` 在 `.inv-tag` 之后定义。**因此这两段必须追加在文件末尾，不能插到前面。**
+
+### 步骤 5：语法检查与真机验证
+
+- [ ] 运行：`node --check app/ui/ledger-home.js && node --check app/ui/invoice-view.js`
+预期：无输出。
+
+- [ ] 在模拟器/CDP 上确认（这一步不可省：本轮改动全是界面行为）：
+  - 给某笔今日流水挂一张票 → 该行出现「🧾1」，金额与名称都还在原位（标记不能把行挤换行）
+  - 再挂一张 → 变成「🧾2」（这条专门验 `getAllByIndex` 取的是数组：写错成 `index().get()` 时它永远是 1）
+  - 点「🧾2」→ 关联面板列出两张，点其中一张进编辑器且**字段已回填**（验任务 7 的 load 回填）
+  - 点「＋ 新建发票并挂到这笔账」→ 保存后回首页，标记数 +1，且发票列表里这张票的关联账目正确
+  - 没有发票的流水行不出现任何标记（不能出现「🧾0」）
+
+### 步骤 6：Commit
+
+```bash
+git add app/ui/ledger-home.js app/ui/invoice-view.js styles/invoice.css
+git commit -m "feat(invoice): 流水行的发票标记与关联面板"
+```
+
+
+---
+
+## 任务 9：备份与恢复
+
+**文件：**
+- 修改：`app/backup.js`、`app/backup-store.js`
+
+- [ ] **步骤 1：扩备份结构**
+
+`app/backup.js` 的 `buildBackup` 里，`data` 加两项：
+
+```js
+const data = {
+  // …原有字段不动…
+  invoices: deepClone(payload.invoices ?? []),
+  invoiceFiles: payload.invoiceFiles ?? []   // 已由调用方转成 base64 字符串
+};
+```
+
+`REQUIRED_ARRAYS` **不变**——新字段是可选扩展，老备份没有它也要能导入。
+
+- [ ] **步骤 2：导出时把图片转 base64**
+
+在 `app/backup-store.js` 的 `exportBackup` 里、组装 payload 处加：
+
+```js
+import * as db from './db.js';
+
+// Blob 无法直接进 JSON（JSON.stringify(blob) 得到 {}），必须先转 base64。
+// 这也是含图备份体积会大的原因：base64 比二进制大约 1/3。
+async function encodeFiles() {
+  const files = await db.getAll('invoiceFiles');
+  const out = [];
+  for (const f of files) {
+    out.push({
+      id: f.id,
+      mime: f.mime,
+      size: f.size,
+      createdAt: f.createdAt,
+      blob: await blobToBase64(f.blob),
+      thumbBlob: f.thumbBlob ? await blobToBase64(f.thumbBlob) : null
+    });
+  }
+  return out;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const s = String(fr.result);
+      const i = s.indexOf(',');
+      resolve(i >= 0 ? s.slice(i + 1) : '');
+    };
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+```
+
+- [ ] **步骤 3：导出前算体积并给选项**
+
+在导出界面的确认处显示：
+
+```js
+const files = await db.getAll('invoiceFiles');
+const mb = estimateBackupMB(files);
+if (files.length > 0) {
+  // 界面文案：含 N 张图片，预计约 X MB；另给「不含图片」按钮
+}
+```
+
+「不含图片」时传 `includeFiles: false`，`encodeFiles()` 直接返回 `[]`。
+
+- [ ] **步骤 4：导入时反解 base64**
+
+在 `app/backup-store.js` 的 `importBackup` 里，写库前加：
+
+```js
+function base64ToBlob(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'application/octet-stream' });
+}
+```
+
+并把 `invoiceFiles` 的每条还原成 `{ id, mime, size, createdAt, blob: base64ToBlob(...), thumbBlob: ... }` 后一起写进 `replaceAll` 的 `puts`。
+
+- [ ] **步骤 5：** 语法检查
+
+运行：`node --check app/backup.js; node --check app/backup-store.js`
+预期：均无输出。
+
+- [ ] **步骤 6：** 跑全量测试（`tests/backup.test.js` 会覆盖到 `buildBackup`）
+
+运行：`node --test --test-isolation=none`
+预期：全绿。若 `buildBackup` 的既有断言因新增字段而失败，**不要改断言去迁就**，检查是不是把新字段放在了 `data` 之外。
+
+- [ ] **步骤 7：Commit**
+
+```bash
+git add app/backup.js app/backup-store.js
+git commit -m "feat(invoice): 备份与恢复带上发票与图片（base64）"
+```
+
+---
+
+## 任务 10：收尾与实测
+
+**文件：**
+- 修改：`sw.js`、`docs/手动验证清单.md`
+
+- [ ] **步骤 1：** 把 7 个新文件加进 `sw.js` 的 `ASSETS` 白名单，并把 `CACHE` 从 `pvault-v12` 改成 `pvault-v13`
+
+「创建」表里的 9 个文件中有 7 个要上线（两个 `tests/*.test.js` 不进白名单——它们不在浏览器里跑）。新增条目：
+
+```
+'./app/invoice-model.js',
+'./app/image-scale.js',
+'./app/image-store.js',
+'./app/invoice-store.js',
+'./app/ui/invoice-view.js',
+'./app/ui/invoice-editor.js',
+'./styles/invoice.css',
+```
+
+并在 `CACHE` 上方补一行 v13 的变更注释。
+
+- [ ] **步骤 2：** 跑全量测试 + 逐条核对 ASSETS
+
+运行：`node --test --test-isolation=none`
+然后起 dev-server 逐条请求 `sw.js` 里每个 ASSETS 路径，确认全部 200，且白名单外（docs/tests/scripts/package.json）仍是 403。
+
+- [ ] **步骤 3：** 在模拟器上实测（这是本计划唯一能验证 Canvas 与 IndexedDB 的手段）
+
+```
+powershell -File scripts/build-apk.ps1
+adb install -r dist/app-release.apk
+adb shell am start -n dev.pvault.app/.MainActivity
+adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>
+```
+
+用 CDP 驱动，逐条确认：
+- 底部出现第 4 个 Tab「发票」，点进去是空状态
+- 新建一张发票：拍照（模拟器无摄像头时用「选图片」喂一张测试图）→ 填号码/金额/销售方 → 保存
+- 列表中该条带缩略图、金额正确
+- 再次用同一号码新建 → 出现「这张票已经录过了」，**再点一次「保存」仍然能存进去**（只警告不阻止）
+- 编辑该票、改成「仅存档」→ 汇总里「待报销」减少，且编辑时各字段是**回填好的**（不是空白）
+- 给某笔今日流水挂票 → 该行出现「🧾1」，点它能看到这张票
+- 删除该票 → `invoiceFiles` 里对应记录也消失（说明没留下孤儿图）
+
+- [ ] **步骤 4：** 更新 `docs/手动验证清单.md`，加「发票」小节
+
+至少覆盖：第 4 个 Tab 存在、拍照、选 PDF、压缩后能看清字、查重提示（再点一次保存可强行存入）、仅存档、挂靠账目、流水行的「🧾N」标记与关联面板、含图备份导出与恢复后图片字节一致、不含图片备份恢复后发票记录仍在。
+
+- [ ] **步骤 5：** Commit
+
+```bash
+git add sw.js docs/手动验证清单.md
+git commit -m "chore(invoice): SW 预缓存、缓存版本号与手动验证清单"
+```
+
+---
+
+## 自检结果
+
+- **规格覆盖度**：规格第 1 节四项用途 → 任务 2/3/4/5/6/7；第 3 节数据模型 → 任务 1；第 4 节图片处理 → 任务 3/4；第 5 节挂靠与查重 → 任务 5/6/8；第 7 节界面 → 任务 6/7；第 8 节备份 → 任务 9；第 9 节测试策略 → 各任务内的测试步骤 + 任务 10。**第 6 节报销流程属于计划 5，本计划只建表。**
+- **占位符扫描**：无「待定 / TODO / 后续实现」；每个代码步骤都给了完整代码。
+- **类型一致性**：`validateInvoice` / `dedupeKey` / `sumCents` / `invoiceTitle` / `computeTargetSize` / `shouldCompress` / `useCompressed` / `estimateBackupMB` / `prepareFile` / `saveFile` / `getFile` / `deleteFile` / `getThumbUrl` / `getFullUrl` / `revokeUrl` / `listInvoices` / `getInvoice` / `findByNumber` / `listByTxn` / `countByTxn` / `saveInvoice` / `linkToTxn` / `deleteInvoice` / `summary` / `thumbUrlFor` / `fullUrlFor` / `getAllByIndex` / `openInvoiceEditor` / `openInvoiceLinkSheet` —— 各任务引用处与定义处一致。
+- **三处集成点已全部核实（不再是「动手再确认」）**：
+  1. `app/db.js` **没有**任何按索引取值的函数 → 任务 5 步骤 2 明确新增 `getAllByIndex`；取数组而不是单条，因为一笔账能挂多张票，`index().get()` 会把它永远显示成 1。
+  2. `app/ui/keypad.js` 的 `createKeypad` 返回 `{ node, clearAll, setFromCents, cents, text }` → 任务 7 里的 `keypad.node` 写法正确，不必改。
+  3. `app/ui/ledger-home.js` **没有**流水详情页（只有 `renderLedgerHome`，流水行是纯展示；`store.updateTransaction` 零调用点）→ 任务 8 整个改为「行内标记 + 关联面板」，不再假设存在详情渲染点。
+- **另外顺手修掉的三处**（写计划时留的坑，不修就会带着 bug 落地）：任务 7 里 `mount(body, [数组])` 改成变参写法；编辑已有发票时必须把 `state` 逐个回填到控件（只 `Object.assign` 会让界面全空、一保存就把原内容清掉）；查重改成「提示一次、再点保存即放行」，而不是直接 `return` 拦住——规格第 5 节写的是只警告不阻止。
