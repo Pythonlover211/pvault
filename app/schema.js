@@ -13,6 +13,23 @@ export const STORES = {
   settings: { keyPath: 'key', indexes: [] },
   // 发票本体。报销状态不单独存，由 reimbursementId + 报销单状态推导，
   // 否则报销单改了状态、发票里的冗余字段就成了一份会过期的副本。
+  //
+  // 索引的空值语义（这里才是真正的坑）：IndexedDB **不索引键值为 null / undefined 的记录**，
+  // 而 IDBKeyRange.only(null) 还会直接抛 DataError。所以「列出所有未挂账 / 未报销的发票」
+  // 只能 getAll('invoices') 之后自己 filter，永远不要试图用索引去查空值；
+  // 同理，任何「总数 / 未挂账数」都不能用 index.count()——索引里压根没有这些记录，
+  // count() 只会给出一个偏小的数，还看不出来错。
+  // 「没号码」统一存空字符串 ''（合法键，会被正常索引），所以查重前必须先判空，
+  // invoice-model.js 的 dedupeKey 就是干这个的。
+  //
+  // by_number **刻意不加 unique: true**：查重是提示式的、允许用户手动放行——
+  // 同一张票补扫一次、两张纸质票号码撞了，都该能存进去。加了 unique 这些情况会直接抛
+  // ConstraintError，用户连「我知道，就要存」都做不到。
+  //
+  // 命名沿用既有的 by_<字段名> 约定；by_txn / by_reimbursement 的字段实际是
+  // txnId / reimbursementId，这里刻意不叫 by_txnId / by_reimbursementId，
+  // 为的是与报销单侧的查询用同一个索引名，跨表读代码时不用来回换算。
+  // 改名会同时牵动消费方代码，所以选择用这段注释交代，而不是改名。
   invoices: {
     keyPath: 'id',
     indexes: [
@@ -25,7 +42,8 @@ export const STORES = {
   // 发票的图片/PDF 单独一张表：列表页只加载缩略图，
   // 不为显示一行把几 MB 的原图读进内存。
   invoiceFiles: { keyPath: 'id', indexes: [] },
-  // 报销单。计划 4 只建表不用，计划 5 才填。
+  // 报销单。现在只需要把表建好：迁移只在版本升级时跑一次，等真正要用这张表时再加，
+  // 就得让用户再升一次版本、再经历一次可能被旧连接阻塞的升级，所以先建好。
   reimbursements: { keyPath: 'id', indexes: [['by_status', 'status']] }
 };
 

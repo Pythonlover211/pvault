@@ -173,8 +173,14 @@ test('STORES 里有发票相关的三张表', () => {
 });
 
 test('invoices 的索引齐全（查重与挂靠都要用）', () => {
-  const names = STORES.invoices.indexes.map(([n]) => n).sort();
-  assert.deepEqual(names, ['by_issuedAt', 'by_number', 'by_reimbursement', 'by_txn']);
+  // 断言 [索引名, 字段名] 整对，不只看名字：字段名写错（比如 by_txn 指向不存在的 txn）
+  // 索引会恒为空、挂靠查询全废，而只断言名字的写法依然全绿——那样的测试等于没测。
+  assert.deepEqual(STORES.invoices.indexes, [
+    ['by_issuedAt', 'issuedAt'],
+    ['by_number', 'number'],
+    ['by_txn', 'txnId'],
+    ['by_reimbursement', 'reimbursementId']
+  ]);
 });
 
 test('DB_VERSION 已提到 2', () => {
