@@ -13,8 +13,16 @@ export function open() {
     req.onupgradeneeded = event => {
       applyMigrations(req.result, event.oldVersion);
     };
+    // 升级被另一个标签页/窗口里仍开着的旧版本连接挡住时，open 请求既不成功也不失败，
+    // 新连接就永远停在「不 resolve 也不 reject」的状态：数据层此后静默无响应，用户看不到
+    // 任何报错。以前 DB_VERSION 恒为 1、升级路径从没真正走过，所以这个坑一直没通电。
+    // reject 之后由下面那个 .catch 把 dbPromise 置回 null，本次页面生命周期内还能再试一次打开。
+    req.onblocked = () => reject(new Error('数据库正在被另一个页面占用，升级被阻止。请关掉其它 pvault 页面后重试。'));
     req.onsuccess = async () => {
       const db = req.result;
+      // 别的页面要升级时，本页必须主动让路：升级只会在所有旧版本连接关闭后才开始，
+      // 这里若一直握着旧连接不放，对方的 open 就永远卡在 blocked——两边互相等死。
+      db.onversionchange = () => db.close();
       try {
         await ensureSeeded(db);
       } catch (e) {
