@@ -644,7 +644,7 @@ export function estimateBackupMB(files) {
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`node --test --test-isolation=none tests/image-scale.test.js`
-预期：PASS，10 条全绿。
+预期：PASS，12 条全绿（初版 10 条，代码质量审查后又补了 2 条：非法 `maxEdge` 不返回 1×1、目标尺寸取整后没真的变小就不压）。
 
 - [ ] **步骤 5：Commit**
 
