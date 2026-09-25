@@ -433,7 +433,7 @@ export function invoiceTitle(invoice) {
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`node --test --test-isolation=none tests/invoice-model.test.js`
-预期：PASS，9 条全绿。
+预期：PASS，12 条全绿（初版 9 条，代码质量审查后又补了 3 条：`issuedAt` 必须是毫秒安全整数、文本字段必须是字符串、入参不是对象时的早返回）。
 
 - [ ] **步骤 5：Commit**
 
