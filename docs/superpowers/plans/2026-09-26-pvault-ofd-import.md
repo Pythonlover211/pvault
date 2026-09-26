@@ -408,6 +408,73 @@ git commit -m "feat(ofd): 文件名净化与兜底命名（纯函数，可单测
 
 **文件：**
 - 修改：`app/image-store.js`（删 `isPdf`：88-95 行；改 `prepareFile`：106-149 行；改 `saveFile`：152-177 行）
+- 修改：`app/backup-store.js`（`encodeFiles` 与 `importBackup` 各加一个 `name`）
+- 修改：`sw.js`（`./app/file-info.js` 进白名单，`CACHE` 提到 v14）
+- 修改：`tests/file-info.test.js`（`replaceExt` 的单测）
+
+**为什么后三个文件也归本任务**（代码审查带出来的，不是范围蔓延）：
+
+1. **`file-info.js` 从本任务起是首屏静态依赖**：`main.js → invoice-view → invoice-editor / invoice-store → image-store → file-info`。而 SW 是 cache-first——白名单里没有它，已装旧缓存的设备离线启动会回退到 `index.html`、import 链一断**整个 app 白屏**（不是「发票面板打不开」那么局部）。所以白名单与版本号必须跟产生依赖的那次提交一起走，不能等到任务 9。
+2. **`name` 必须同时进备份的两份手写字段清单**：`backup-store.js` 的 `encodeFiles`（`out.push` 那个字面量）与 `importBackup`（`puts.push` 那个）都不含 `name`，而 `invoiceFiles` 从来没走过 `ARRAY_STORES` 的整表路径（blob 进不了 JSON）。漏掉的后果是文件名在备份往返里**静默消失**——本机验证全绿，换机恢复之后才现形。
+
+**具体的三处改动：**
+
+`app/backup-store.js` 的 `encodeFiles`，在 `mime:` 那一项旁边加：
+
+```js
+      name: String(f.name ?? '').trim(),
+```
+
+`app/backup-store.js` 的 `importBackup`，在写入 `invoiceFiles` 的那个字面量里加同一个键。
+
+`sw.js`：
+
+```js
+const CACHE = 'pvault-v14';
+```
+
+并加一条注释说明 v14 是什么，然后在 `'./app/dates.js',` 与 `'./app/image-scale.js',` 之间插入：
+
+```js
+  './app/file-info.js',
+```
+
+`tests/file-info.test.js` 为下面新增的 `replaceExt` 补测试（放在 `sanitizeFilename` 那组附近）：
+
+```js
+test('replaceExt：换掉扩展名，主干保留', () => {
+  assert.equal(replaceExt('IMG_1234.HEIC', 'jpg'), 'IMG_1234.jpg');
+  assert.equal(replaceExt('a.png', 'jpg'), 'a.jpg');
+  assert.equal(replaceExt('没有扩展名', 'jpg'), '没有扩展名.jpg');
+  // 开头的点是「隐藏文件」不是扩展名，不能把整个名字当扩展名切掉
+  assert.equal(replaceExt('.hidden', 'jpg'), '.hidden.jpg');
+  // 空名字保持空——兜底名是导出时的事，这里不替它做主
+  assert.equal(replaceExt('', 'jpg'), '');
+  assert.equal(replaceExt(null, 'jpg'), '');
+});
+```
+
+**`replaceExt` 本身**（加进 `app/file-info.js`，放在 `sanitizeFilename` 附近）：
+
+```js
+/**
+ * 换掉文件名的扩展名，主干保留。
+ *
+ * 存在的理由：图片那条路上 prepareFile 会把原图重编码成 JPEG（手机照片基本都超过
+ * 跳过压缩的阈值），字节与用户给的扩展名从此对不上——相册里的 PNG / HEIC 照片会挂着
+ * 一个 `.HEIC` 的名字存下去，而导出时手机是按扩展名派发打开方式的。名字与字节必须自洽。
+ *
+ * 开头的点不算扩展名（`.hidden` 是隐藏文件的写法，整串就是它的名字）；
+ * 没有扩展名就直接接上。
+ */
+export function replaceExt(name, ext) {
+  const base = String(name ?? '').trim();
+  if (base === '') return '';
+  const dot = base.lastIndexOf('.');
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  return `${stem}.${ext}`;
+}
+```
 
 这个任务**没有新单测**：`prepareFile` / `saveFile` 依赖 `Blob`、`Canvas`、`indexedDB`，在 Node 里跑不了（文件头注释已声明）。本次改动的判定逻辑已全部落在任务 1、2 的纯函数里，这里剩下的只有编排——验证靠「全量测试不回归」+ 任务 10 的模拟器实测。
 
@@ -881,7 +948,7 @@ git commit -m "feat(ofd): 列表占位块补 title 与 aria-label"
 - [ ] **步骤 1：提版本号**
 
 ```js
-const CACHE = 'pvault-v14';
+const CACHE = 'pvault-v15';
 ```
 
 - [ ] **步骤 2：加 v14 的说明注释**
@@ -889,24 +956,21 @@ const CACHE = 'pvault-v14';
 紧接 v13 那条注释之后加：
 
 ```js
-// v14：发票支持导入 OFD。新增两个文件进预缓存清单——app/file-info.js（类型判定与命名）
-// 与 app/ui/download.js（下载触发，从 backup-view 抽出来共用）。漏掉它们的后果和 v13 那次
-// 一样：离线时这两个 ES module 404，import 链一断，发票面板直接打不开。
+// v15：下载触发从 backup-view 抽到 app/ui/download.js 共用，它要进预缓存清单。
+// （file-info.js 在任务 3 就随 v14 进过清单了 —— 它从那时起是首屏静态依赖，
+//  必须在消费方 import 它之前就位；晚一步的后果是整个 app 白屏，不只是发票面板。）
+// 漏掉 download.js 的后果与上面各次相同：离线时这个 module 404，import 链断。
 ```
 
-- [ ] **步骤 3：白名单按 ASCII 顺序插入两条**
-
-在 `'./app/dates.js',` 与 `'./app/image-scale.js',` 之间插入：
-
-```js
-  './app/file-info.js',
-```
+- [ ] **步骤 3：白名单按 ASCII 顺序插入一条**
 
 在 `'./app/ui/dom.js',` 与 `'./app/ui/entry-panel.js',` 之间插入：
 
 ```js
   './app/ui/download.js',
 ```
+
+（`'./app/file-info.js',` 在任务 3 就已经加进去了，这里不要重复插。）
 
 - [ ] **步骤 4：核对白名单与磁盘逐条对齐**
 
@@ -950,7 +1014,9 @@ git commit -m "chore(sw): 缓存版本提到 v14，白名单加 file-info 与 do
 - [ ] 点开这个导出的文件，手机里的 OFD 阅读器能正常打开它
 - [ ] 老票（OFD 功能之前存的 PDF）：预览显示「PDF 已保存」，导出用的是「发票-号码-时间戳.pdf」这样的兜底名
 - [ ] 选一个超过 20 MB 的文件（随便从相册挑个视频试试），提示「这个文件太大了」，且**上一次已经选好的发票文件没有被清掉**
-- [ ] 断网（开飞行模式）后重复一次「选 OFD → 保存 → 导出」，全程应正常——这就是 v14 预缓存清单在起作用
+- [ ] 导出一份**含 OFD 的备份** → 恢复 → 预览区仍显示原始文件名（验证 `name` 真的穿越了备份；少了这一步，本机验证会全绿，而换机恢复之后名字静默消失）
+- [ ] 从相册选一张 **PNG / HEIC 照片**存下并导出，确认扩展名与字节一致（这类照片会被重编码成 JPEG，名字必须跟着变成 `.jpg`）。**要挑一张超过 300 KB 的**——低于 `SKIP_COMPRESS_BYTES` 的图根本不走重编码那条路，验不到这个修复
+- [ ] 断网（开飞行模式）后重复一次「选 OFD → 保存 → 导出」，全程应正常——这就是 v15 预缓存清单在起作用
 - [ ] 用一个**名字超过 100 字符**的 PDF / OFD 试一次导出：名字要被截短，但**扩展名必须还在**（审查里这是「导出的文件打不开」的潜在根因）
 - [ ] 已知代价复验：找一个系统把 type 报成 `application/pdf` 的 `.ofd`（或临时改 mime 模拟）试一遍，确认此时预览与导出名都会说 PDF。这是 mime 优先的既定代价，**记下来即可，不必修**
 ```

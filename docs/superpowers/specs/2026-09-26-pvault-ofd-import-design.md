@@ -224,7 +224,8 @@ export function downloadBlob(blob, filename)
 
 - `sw.js` 的 `CACHE`：`pvault-v13` → **`pvault-v14`**，并把新增的 `app/ui/download.js` 加进 `ASSETS` 白名单（白名单里漏一个文件，`cache.addAll` 会原子性失败，整个离线缓存都装不上）
 - `docs/手动验证清单.md` 的「发票」一节补 OFD 条目
-- 备份**不需要改**：`invoiceFiles` 是整表导出，新字段自动跟着走；导入侧不校验字段全集，旧备份照样能读
+- 备份**要改两处**：`invoiceFiles` 并不是整表导出。`app/backup-store.js` 的 `encodeFiles` 与 `importBackup` 各有一份**手写字段清单**（`id / mime / size / createdAt / blob / thumbBlob`）——blob 进不了 JSON，只能 base64 单走一条路，所以它从来没走过 `ARRAY_STORES` 那条整表路径。`name` 两处都要加，否则它在备份往返里静默消失：用户在手机上存了 OFD、导出备份、换机恢复之后，预览退回「OFD 已保存」、导出退回兜底名。而手动清单里那两条是在本机直接选的 OFD 上验的，会全绿——缺陷只在换机之后出现，不报错、不留痕。
+  （本稿早先在这里写过一句「备份不需要改」的断言，是错的；改掉它，免得下一个人照它办事。）
 - 不动 `DB_VERSION`、不加索引、不动列表的排序与筛选
 
 ---
