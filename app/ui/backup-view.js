@@ -18,6 +18,7 @@
 //    也给出「不含图片」的选项：账目先安全落地，比追一份完整但下不来的文件重要得多。
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
+import { downloadBlob } from './download.js';
 import * as store from '../store.js';
 import {
   exportBackup, parseBackupFile, decryptBackupFile, importBackup,
@@ -226,19 +227,9 @@ export function openBackupSheet({ onChanged } = {}) {
     }
   }
 
-  // 触发浏览器下载。步骤照实现计划写死：createObjectURL → 隐藏 <a download> → click → remove。
-  // 为什么必须 append 到 document 再点：Firefox 里游离（不在文档中）的 <a> 点击不会触发下载。
-  // revokeObjectURL 延后 1 秒：立刻撤销会让部分浏览器在下载真正开始前就拿到一个失效 URL。
+  // 触发一次下载：步骤在 app/ui/download.js 里，两个导出入口共用同一份实现。
   function download(filename, text) {
-    const blob = new Blob([text], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadBlob(new Blob([text], { type: 'application/json' }), filename);
   }
 
   const pwInput = el('input', {
