@@ -1243,7 +1243,7 @@ export const DB_VERSION = 3;
 ```js
   // 外观系统的资源表：目前只有一张背景照片，id 固定 'bg'。
   // 为什么不塞进 settings：settings 是 JSON 值，图片只能存 base64（体积膨胀 1/3），
-  // 而且每次 getSetting/getAll('settings') 都会把这几百 KB 的字符串一起读进内存。
+  // 而且导出备份时 getAll('settings') 会把这几百 KB 的字符串整表读进内存。
   // 与 invoiceFiles 单独一张表是同一个理由。
   assets: { keyPath: 'id', indexes: [] }
 ```

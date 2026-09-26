@@ -3,7 +3,8 @@
 // 因此在 Node 里可以直接 import 并单测（见 tests/schema.test.js）。
 
 export const DB_NAME = 'pvault';
-export const DB_VERSION = 2;
+// 2 → 3：外观系统新增 assets 表（背景照片）。
+export const DB_VERSION = 3;
 
 export const STORES = {
   txns: { keyPath: 'id', indexes: [['by_occurredAt', 'occurredAt'], ['by_kind', 'kind']] },
@@ -44,7 +45,12 @@ export const STORES = {
   invoiceFiles: { keyPath: 'id', indexes: [] },
   // 报销单。现在只需要把表建好：迁移只在版本升级时跑一次，等真正要用这张表时再加，
   // 就得让用户再升一次版本、再经历一次可能被旧连接阻塞的升级，所以先建好。
-  reimbursements: { keyPath: 'id', indexes: [['by_status', 'status']] }
+  reimbursements: { keyPath: 'id', indexes: [['by_status', 'status']] },
+  // 外观系统的资源表：目前只有一张背景照片，id 固定 'bg'。
+  // 为什么不塞进 settings：settings 是 JSON 值，图片只能存 base64（体积膨胀 1/3），
+  // 而且导出备份时 getAll('settings') 会把这几百 KB 的字符串整表读进内存。
+  // 与 invoiceFiles 单独一张表是同一个理由。
+  assets: { keyPath: 'id', indexes: [] }
 };
 
 export function applyMigrations(db, oldVersion) {

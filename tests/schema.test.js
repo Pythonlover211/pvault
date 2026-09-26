@@ -104,10 +104,10 @@ test('DB_NAME 与 DB_VERSION 符合约定', () => {
   assert.ok(Number.isInteger(DB_VERSION) && DB_VERSION > 0);
 });
 
-test('STORES 覆盖全部 8 个仓库且每个都有 keyPath', () => {
+test('STORES 覆盖全部 9 个仓库且每个都有 keyPath', () => {
   assert.deepEqual(
     Object.keys(STORES).sort(),
-    ['accounts', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'reimbursements', 'settings', 'txns']
+    ['accounts', 'assets', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'reimbursements', 'settings', 'txns']
   );
   for (const [name, def] of Object.entries(STORES)) {
     assert.equal(typeof def.keyPath, 'string', `${name} 缺少 keyPath`);
@@ -155,7 +155,7 @@ test('applyMigrations 不重复创建已存在的仓库', () => {
   assert.ok(!db.created.has('settings'));
   assert.deepEqual(
     [...db.created.keys()],
-    ['accounts', 'categories', 'receivables', 'invoices', 'invoiceFiles', 'reimbursements']
+    ['accounts', 'categories', 'receivables', 'invoices', 'invoiceFiles', 'reimbursements', 'assets']
   );
 });
 
@@ -172,6 +172,12 @@ test('STORES 里有发票相关的三张表', () => {
   assert.equal(STORES.reimbursements.keyPath, 'id');
 });
 
+test('STORES 里有外观系统的 assets 表', () => {
+  assert.ok(STORES.assets, '缺少 assets 表');
+  assert.equal(STORES.assets.keyPath, 'id');
+  assert.deepEqual(STORES.assets.indexes, [], 'assets 不需要索引：它只有一个固定主键');
+});
+
 test('invoices 的索引齐全（查重与挂靠都要用）', () => {
   // 断言 [索引名, 字段名] 整对，不只看名字：字段名写错（比如 by_txn 指向不存在的 txn）
   // 索引会恒为空、挂靠查询全废，而只断言名字的写法依然全绿——那样的测试等于没测。
@@ -183,8 +189,8 @@ test('invoices 的索引齐全（查重与挂靠都要用）', () => {
   ]);
 });
 
-test('DB_VERSION 已提到 2', () => {
-  assert.equal(DB_VERSION, 2);
+test('DB_VERSION 已提到 3', () => {
+  assert.equal(DB_VERSION, 3);
 });
 
 test('迁移只建缺失的表，已有的表不重复创建', () => {
