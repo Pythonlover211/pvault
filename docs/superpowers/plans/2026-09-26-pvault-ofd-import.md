@@ -79,13 +79,66 @@ test('mimeForKind：存库前归一化', () => {
   assert.equal(mimeForKind('ofd', 'application/octet-stream'), 'application/ofd');
   assert.equal(mimeForKind('pdf', ''), 'application/pdf');
   assert.equal(mimeForKind('image', 'image/png'), 'image/png');
+  assert.equal(mimeForKind('image', 'image/png; charset=binary'), 'image/png');
+  assert.equal(mimeForKind('image', 'IMAGE/PNG'), 'image/png');
   assert.equal(mimeForKind('image', ''), 'image/jpeg');
 });
 
-test('extForKind：导出用的扩展名', () => {
-  assert.equal(extForKind('ofd'), 'ofd');
-  assert.equal(extForKind('pdf'), 'pdf');
-  assert.equal(extForKind('image'), 'jpg');
+test('mimeForKind：非空却不是 image/* 的，回落中性值而不是伪造 image/jpeg', () => {
+  // 伪造 image/jpeg 会骗过 invoice-editor 那道 startsWith('image/') 守卫，
+  // 把一个塞不进 <img> 的文件当成图片、显示成裂图。
+  assert.equal(mimeForKind('image', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(mimeForKind('', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(
+    mimeForKind('image', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    'application/octet-stream'
+  );
+});
+
+test('extForKind：ofd / pdf 只看 kind', () => {
+  assert.equal(extForKind('ofd', 'application/pdf'), 'ofd');
+  assert.equal(extForKind('pdf', 'application/octet-stream'), 'pdf');
+});
+
+test('extForKind：图片按真实子类型给扩展名', () => {
+  // 库里的 PNG 记录不算罕见：prepareFile 有两条路径会把原始 mime 原样存下来
+  // （图片够小、不需要压缩；或压缩失败回退了原图），而兜底名恰恰只在「没有原始文件名」
+  // 时才用。一律叫 .jpg 会让手机按 .jpg 去派发一个 PNG 文件。
+  assert.equal(extForKind('image', 'image/png'), 'png');
+  assert.equal(extForKind('image', 'image/webp'), 'webp');
+  assert.equal(extForKind('image', 'image/jpeg'), 'jpg');
+  assert.equal(extForKind('image', 'image/jpg'), 'jpg');
+  assert.equal(extForKind('image', 'image/gif'), 'gif');
+  assert.equal(extForKind('image', 'image/png; charset=binary'), 'png');
+  assert.equal(extForKind('image', 'IMAGE/PNG'), 'png');
+  assert.equal(extForKind('image', ''), 'jpg');
+  assert.equal(extForKind('image', null), 'jpg');
+  // 带 `+` 的 subtype，以及被塞进来的路径片段，都不该变成扩展名
+  assert.equal(extForKind('image', 'image/svg+xml'), 'jpg');
+  assert.equal(extForKind('image', 'image/../../etc'), 'jpg');
+});
+
+test('三个 kind 各自都有确定的 mime 与扩展名', () => {
+  assert.equal(mimeForKind('image', ''), 'image/jpeg');
+  assert.equal(mimeForKind('pdf', ''), 'application/pdf');
+  assert.equal(mimeForKind('ofd', ''), 'application/ofd');
+  assert.equal(extForKind('image', ''), 'jpg');
+  assert.equal(extForKind('pdf', ''), 'pdf');
+  assert.equal(extForKind('ofd', ''), 'ofd');
+});
+
+test('同一条记录走完三个函数，口径一致', () => {
+  // 三个函数各自被测得很好，但审查发现的问题全长在「函数之间的缝」上：
+  // 把真实输入串成一条，能挡住 kind / mime / 扩展名三者互相矛盾。
+  for (const [mime, name, kind, stored, ext] of [
+    ['image/png; charset=binary', 'a.png', 'image', 'image/png', 'png'],
+    ['application/pdf', 'b.pdf', 'pdf', 'application/pdf', 'pdf'],
+    ['application/octet-stream', 'c.ofd', 'ofd', 'application/ofd', 'ofd']
+  ]) {
+    assert.equal(fileKind(mime, name), kind, `${name} 应判成 ${kind}`);
+    assert.equal(mimeForKind(kind, mime), stored, `${name} 存库 mime 应为 ${stored}`);
+    assert.equal(extForKind(kind, mime), ext, `${name} 导出扩展名应为 ${ext}`);
+  }
 });
 
 test('MAX_FILE_BYTES 是 20 MB', () => {
@@ -115,6 +168,10 @@ test('MAX_FILE_BYTES 是 20 MB', () => {
 /**
  * 单个发票文件的字节上限。全电票的 OFD 通常一两百 KB，20 MB 已经大到不像发票了。
  * 这个上限唯一的目的是拦住误选（比如手滑选了个几百 MB 的扫描 PDF），不是业务限制。
+ *
+ * 与 app/ui/import-view.js 里那个同名的 MAX_FILE_BYTES 无关——那是 CSV 解析的
+ * 内存 / 耗时上限，数值相同纯属巧合。两个模块不会互相 import，但 grep 时会同时
+ * 冒出来，先说清楚。
  */
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
@@ -125,6 +182,12 @@ export const MAX_FILE_BYTES = 20 * 1024 * 1024;
  * 空的、application/octet-stream，甚至乱给一个，光看 mime 会漏；而真给出
  * application/pdf、文件名却挂着 .ofd 时，两套规则会给出相反答案——mime 是系统给的、
  * 扩展名是发送方起的，前者更可信，所以 mime 先判。
+ *
+ * **已知代价**（写在这里，免得下一个人以为这个场景没想过）：系统若把一个 .ofd 报成
+ * application/pdf，我们会按 pdf 处理——预览显示「PDF 已保存」、导出的兜底名也带 .pdf，
+ * 而内容其实是 OFD，PDF 阅读器打不开它。.ofd 进系统 MIME 表较晚，老 WebView 的 type 表
+ * 把它归到相邻的 PDF 一族并非不可能。真在真机上撞到，要改的就是这几行的顺序，
+ * 以及 tests 里那条「mime 与扩展名打架」的用例。
  *
  * 返回 'image' | 'pdf' | 'ofd'。
  */
@@ -138,22 +201,61 @@ export function fileKind(mime, name) {
   return 'image';
 }
 
+/** 归一化 mime：小写、去掉 `;` 之后的参数（charset 之类）。两个函数共用同一个口径，不各写一份。 */
+function normalizeMime(mime) {
+  return String(mime ?? '').split(';')[0].trim().toLowerCase();
+}
+
 /**
  * 存库时写的 mime。理由与当初 PDF 那一处相同：选择器给的可能是空 type、
  * application/octet-stream、或带 charset 参数，归一化之后备份的元数据里才不会
  * 出现五花八门的写法。
+ *
+ * 图片这条分支比 pdf / ofd 多三道手：
+ * - 剥掉 `;` 之后的参数；
+ * - **空 mime 回落 image/jpeg**——走到这条分支说明 fileKind 已经判定它是图片
+ *   （扩展名不是 pdf/ofd），而安卓选择器给空 type 是常态（见 fileKind 的注释）；
+ * - **非空又不是 image/* 的，回落 application/octet-stream，而不是伪造一个
+ *   image/jpeg**。下游 app/ui/invoice-editor.js 的守卫是「mime 以 image/ 开头才
+ *   塞进 <img>」——伪造 image/jpeg 会让它失去辨别力（`<img src="blob:…docx">`
+ *   得到的是裂图加一行浅灰 alt 文字，比干脆不显示更糟）。实践中这类文件到不了
+ *   调用点（图片分支要先 decode 成功），但把不诚实的值挡在源头比依赖下游关卡稳。
  */
 export function mimeForKind(kind, mime) {
   if (kind === 'ofd') return 'application/ofd';
   if (kind === 'pdf') return 'application/pdf';
-  return String(mime ?? '') || 'image/jpeg';
+  const m = normalizeMime(mime);
+  if (m === '') return 'image/jpeg';
+  return m.startsWith('image/') ? m : 'application/octet-stream';
 }
 
-/** 导出时的文件扩展名。 */
-export function extForKind(kind) {
+/**
+ * 导出时的文件扩展名。**要吃 mime，而且 mime 是必填的**——漏传会静默退回 jpg，
+ * PNG 记录就白修了。
+ *
+ * 为什么必须吃 mime：图片记录里可能是 image/png —— prepareFile 有两条路径会把
+ * 原始 mime 原样存下来（图片够小、不需要压缩；或压缩失败回退了原图），而兜底文件名
+ * 恰恰只在「记录里没有原始文件名」时才用，那种记录常常来自相册或拍照。一律叫 .jpg
+ * 会让手机按 .jpg 去派发一个 PNG 文件，而「把原件交出去让别的 App 打开」正是这次
+ * 功能的目的之一。
+ *
+ * 扩展名直接从 subtype 推，判据与 mimeForKind 的白名单同源（都是 `image/` 前缀）：
+ * 这样才不会出现「mime 说是 gif、导出名却写 jpg」这种长在函数之间的缝上的不一致。
+ *
+ * 已知局限：mime 为空时推不出真实格式，只能回落 jpg。真实场景是「安卓选择器给了
+ * 空 type + 用户选了 PNG 截图 + 这条记录又没有原始文件名」——名字会不准，但字节是
+ * 完整的。要根治得让 prepareFile 在 mime 为空时从文件名反推 mime（不在本次范围）。
+ */
+export function extForKind(kind, mime) {
   if (kind === 'ofd') return 'ofd';
   if (kind === 'pdf') return 'pdf';
-  return 'jpg';
+  const m = normalizeMime(mime);
+  if (!m.startsWith('image/')) return 'jpg';
+  const sub = m.slice('image/'.length);
+  if (sub === 'jpeg' || sub === 'jpg') return 'jpg';
+  // 只放行纯字母数字的 subtype：`svg+xml` 这类带符号的、以及被塞进来的路径片段
+  // （image/../../x）都会落到这里，一律按 jpg。
+  return /^[a-z0-9]+$/.test(sub) ? sub : 'jpg';
 }
 ```
 
@@ -161,7 +263,7 @@ export function extForKind(kind) {
 
 运行：`D:\node.exe --test --test-isolation=none tests/file-info.test.js`
 
-预期：PASS，8 个测试全过。
+预期：PASS，12 个测试全过。
 
 - [ ] **步骤 5：Commit**
 
@@ -236,6 +338,13 @@ test('fallbackFileName：号码里的非法字符会被净化', () => {
     '发票-A_B-1.jpg'
   );
 });
+
+test('fallbackFileName：图片带 PNG 的 mime 时扩展名跟着变', () => {
+  assert.equal(
+    fallbackFileName({ number: '9', issuedAt: 5, kind: 'image', mime: 'image/png' }),
+    '发票-9-5.png'
+  );
+});
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -270,10 +379,13 @@ export function sanitizeFilename(name, fallback = 'file') {
  * 没填就直接写「无号」——空字符串会让文件名变成「发票--1700000000000.ofd」这种看着像出错的东西。
  * 时间戳保证同一天的多张票不会重名。
  */
-export function fallbackFileName({ number, issuedAt, kind } = {}) {
+export function fallbackFileName({ number, issuedAt, kind, mime } = {}) {
   const n = String(number ?? '').trim() || '无号';
   const t = Number.isSafeInteger(issuedAt) ? issuedAt : 0;
-  return sanitizeFilename(`发票-${n}-${t}.${extForKind(kind)}`, `发票.${extForKind(kind)}`);
+  // 扩展名要吃 mime：图片记录的 mime 可能是 image/png，而这条路恰恰只在
+  // 「没有原始文件名」时才走（见 extForKind 的注释）。
+  const ext = extForKind(kind, mime);
+  return sanitizeFilename(`发票-${n}-${t}.${ext}`, `发票.${ext}`);
 }
 ```
 
@@ -281,7 +393,7 @@ export function fallbackFileName({ number, issuedAt, kind } = {}) {
 
 运行：`D:\node.exe --test --test-isolation=none tests/file-info.test.js`
 
-预期：PASS，16 个测试全过。
+预期：PASS，21 个测试全过。
 
 - [ ] **步骤 5：Commit**
 
@@ -298,6 +410,8 @@ git commit -m "feat(ofd): 文件名净化与兜底命名（纯函数，可单测
 - 修改：`app/image-store.js`（删 `isPdf`：88-95 行；改 `prepareFile`：106-149 行；改 `saveFile`：152-177 行）
 
 这个任务**没有新单测**：`prepareFile` / `saveFile` 依赖 `Blob`、`Canvas`、`indexedDB`，在 Node 里跑不了（文件头注释已声明）。本次改动的判定逻辑已全部落在任务 1、2 的纯函数里，这里剩下的只有编排——验证靠「全量测试不回归」+ 任务 10 的模拟器实测。
+
+**顺手统一 mime 口径**：图片分支原本写 `mime || 'image/jpeg'`，会把 `image/png; charset=binary` 这种带参数的写法原样存进库。改成走 `mimeForKind(kind, mime)` 之后，全库的 mime 只有一处产生，`extForKind(kind, rec.mime)` 推扩展名也就不必去猜库里会出现什么写法。（唯一例外是最后那条「压缩成功」的 return，产物确实是 JPEG，直接写死 `image/jpeg`。）
 
 - [ ] **步骤 1：改 import，删掉 `isPdf`**
 
@@ -354,13 +468,14 @@ export async function prepareFile(inputFile) {
 
 ```js
     if (!shouldCompress(size, w, h)) {
-      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, name, compressed: false };
+      return { blob: inputFile, thumbBlob, mime: mimeForKind(kind, mime), size, name, compressed: false };
     }
     const out = await drawTo(source, MAX_EDGE, JPEG_QUALITY);
     if (!useCompressed(size, out.size)) {
-      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, name, compressed: false };
+      return { blob: inputFile, thumbBlob, mime: mimeForKind(kind, mime), size, name, compressed: false };
     }
     return {
+      // 这一条是压缩产物，格式确实就是 JPEG，不必过 mimeForKind
       blob: out, thumbBlob, mime: 'image/jpeg',
       size: out.size, originalSize: size, name, compressed: true
     };
@@ -400,7 +515,7 @@ export async function saveFile(prepared) {
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，**237 通过 / 0 失败**（原 221 + 任务 1 新增 8 个 + 任务 2 新增 8 个）。
+预期：PASS，**242 通过 / 0 失败**（原 221 + 任务 1 新增 11 个 + 任务 2 新增 9 个）。
 
 - [ ] **步骤 6：Commit**
 
@@ -465,7 +580,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，237 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
+预期：PASS，242 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
 
 - [ ] **步骤 4：人工核对搬运是否等价**
 
@@ -530,7 +645,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，237 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
+预期：PASS，242 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
 
 - [ ] **步骤 5：Commit**
 
@@ -604,7 +719,7 @@ git commit -m "feat(ofd): 编辑器接受 OFD 文件，并在 20 MB 处拦下误
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，237 通过 / 0 失败。
+预期：PASS，242 通过 / 0 失败。
 
 - [ ] **步骤 4：Commit**
 
@@ -668,7 +783,7 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
       }
       const kind = fileKind(rec.mime, rec.name);
       const fallback = fallbackFileName({
-        number: state.number, issuedAt: state.issuedAt, kind
+        number: state.number, issuedAt: state.issuedAt, kind, mime: rec.mime
       });
       // 有原始名就用它（用户认得出这是哪个文件），没有才用兜底名。
       const filename = sanitizeFilename(rec.name, fallback);
@@ -704,7 +819,7 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，237 通过 / 0 失败。
+预期：PASS，242 通过 / 0 失败。
 
 - [ ] **步骤 6：Commit**
 
@@ -745,7 +860,7 @@ git commit -m "feat(ofd): 发票编辑器加「导出这份文件」"
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，237 通过 / 0 失败。
+预期：PASS，242 通过 / 0 失败。
 
 - [ ] **步骤 3：Commit**
 
@@ -836,6 +951,7 @@ git commit -m "chore(sw): 缓存版本提到 v14，白名单加 file-info 与 do
 - [ ] 老票（OFD 功能之前存的 PDF）：预览显示「PDF 已保存」，导出用的是「发票-号码-时间戳.pdf」这样的兜底名
 - [ ] 选一个超过 20 MB 的文件（随便从相册挑个视频试试），提示「这个文件太大了」，且**上一次已经选好的发票文件没有被清掉**
 - [ ] 断网（开飞行模式）后重复一次「选 OFD → 保存 → 导出」，全程应正常——这就是 v14 预缓存清单在起作用
+- [ ] 已知代价复验：找一个系统把 type 报成 `application/pdf` 的 `.ofd`（或临时改 mime 模拟）试一遍，确认此时预览与导出名都会说 PDF。这是 mime 优先的既定代价，**记下来即可，不必修**
 ```
 
 - [ ] **步骤 2：起模拟器并实测**
@@ -861,6 +977,14 @@ git commit -m "docs(verify): 补 OFD 导入的手动验证清单"
 
 ---
 
+## 中途不要 push
+
+任务 3 起 `image-store.js` / `invoice-editor.js` 会真正 `import './file-info.js'`，而 Service Worker 的预缓存白名单要到任务 9 才补上。这中间如果 push 了 main，Pages 会自动部署，于是存在一个很窄但真实的窗口：「部署后从未在线打开过发票面板 → 直接离线启动」时 import 链 404、发票面板打不开（`sw.js` 的运行时补缓存只兜得住在线打开过的页面）。
+
+所以：**任务 3 到任务 9 之间不要 push，全部做完一起推。**每个任务照常本地 commit。
+
+---
+
 ## 收尾
 
 全部任务完成后跑一次完整回归：
@@ -870,6 +994,6 @@ D:\node.exe --test --test-isolation=none
 cd E:\codex-project\pvault; git status --porcelain
 ```
 
-预期：237 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
+预期：242 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
 
 **这次不做的事**（写在这里是为了防止实现过程中范围蔓延）：解析 OFD 内容、渲染票面、支持 XML 原件、动 `DB_VERSION`、给列表加文件名。
