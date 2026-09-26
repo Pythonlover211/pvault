@@ -287,3 +287,132 @@ test(`theme：${THEME_IDS.length} 套皮肤的文字对比度都不低于 ${MIN_
     `这些配色达不到 ${MIN_CONTRAST}:1（AA 正文标准），必须调色值：\n${bad.join('\n')}`
   );
 });
+
+// ── 归一化与解析 ─────────────────────────────────────────────────────────────
+// 这一节处理的都是外来的脏值：设置从库里读出来（可能被用户用 devtools 手改过、可能是老版本写下的
+// 另一种形状、也可能某一版压根没写过），滑块的 el.value 送进来的是字符串。判据统一是「不认识就
+// 退回一个安全的默认值」，而不是抛错——外观读不出来不该让整个 app 打不开，一个坏值也不该一路走到
+// 界面上变成透明的黑块。
+import {
+  normalizePreset, normalizeMode, resolveMode, normalizeOverlay,
+  normalizeBackground, scrimAlpha
+} from '../app/theme.js';
+
+test('normalizePreset：认识的留下，其余一律回默认', () => {
+  assert.equal(normalizePreset('paper'), 'paper');
+  assert.equal(normalizePreset('seaglass'), 'seaglass');
+  // 默认值自己也得是合法返回值：读出来是 default、写回去仍是 default，这条路径不能把设置洗掉。
+  assert.equal(normalizePreset('default'), 'default');
+  for (const junk of [undefined, null, '', 'PA', 42, {}, [], 'light']) {
+    assert.equal(normalizePreset(junk), 'default', `输入 ${JSON.stringify(junk)} 没被兜住`);
+  }
+  // 不 trim、不忽略大小写是判据而不是疏忽：带空格或大小写不符的 id 不属于这五套里的任何一套，
+  // 猜成 paper 等于把一个坏值悄悄洗成一套看起来正常的皮肤。
+  assert.equal(normalizePreset(' paper '), 'default', '带空格的 id 不该被认成 paper');
+});
+
+test('normalizeMode：认识的留下，其余一律回 auto', () => {
+  assert.equal(normalizeMode('light'), 'light');
+  assert.equal(normalizeMode('dark'), 'dark');
+  assert.equal(normalizeMode('auto'), 'auto');
+  // 'DARK' 回 auto 同一个道理：它不是深浅三个值里的任何一个，归成 auto 顶多是「跟系统走」，
+  // 比自作主张按深色处理安全。
+  for (const junk of [undefined, null, '', 'DARK', 0, {}, true]) {
+    assert.equal(normalizeMode(junk), 'auto', `输入 ${JSON.stringify(junk)} 没被兜住`);
+  }
+});
+
+test('resolveMode：auto 看系统，手动指定压过系统', () => {
+  assert.equal(resolveMode('auto', true), 'dark');
+  assert.equal(resolveMode('auto', false), 'light');
+  // 用户明确选了深色，系统是浅色也必须是深色——反过来同理。
+  assert.equal(resolveMode('dark', false), 'dark');
+  assert.equal(resolveMode('light', true), 'light');
+  // 垃圾值归一化成 auto 之后再看系统，别抛错也别瞎猜。
+  assert.equal(resolveMode('nonsense', true), 'dark');
+  // 系统深浅是探出来的（matchMedia(...).matches），取不到时可能是 undefined 这类 falsy 值。
+  // 这时按浅色走：与「浏览器给不出深色偏好、页面本来就是浅色」一致，也不会抛错。
+  assert.equal(resolveMode('auto', undefined), 'light');
+});
+
+test('normalizeOverlay：取整、夹到 0..60，非法值回默认 30', () => {
+  assert.equal(normalizeOverlay(0), 0);
+  assert.equal(normalizeOverlay(60), 60);
+  assert.equal(normalizeOverlay(30.4), 30);
+  assert.equal(normalizeOverlay(30.6), 31);
+  assert.equal(normalizeOverlay(-5), 0);
+  assert.equal(normalizeOverlay(999), 60);
+  assert.equal(normalizeOverlay('45'), 45, '字符串数字要认（滑块的 el.value 是字符串）');
+  // '0' 与 '' 是判据的分界线：'0' 是用户明确要求「不要遮罩」、'' 是「这个设置没有」。
+  // 写成 `if (!value) return 30` 是最容易犯的错——滑块拉到 0 也会被读成 30，刚压下去的遮罩
+  // 自己又回来了，而用户并没有再动过它。
+  assert.equal(normalizeOverlay('0'), 0);
+  // 下面这批「非数字」里有五个是 Number() 的陷阱：null / '' / [] / false 给的是 0（不是 NaN）、
+  // true 给的是 1。也就是说「先 Number() 再判 isFinite」这条路会把它们静默变成 0% 或 1% 的遮罩，
+  // 而不是回默认值。逐个算过：这 5 个里 4 个变 0、1 个变 1；剩下的 5 项里，undefined / {} /
+  // '45px' / NaN 本身给的是 NaN，Infinity 给的是 Infinity（靠 isFinite 拦下）。
+  for (const junk of [undefined, null, '', NaN, Infinity, {}, [], true, false, '45px']) {
+    assert.equal(normalizeOverlay(junk), 30, `输入 ${JSON.stringify(junk)} 没被兜住`);
+  }
+});
+
+test('normalizeBackground：形状不对就是「没有背景」', () => {
+  assert.equal(normalizeBackground(null), null);
+  assert.equal(normalizeBackground(undefined), null);
+  assert.equal(normalizeBackground('bg'), null);
+  assert.equal(normalizeBackground(0), null);
+  assert.equal(normalizeBackground({}), null, '没有 assetId 不算有背景');
+  assert.equal(normalizeBackground({ assetId: '' }), null);
+  assert.equal(normalizeBackground({ assetId: '   ' }), null);
+  assert.equal(normalizeBackground({ assetId: 42 }), null);
+  // 数组的 typeof 也是 'object'，所以它不是被类型判据拦下的，而是一路走到「没有 assetId」才被判
+  // null。单列这一条是为了钉住结果：判据若被改成只看 truthy，它会立刻红。
+  assert.equal(normalizeBackground([]), null);
+
+  assert.deepEqual(
+    normalizeBackground({ assetId: 'bg', overlay: 45, createdAt: 1700000000000 }),
+    { assetId: 'bg', overlay: 45, createdAt: 1700000000000 }
+  );
+  // assetId 首尾空白要去掉：它被拿去 assets 表查那张图，' bg ' 查不到任何记录，表现出来是
+  // 「设置说有背景、界面上却是空的」，而库里那张图其实好端端躺着。
+  assert.deepEqual(
+    normalizeBackground({ assetId: ' bg ' }),
+    { assetId: 'bg', overlay: 30, createdAt: null }
+  );
+  // overlay 缺失或非法时补默认值，不能让一个坏 overlay 把整条背景作废——坏掉的只是滑块那一个数，
+  // 作废等于把用户选的那张照片也一起丢了。
+  assert.deepEqual(
+    normalizeBackground({ assetId: 'bg' }),
+    { assetId: 'bg', overlay: 30, createdAt: null }
+  );
+  assert.deepEqual(
+    normalizeBackground({ assetId: 'bg', overlay: 'nonsense' }),
+    { assetId: 'bg', overlay: 30, createdAt: null }
+  );
+  // createdAt 的判据比 overlay 紧，只认真正的数字：Number() 会把 null / '' / false 都变成 0，
+  // 而 0 是 1970-01-01——界面上会显示一个像坏数据的时间，而不是「没有」。overlay 必须认字符串
+  // 是因为滑块的 el.value 天生是字符串；createdAt 没有这样的来源（它是 Date.now() 写进去的），
+  // 所以收紧不会误伤真实数据。
+  assert.deepEqual(
+    normalizeBackground({ assetId: 'bg', createdAt: null }),
+    { assetId: 'bg', overlay: 30, createdAt: null }
+  );
+  assert.deepEqual(
+    normalizeBackground({ assetId: 'bg', createdAt: '1700000000000' }),
+    { assetId: 'bg', overlay: 30, createdAt: null }
+  );
+});
+
+test('scrimAlpha：百分比换算成 0..0.6 的小数', () => {
+  assert.equal(scrimAlpha(0), 0);
+  assert.equal(scrimAlpha(60), 0.6);
+  assert.equal(scrimAlpha(30), 0.3);
+  // 越界值走的是同一条归一化，不是另一套判据：--scrim-a 会直接落进 rgba(..., var(--scrim-a))，
+  // 拿到 >1 的值时整条 background 声明在 computed-value time 失效，遮罩整层消失。
+  assert.equal(scrimAlpha(999), 0.6);
+  assert.equal(scrimAlpha(-5), 0);
+  // 非法输入走 normalizeOverlay 的默认值 30，而不是 NaN——NaN 会让整条 background 声明失效。
+  assert.equal(scrimAlpha('nonsense'), 0.3);
+  // 这里用 === 而不是容差是逐值比对过才敢写的：0/100、30/100、60/100 与字面量 0、0.3、0.6 在
+  // 双精度下是同一个数，除法结果恰好落回同一个双精度值上。
+});

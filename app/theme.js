@@ -121,3 +121,71 @@ export const THEME_TOKENS = {
     }
   }
 };
+
+// ── 归一化：设置是从库里读出来的，可能是用户手改过的、也可能是老版本留下的 ──
+// 这几个函数只做一件事：把外部的脏值收拾成后面能安全消费的形状。判据一律是「不认识就退回默认」，
+// 不抛错——一个坏设置不该让整个 app 打不开，也不该一路走到界面上变成透明的黑块。
+
+export function normalizePreset(value) {
+  // 用 includes 精确匹配，不 trim、不忽略大小写：带空格或大小写不符的 id 不属于这五套里的任何一套，
+  // 猜成 paper 等于把一个坏值悄悄洗成一套看起来正常的皮肤，回 default 才是安全的那一套。
+  return THEME_IDS.includes(value) ? value : DEFAULT_PRESET;
+}
+
+export function normalizeMode(value) {
+  return MODES.includes(value) ? value : DEFAULT_MODE;
+}
+
+/** 把用户的选择（可能是 'auto'）解析成真正要用的 'light' | 'dark'。 */
+export function resolveMode(mode, systemDark) {
+  // 先归一化再判断：库里读到 'nonsense' 时不能抛错，当成 auto 即可。
+  const m = normalizeMode(mode);
+  if (m === 'auto') return systemDark ? 'dark' : 'light';
+  return m;
+}
+
+/**
+ * 遮罩强度：取整后夹到 0..60；非数字一律回默认 30。
+ * 判据是「类型对得上」而不是直接 Number()：Number(null) / Number('') / Number([]) /
+ * Number(false) 都是 0、Number(true) 是 1，直接转换会把「这个设置没有」静默变成 0% 或 1% 的遮罩
+ * ——照片上的字就再也压不住了，而用户根本没动过滑块。字符串单独认，是因为滑块的 el.value
+ * 天生是字符串。返回值若为 NaN，rgba(..., var(--scrim-a)) 会在 computed-value time 整条失效、
+ * 遮罩层整个消失，所以宁可回默认。
+ */
+export function normalizeOverlay(value) {
+  let n = NaN;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string' && value.trim() !== '') n = Number(value);
+  if (!Number.isFinite(n)) return OVERLAY_DEFAULT;
+  return Math.min(OVERLAY_MAX, Math.max(OVERLAY_MIN, Math.round(n)));
+}
+
+/**
+ * 背景设置：形状不对就当「没有背景」，而不是抛错或留下半截数据。
+ * 只有 assetId 是非空字符串才算有背景——它被拿去 assets 表查那张图，空串查不到任何记录，
+ * 「设置说有背景、界面上却什么都没有」比直接当没有更难查。
+ * overlay 坏掉时只补它自己的默认值、不作废整条背景：坏的是滑块那一个数，照片还在库里躺着。
+ */
+export function normalizeBackground(value) {
+  // 数组的 typeof 也是 'object'，它会一路走到下面「没有 assetId」那一关才被判 null——结果没差，
+  // 但别以为类型判据拦住了它。
+  if (!value || typeof value !== 'object') return null;
+  const assetId = typeof value.assetId === 'string' ? value.assetId.trim() : '';
+  if (!assetId) return null;
+  // createdAt 比 overlay 紧，只认数字：Number(null) / Number('') / Number(false) 都是 0，而 0 是
+  // 1970-01-01——界面上会显示一个像坏数据的时间，而不是「没有」。它也没有字符串来源（背景记录的
+  // 时间就是 Date.now() 写进去的毫秒数字），所以收紧不会拒绝任何真实数据。
+  const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+    ? value.createdAt
+    : null;
+  return {
+    assetId,
+    overlay: normalizeOverlay(value.overlay),
+    createdAt
+  };
+}
+
+/** 遮罩百分比 → CSS 里要用的 0..0.6 小数。越界与非法输入都走同一条归一化。 */
+export function scrimAlpha(overlay) {
+  return normalizeOverlay(overlay) / 100;
+}
