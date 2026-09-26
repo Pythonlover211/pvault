@@ -149,8 +149,9 @@ export function resolveMode(mode, systemDark) {
  * 判据是「类型对得上」而不是直接 Number()：Number(null) / Number('') / Number([]) /
  * Number(false) 都是 0、Number(true) 是 1，直接转换会把「这个设置没有」静默变成 0% 或 1% 的遮罩
  * ——照片上的字就再也压不住了，而用户根本没动过滑块。字符串单独认，是因为滑块的 el.value
- * 天生是字符串。返回值若为 NaN，rgba(..., var(--scrim-a)) 会在 computed-value time 整条失效、
- * 遮罩层整个消失，所以宁可回默认。
+ * 天生是字符串。返回值若是 NaN，它替换进 rgba() 之后是个无效值，background-image 那条声明会在
+ * computed-value time 整条失效——遮罩与照片是同一句里的两层（var(--bg-scrim), var(--bg-image)），
+ * 失效时两层一起没，所以宁可回默认。
  */
 export function normalizeOverlay(value) {
   let n = NaN;

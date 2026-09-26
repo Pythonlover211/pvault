@@ -344,8 +344,10 @@ test('normalizeOverlay：取整、夹到 0..60，非法值回默认 30', () => {
   assert.equal(normalizeOverlay(999), 60);
   assert.equal(normalizeOverlay('45'), 45, '字符串数字要认（滑块的 el.value 是字符串）');
   // '0' 与 '' 是判据的分界线：'0' 是用户明确要求「不要遮罩」、'' 是「这个设置没有」。
-  // 写成 `if (!value) return 30` 是最容易犯的错——滑块拉到 0 也会被读成 30，刚压下去的遮罩
-  // 自己又回来了，而用户并没有再动过它。
+  // 写成 `if (!value) return 30` 是最容易犯的错，但它不是当场就错：滑块送来的是字符串，'0' 是
+  // truthy，当场照样返回 0（实测）。症状出现在**下一次启动**——用户把滑块拉到 0、setOverlay 把数字 0
+  // 存进库，再打开时读到的是数字 0，`!0` 为真，遮罩自己跳回 30，而用户并没有再动过它。
+  // （写成 `if (!Number(value))` 才是当场就错的那个版本，实测它会在这里红。）
   assert.equal(normalizeOverlay('0'), 0);
   // 下面这批「非数字」里有五个是 Number() 的陷阱：null / '' / [] / false 给的是 0（不是 NaN）、
   // true 给的是 1。也就是说「先 Number() 再判 isFinite」这条路会把它们静默变成 0% 或 1% 的遮罩，
@@ -365,8 +367,15 @@ test('normalizeBackground：形状不对就是「没有背景」', () => {
   assert.equal(normalizeBackground({ assetId: '' }), null);
   assert.equal(normalizeBackground({ assetId: '   ' }), null);
   assert.equal(normalizeBackground({ assetId: 42 }), null);
+  // 规格 §9.1 举过 { overlay: 999 } 这个例子：有 overlay、缺 assetId，仍然是「没有背景」——
+  // 一个坏 overlay 不能凭空造出一个指向不存在的图的背景。（实测把 assetId 判据放宽成「有 overlay
+  // 也算」，这条会红：返回值变成 { assetId: '', overlay: 60, createdAt: null }。）
+  assert.equal(normalizeBackground({ overlay: 999 }), null);
   // 数组的 typeof 也是 'object'，所以它不是被类型判据拦下的，而是一路走到「没有 assetId」才被判
-  // null。单列这一条是为了钉住结果：判据若被改成只看 truthy，它会立刻红。
+  // null。单列这一条只是为了钉住结果：[] 与 0 都必须回 null。
+  // 它钉不住 typeof 判据——实测把判据削成只看 truthy（`if (!value) return null`）时这两条仍然全绿，
+  // 因为 [] 和 0 走的是同一条「没有 assetId」的路。真能区分 typeof 的是「带 assetId 的函数对象」
+  // 这种合成输入（削掉判据后它会返回 { assetId: 'bg', … }），它没有真实来源，不值得为它加断言。
   assert.equal(normalizeBackground([]), null);
 
   assert.deepEqual(
@@ -407,11 +416,12 @@ test('scrimAlpha：百分比换算成 0..0.6 的小数', () => {
   assert.equal(scrimAlpha(0), 0);
   assert.equal(scrimAlpha(60), 0.6);
   assert.equal(scrimAlpha(30), 0.3);
-  // 越界值走的是同一条归一化，不是另一套判据：--scrim-a 会直接落进 rgba(..., var(--scrim-a))，
-  // 拿到 >1 的值时整条 background 声明在 computed-value time 失效，遮罩整层消失。
+  // 越界值走的是同一条归一化，不是另一套判据：--scrim-a 会被原样送进 rgba(..., var(--scrim-a))，
+  // 而滑块能表达的只有 0..60——「送出去的一定落在 0..0.6」这件事只能由这里保证。
   assert.equal(scrimAlpha(999), 0.6);
   assert.equal(scrimAlpha(-5), 0);
-  // 非法输入走 normalizeOverlay 的默认值 30，而不是 NaN——NaN 会让整条 background 声明失效。
+  // 非法输入走 normalizeOverlay 的默认值 30，而不是 NaN——NaN 不是合法的 alpha，替换进 rgba() 之后
+  // 整条 background-image 声明会失效，遮罩与照片两层一起没了。
   assert.equal(scrimAlpha('nonsense'), 0.3);
   // 这里用 === 而不是容差是逐值比对过才敢写的：0/100、30/100、60/100 与字面量 0、0.3、0.6 在
   // 双精度下是同一个数，除法结果恰好落回同一个双精度值上。

@@ -72,7 +72,7 @@
 |---|---|---|
 | `themePreset` | `'default' \| 'paper' \| 'sage' \| 'wisteria' \| 'seaglass'` | `'default'` |
 | `themeMode` | `'auto' \| 'light' \| 'dark'` | `'auto'` |
-| `backgroundImage` | `{ assetId: string, overlay: number, createdAt: number } \| null` | `null` |
+| `backgroundImage` | `{ assetId: string, overlay: number, createdAt: number \| null } \| null` | `null` |
 
 - `overlay` 是遮罩强度百分比，整数，取值 0–60，默认 30。
 - 三个键**不加种子、不动 `seedSettings()`**：读取侧一律走 `getSetting(key, fallback)` 的兜底，老库里没有这些键时行为与今天完全一致。这与 `backupReminderDays` 的既有做法一致。
@@ -125,7 +125,8 @@ export const THEME_TOKENS = { [themeId]: { light: {...}, dark: {...} } }
 export function normalizePreset(v)          // 未知/缺失 → 'default'
 export function normalizeMode(v)            // 未知/缺失 → 'auto'
 export function resolveMode(mode, systemDark)   // 'auto' + 系统状态 → 'light' | 'dark'
-export function normalizeOverlay(v)         // Number → 取整 → clamp 到 0..60；非数字 → 30
+export function normalizeOverlay(v)         // 数字，或非空可解析的数字字符串（滑块的 el.value）→ 取整 → clamp 到 0..60；
+                                            // 其余（undefined / null / '' / [] / true / false / NaN / Infinity / '45px'）→ 30
 export function normalizeBackground(v)      // 校验形状，非法 → null
 export function scrimAlpha(overlay)         // 0..60 → 0..0.6（小数）
 export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…', … } 的扁平对象
