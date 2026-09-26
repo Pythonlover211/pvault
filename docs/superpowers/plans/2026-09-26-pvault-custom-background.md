@@ -830,7 +830,8 @@ git commit -m 'feat(theme): 设置项的归一化与深浅解析'
 ```js
 // ── (皮肤, 深浅, 有无照片) → CSS 变量 ────────────────────────────────────────
 // themeCssVars 是整个外观系统里**唯一**做这层翻译的地方：theme-store 只把它给的键逐个 setProperty
-// 出去。所以它的输出形状就是那个契约——多一个键、少一个键都会直接漏到页面上，这一节测的就是它。
+// 出去（另外三个取决于运行时状态的变量由那边自己设），所以它的输出形状就是那个契约——多一个键、
+// 少一个键都会直接漏到页面上，这一节测的就是它。
 // 用到的 themeCssVars 合并进了文件顶部那一条 import，不再单独 import 一次同一个模块。
 
 test('themeCssVars：不认识的皮肤/深浅都退回默认', () => {
@@ -888,8 +889,10 @@ test('themeCssVars：开照片时只有 --surface 变成半透明', () => {
   // 透了它们会跟着照片纹理一起花掉（规格 §6.3 的硬要求）。
   assert.equal(withPhoto['--surface-2'], plain['--surface-2'], 'surface-2 不许被改成半透明');
 
-  // 「只有 --surface 变」的判据写成「哪些键的值不一样」，不写成「逐键期望值」：后者在以后新增变量
-  // 时会自动把新变量算进循环，而这里要钉的是「谁被改了」这个事实本身。
+  // 「只有 --surface 变」用一个差集来钉（哪些键的值不一样），不逐键写死期望值：失败时它直接报出
+  // 被改动的键名（`实际改动了这些变量：--surface、--surface-2`），而逐键断言只会说某个键的值不对，
+  // 读的人还得自己去拼「到底改了几个」。两种写法在「以后新增变量」上没有区别——两边遍历的都是
+  // Object.keys(plain)，新变量都会自动进圈，别把「自动进圈」当成选差集的理由。
   const changed = Object.keys(plain).filter(key => withPhoto[key] !== plain[key]);
   assert.deepEqual(
     changed, ['--surface'],
@@ -949,7 +952,8 @@ test('themeCssVars：返回值是副本，改它不会污染色板', () => {
 
   // 但上面那条 notEqual 走的是 photo: false 这条路，抓不到「照片分支改的是色板本身、返回的才是副本」
   // 那种写法（`if (photo) base['--surface'] = ...`）：实测换上去之后那条 notEqual 照样绿（它只碰 sage.dark
-  // 的 --bg），能抓住它的只有下面这个快照比对——单独跑这一条会红在「不该改动 THEME_TOKENS 本身」；
+  // 的 --bg），能直接抓住它的只有下面这个快照比对（别处的红都是别的原因：返回值不对，或后续调用死在
+  // hexToRgb 的抛错上）——单独跑这一条会红在「不该改动 THEME_TOKENS 本身」；
   // 跑整份文件时还轮不到它出声，前面几张测试先被污染，这一节会先死在 hexToRgb 的抛错上
   // （实测消息 `hexToRgb：不认识的色值 rgba(255,255,255, 0.9)`）。
   const snapshot = JSON.parse(JSON.stringify(THEME_TOKENS));
