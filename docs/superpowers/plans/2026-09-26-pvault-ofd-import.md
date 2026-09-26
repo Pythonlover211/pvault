@@ -393,7 +393,7 @@ export function fallbackFileName({ number, issuedAt, kind, mime } = {}) {
 
 运行：`D:\node.exe --test --test-isolation=none tests/file-info.test.js`
 
-预期：PASS，21 个测试全过。
+预期：PASS，25 个测试全过。
 
 - [ ] **步骤 5：Commit**
 
@@ -515,7 +515,7 @@ export async function saveFile(prepared) {
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，**242 通过 / 0 失败**（原 221 + 任务 1 新增 11 个 + 任务 2 新增 9 个）。
+预期：PASS，**246 通过 / 0 失败**（原 221 + 任务 1 新增 12 个 + 任务 2 新增 13 个）。
 
 - [ ] **步骤 6：Commit**
 
@@ -580,7 +580,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，242 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
+预期：PASS，246 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
 
 - [ ] **步骤 4：人工核对搬运是否等价**
 
@@ -645,7 +645,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，242 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
+预期：PASS，246 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
 
 - [ ] **步骤 5：Commit**
 
@@ -719,7 +719,7 @@ git commit -m "feat(ofd): 编辑器接受 OFD 文件，并在 20 MB 处拦下误
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，242 通过 / 0 失败。
+预期：PASS，246 通过 / 0 失败。
 
 - [ ] **步骤 4：Commit**
 
@@ -819,7 +819,7 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，242 通过 / 0 失败。
+预期：PASS，246 通过 / 0 失败。
 
 - [ ] **步骤 6：Commit**
 
@@ -860,7 +860,7 @@ git commit -m "feat(ofd): 发票编辑器加「导出这份文件」"
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，242 通过 / 0 失败。
+预期：PASS，246 通过 / 0 失败。
 
 - [ ] **步骤 3：Commit**
 
@@ -951,6 +951,7 @@ git commit -m "chore(sw): 缓存版本提到 v14，白名单加 file-info 与 do
 - [ ] 老票（OFD 功能之前存的 PDF）：预览显示「PDF 已保存」，导出用的是「发票-号码-时间戳.pdf」这样的兜底名
 - [ ] 选一个超过 20 MB 的文件（随便从相册挑个视频试试），提示「这个文件太大了」，且**上一次已经选好的发票文件没有被清掉**
 - [ ] 断网（开飞行模式）后重复一次「选 OFD → 保存 → 导出」，全程应正常——这就是 v14 预缓存清单在起作用
+- [ ] 用一个**名字超过 100 字符**的 PDF / OFD 试一次导出：名字要被截短，但**扩展名必须还在**（审查里这是「导出的文件打不开」的潜在根因）
 - [ ] 已知代价复验：找一个系统把 type 报成 `application/pdf` 的 `.ofd`（或临时改 mime 模拟）试一遍，确认此时预览与导出名都会说 PDF。这是 mime 优先的既定代价，**记下来即可，不必修**
 ```
 
@@ -994,6 +995,6 @@ D:\node.exe --test --test-isolation=none
 cd E:\codex-project\pvault; git status --porcelain
 ```
 
-预期：242 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
+预期：246 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
 
 **这次不做的事**（写在这里是为了防止实现过程中范围蔓延）：解析 OFD 内容、渲染票面、支持 XML 原件、动 `DB_VERSION`、给列表加文件名。

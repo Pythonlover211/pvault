@@ -81,9 +81,10 @@
 ```js
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 export function fileKind(mime, name)      // → 'image' | 'pdf' | 'ofd'
-export function mimeForKind(kind)         // → 归一化后的 mime
+export function mimeForKind(kind, mime)    // → 归一化后的 mime
+export function extForKind(kind, mime)     // → 导出用的扩展名
 export function sanitizeFilename(name, fallback)
-export function fallbackFileName({ number, issuedAt, kind })
+export function fallbackFileName({ number, issuedAt, kind, mime })
 ```
 
 `image-store.js` 里那个模块私有的 `isPdf()` **删掉**（唯一调用点就在 `prepareFile` 内），改调 `fileKind()`。
@@ -104,9 +105,9 @@ export function fallbackFileName({ number, issuedAt, kind })
 
 上面五个导出全是纯函数或纯常量：判定表能被单测逐条覆盖，而不是只能经由 `prepareFile` 去间接猜。
 
-**`sanitizeFilename`**：去掉 `/ \ : * ? " < > |` 与控制字符，去掉首尾的点和空格，截断到 100 字符，结果为空则用调用方给的 fallback。
+**`sanitizeFilename`**：去掉 `/ \ : * ? " < > |` 与控制字符，去掉首尾的点和空格，截断到 100 字符，结果为空则用调用方给的 fallback（**fallback 自己也要过一遍净化**，否则这个函数会同时存在「净化过的返回值」和「没净化的返回值」两种形态，而它唯一的用途是喂给 `<a download>`）。**顺序是先截断、再清首尾**：反过来的话截断处会重新长出一个点或空格，函数也就不再幂等。截断时**保住扩展名**——原始文件名来自外部 App，一刀切在扩展名上会让手机失去派发依据。
 
-**`fallbackFileName`**：没有原始文件名时的兜底，产出 `发票-<号码，没填就用「无号」>-<时间戳>.<ext>`，扩展名由 `mimeForKind` 推。
+**`fallbackFileName`**：没有原始文件名时的兜底，产出 `发票-<号码，没填就用「无号」>-<时间戳>.<ext>`，扩展名由 `extForKind` 推。
 
 ---
 
@@ -206,7 +207,7 @@ export function downloadBlob(blob, filename)
 
 1. **`fileKind`**：`('', 'a.ofd')`、`('application/ofd', '')`、`('application/octet-stream', 'b.OFD')`、`('application/pdf', 'c.ofd')`（mime 优先判成 pdf）、`('image/jpeg', 'd.jpg')`、空 mime + 空名字
 2. **`prepareFile` 的 OFD 分支**：mime 归一化成 `application/ofd`、`thumbBlob === null`、`name` 原样带出、`compressed === false`
-3. **`sanitizeFilename`**：路径分隔符、`..`、全空白、超长截断、正常名保持不动
+3. **`sanitizeFilename`**：路径分隔符、控制字符、`..`、全空白、超长截断（保住扩展名）、fallback 自己也要净化、幂等、正常名保持不动
 4. 现有 221 个测试保持全绿
 
 真机 / 模拟器验证（条目写进 `docs/手动验证清单.md`）：
