@@ -37,18 +37,22 @@ test('mimeForKind：存库前归一化', () => {
   assert.equal(mimeForKind('pdf', ''), 'application/pdf');
   assert.equal(mimeForKind('image', 'image/png'), 'image/png');
   assert.equal(mimeForKind('image', 'image/png; charset=binary'), 'image/png');
+  assert.equal(mimeForKind('image', 'IMAGE/PNG'), 'image/png');
   assert.equal(mimeForKind('image', ''), 'image/jpeg');
 });
 
-test('mimeForKind：不是 image/* 的 mime 一律回落，不放它进图片记录', () => {
-  // kind 传错、或选择器给了个非图片的 type 时，别把一个非图片 mime 跟着图片记录存进库——
-  // 下游是按 mime 前缀决定要不要塞进 <img> 的。
-  assert.equal(mimeForKind('', 'application/octet-stream'), 'image/jpeg');
-  assert.equal(mimeForKind('image', 'application/octet-stream'), 'image/jpeg');
-  assert.equal(mimeForKind('image', null), 'image/jpeg');
+test('mimeForKind：非空却不是 image/* 的，回落中性值而不是伪造 image/jpeg', () => {
+  // 伪造 image/jpeg 会骗过 invoice-editor 那道 startsWith('image/') 守卫，
+  // 把一个塞不进 <img> 的文件当成图片、显示成裂图。
+  assert.equal(mimeForKind('image', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(mimeForKind('', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(
+    mimeForKind('image', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    'application/octet-stream'
+  );
 });
 
-test('extForKind：ofd / pdf 只看 kind', () => {
+test('extForKind：ofd / pdf 只看 kind，mime 再离谱也不影响', () => {
   assert.equal(extForKind('ofd', 'application/pdf'), 'ofd');
   assert.equal(extForKind('pdf', 'application/octet-stream'), 'pdf');
 });
@@ -60,16 +64,37 @@ test('extForKind：图片按真实子类型给扩展名', () => {
   assert.equal(extForKind('image', 'image/png'), 'png');
   assert.equal(extForKind('image', 'image/webp'), 'webp');
   assert.equal(extForKind('image', 'image/jpeg'), 'jpg');
+  assert.equal(extForKind('image', 'image/jpg'), 'jpg');
+  assert.equal(extForKind('image', 'image/gif'), 'gif');
   assert.equal(extForKind('image', 'image/png; charset=binary'), 'png');
+  assert.equal(extForKind('image', 'IMAGE/PNG'), 'png');
   assert.equal(extForKind('image', ''), 'jpg');
   assert.equal(extForKind('image', null), 'jpg');
+  // 带 `+` 的 subtype，以及被塞进来的路径片段，都不该变成扩展名
+  assert.equal(extForKind('image', 'image/svg+xml'), 'jpg');
+  assert.equal(extForKind('image', 'image/../../etc'), 'jpg');
 });
 
-test('每个 kind 都能得到非空的 mime 与扩展名', () => {
-  // 防止将来往枚举里加第四个值时静默漏配
-  for (const kind of ['image', 'pdf', 'ofd']) {
-    assert.ok(mimeForKind(kind, '').length > 0);
-    assert.ok(extForKind(kind, '').length > 0);
+test('三个 kind 各自都有确定的 mime 与扩展名', () => {
+  assert.equal(mimeForKind('image', ''), 'image/jpeg');
+  assert.equal(mimeForKind('pdf', ''), 'application/pdf');
+  assert.equal(mimeForKind('ofd', ''), 'application/ofd');
+  assert.equal(extForKind('image', ''), 'jpg');
+  assert.equal(extForKind('pdf', ''), 'pdf');
+  assert.equal(extForKind('ofd', ''), 'ofd');
+});
+
+test('同一条记录走完三个函数，口径一致', () => {
+  // 三个函数各自被测得很好，但审查发现的问题全长在「函数之间的缝」上：
+  // 把真实输入串成一条，能挡住 kind / mime / 扩展名三者互相矛盾。
+  for (const [mime, name, kind, stored, ext] of [
+    ['image/png; charset=binary', 'a.png', 'image', 'image/png', 'png'],
+    ['application/pdf', 'b.pdf', 'pdf', 'application/pdf', 'pdf'],
+    ['application/octet-stream', 'c.ofd', 'ofd', 'application/ofd', 'ofd']
+  ]) {
+    assert.equal(fileKind(mime, name), kind, `${name} 应判成 ${kind}`);
+    assert.equal(mimeForKind(kind, mime), stored, `${name} 存库 mime 应为 ${stored}`);
+    assert.equal(extForKind(kind, mime), ext, `${name} 导出扩展名应为 ${ext}`);
   }
 });
 

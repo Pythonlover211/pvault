@@ -40,38 +40,59 @@ export function fileKind(mime, name) {
   return 'image';
 }
 
+/** 归一化 mime：小写、去掉 `;` 之后的参数（charset 之类）。两个函数共用同一个口径，不各写一份。 */
+function normalizeMime(mime) {
+  return String(mime ?? '').split(';')[0].trim().toLowerCase();
+}
+
 /**
  * 存库时写的 mime。理由与当初 PDF 那一处相同：选择器给的可能是空 type、
  * application/octet-stream、或带 charset 参数，归一化之后备份的元数据里才不会
  * 出现五花八门的写法。
  *
- * 图片这条分支比 pdf / ofd 多两道手：剥掉 `;` 之后的参数（charset 之类），
- * 以及只放行 image/*。kind 传错、或选择器给了个非图片的 type 时，宁可回落到
- * image/jpeg，也不能把一个非图片 mime 跟着图片记录存进库——下游是按 mime 前缀
- * 决定要不要塞进 <img> 的。
+ * 图片这条分支比 pdf / ofd 多三道手：
+ * - 剥掉 `;` 之后的参数；
+ * - **空 mime 回落 image/jpeg**——走到这条分支说明 fileKind 已经判定它是图片
+ *   （扩展名不是 pdf/ofd），而安卓选择器给空 type 是常态（见 fileKind 的注释）；
+ * - **非空又不是 image/* 的，回落 application/octet-stream，而不是伪造一个
+ *   image/jpeg**。下游 app/ui/invoice-editor.js 的守卫是「mime 以 image/ 开头才
+ *   塞进 <img>」——伪造 image/jpeg 会让它失去辨别力（`<img src="blob:…docx">`
+ *   得到的是裂图加一行浅灰 alt 文字，比干脆不显示更糟）。实践中这类文件到不了
+ *   调用点（图片分支要先 decode 成功），但把不诚实的值挡在源头比依赖下游关卡稳。
  */
 export function mimeForKind(kind, mime) {
   if (kind === 'ofd') return 'application/ofd';
   if (kind === 'pdf') return 'application/pdf';
-  const m = String(mime ?? '').split(';')[0].trim().toLowerCase();
-  return m.startsWith('image/') ? m : 'image/jpeg';
+  const m = normalizeMime(mime);
+  if (m === '') return 'image/jpeg';
+  return m.startsWith('image/') ? m : 'application/octet-stream';
 }
 
 /**
- * 导出时的文件扩展名。**要吃 mime**：图片记录里可能是 image/png ——
- * prepareFile 有两条路径会把原始 mime 原样存下来（图片够小、不需要压缩；
- * 或压缩失败回退了原图），而兜底文件名恰恰只在「记录里没有原始文件名」时才用，
- * 那种记录常常来自相册或拍照。一律叫 .jpg 会让手机按 .jpg 去派发一个 PNG 文件，
- * 而「把原件交出去让别的 App 打开」正是这次功能的目的之一。
+ * 导出时的文件扩展名。**要吃 mime，而且 mime 是必填的**——漏传会静默退回 jpg，
+ * PNG 记录就白修了。
  *
- * 只认 png / webp：它们在安卓相册与截图里真的常见，其余一律按 jpg
- * （照片经压缩后的实际格式就是它）。
+ * 为什么必须吃 mime：图片记录里可能是 image/png —— prepareFile 有两条路径会把
+ * 原始 mime 原样存下来（图片够小、不需要压缩；或压缩失败回退了原图），而兜底文件名
+ * 恰恰只在「记录里没有原始文件名」时才用，那种记录常常来自相册或拍照。一律叫 .jpg
+ * 会让手机按 .jpg 去派发一个 PNG 文件，而「把原件交出去让别的 App 打开」正是这次
+ * 功能的目的之一。
+ *
+ * 扩展名直接从 subtype 推，判据与 mimeForKind 的白名单同源（都是 `image/` 前缀）：
+ * 这样才不会出现「mime 说是 gif、导出名却写 jpg」这种长在函数之间的缝上的不一致。
+ *
+ * 已知局限：mime 为空时推不出真实格式，只能回落 jpg。真实场景是「安卓选择器给了
+ * 空 type + 用户选了 PNG 截图 + 这条记录又没有原始文件名」——名字会不准，但字节是
+ * 完整的。要根治得让 prepareFile 在 mime 为空时从文件名反推 mime（不在本次范围）。
  */
 export function extForKind(kind, mime) {
   if (kind === 'ofd') return 'ofd';
   if (kind === 'pdf') return 'pdf';
-  const sub = String(mime ?? '').split(';')[0].trim().toLowerCase();
-  if (sub === 'image/png') return 'png';
-  if (sub === 'image/webp') return 'webp';
-  return 'jpg';
+  const m = normalizeMime(mime);
+  if (!m.startsWith('image/')) return 'jpg';
+  const sub = m.slice('image/'.length);
+  if (sub === 'jpeg' || sub === 'jpg') return 'jpg';
+  // 只放行纯字母数字的 subtype：`svg+xml` 这类带符号的、以及被塞进来的路径片段
+  // （image/../../x）都会落到这里，一律按 jpg。
+  return /^[a-z0-9]+$/.test(sub) ? sub : 'jpg';
 }
