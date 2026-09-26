@@ -8,7 +8,7 @@ import {
   MAX_EDGE, THUMB_EDGE, JPEG_QUALITY, THUMB_QUALITY,
   computeTargetSize, shouldCompress, useCompressed, estimateBackupMB
 } from './image-scale.js';
-import { fileKind, mimeForKind } from './file-info.js';
+import { fileKind, mimeForKind, replaceExt } from './file-info.js';
 
 export { estimateBackupMB };
 
@@ -133,7 +133,10 @@ export async function prepareFile(inputFile) {
     return {
       // 这一条是压缩产物，格式确实就是 JPEG，不必过 mimeForKind
       blob: out, thumbBlob, mime: 'image/jpeg',
-      size: out.size, originalSize: size, name, compressed: true
+      size: out.size, originalSize: size, compressed: true,
+      // 字节已经被重编码成 JPEG 了，名字得跟着走：挂着 .HEIC / .png 的名字
+      // 会让手机把一份 JPEG 派发给错误的阅读器。
+      name: replaceExt(name, 'jpg')
     };
   } catch (err) {
     console.error('发票图片压缩失败，按原样保存', err);
@@ -141,7 +144,10 @@ export async function prepareFile(inputFile) {
     // 而原图其实好好地存在库里。
     return {
       blob: inputFile, thumbBlob,
-      mime: mime || 'application/octet-stream', size, name, compressed: false, failed: true
+      // source 非空说明真的解出过位图，此时「这是一张图片」才成立，mime 走归一化；
+      // 否则（选进来的根本不是图片）保持原始值，别伪造一个 image/*
+      mime: source ? mimeForKind(kind, mime) : (mime || 'application/octet-stream'),
+      size, name, compressed: false, failed: true
     };
   } finally {
     // finally 而不是在成功路径上 close：上面每一条 return 和抛错都是出口，漏一条就漏一张位图。
@@ -161,6 +167,10 @@ export async function saveFile(prepared) {
       size: prepared.size ?? prepared.blob.size,
       // 原始文件名，可能是空串。**总是写这个键**：不写的话读出来是 undefined，
       // 每个消费方就都得记得写 ?? ''，漏一处就是界面上一个 undefined。
+      // 注意这里存的是**未净化**的原始名（可能含 /、控制字符、超长）：净化只发生在导出那一刻，
+      // 由 file-info.js 的 sanitizeFilename 做。这条约定跨两个文件，所以两端各留一句——
+      // 那边（file-info.js）写明净化规则，这边写明**写入时不许提前净化**：
+      // 库里存的是净化过的名字，用户就再也看不到文件原本叫什么了。
       name: String(prepared.name ?? '').trim(),
       createdAt: Date.now()
     });
@@ -208,7 +218,7 @@ async function cachedUrl(kind, id, make) {
   const hit = urlCache.get(key);
   if (hit) return hit;
   const url = await make();
-  // 只记真的拿到了 URL 的情况。把 null（PDF 没有缩略图）也缓存下来的话，
+  // 只记真的拿到了 URL 的情况。把 null（PDF / OFD 没有缩略图）也缓存下来的话，
   // 下次命中就得先判断「缓存里是不是 null」，反而更容易写错。
   if (url) urlCache.set(key, url);
   return url;
@@ -248,7 +258,7 @@ export function revokeUrl(url) {
  * 列表页的缩略图地址。两条契约都得知道：
  * 1. 返回的 URL 由本模块统一缓存，调用方**不要**自己 revoke；这一批画完时把本批用到的 id
  *    交给 pruneUrlCache(keepIds)，由它差集回收——不再需要的那批 revoke 掉，还在用的留着命中缓存；
- * 2. 这条记录是 PDF（或压根没生成出缩略图）时返回 null，调用方据此改显示占位图标，
+ * 2. 这条记录是 PDF / OFD（或压根没生成出缩略图）时返回 null，调用方据此改显示占位图标，
  *    不要拿 null 去当 src——`<img src="null">` 会去请求一个真叫 null 的地址。
  */
 export async function getThumbUrl(id) {
@@ -262,7 +272,7 @@ export async function getThumbUrl(id) {
 
 /**
  * 原图的地址。和 getThumbUrl 不同，它回答的是「这份资源在哪」，不是「这是不是一张能塞进 <img> 的图」：
- * PDF 记录同样会返回 URL。调用方（编辑器预览）必须先看 mime 再决定用 <img> 还是显示占位，
+ * PDF / OFD 记录同样会返回 URL。调用方（编辑器预览）必须先看 mime 再决定用 <img> 还是显示占位，
  * 直接塞进 <img> 得到的是裂图加一行浅灰 alt 文字，比干脆不显示更糟。
  */
 export async function getFullUrl(id) {

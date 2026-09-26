@@ -150,6 +150,24 @@ export function sanitizeFilename(name, fallback = 'file') {
 }
 
 /**
+ * 换掉文件名的扩展名，主干保留。
+ *
+ * 存在的理由：图片那条路上 prepareFile 会把原图重编码成 JPEG（手机照片基本都超过
+ * 跳过压缩的阈值），字节与用户给的扩展名从此对不上——相册里的 PNG / HEIC 照片会挂着
+ * 一个 `.HEIC` 的名字存下去，而导出时手机是按扩展名派发打开方式的。名字与字节必须自洽。
+ *
+ * 开头的点不算扩展名（`.hidden` 是隐藏文件的写法，整串就是它的名字）；
+ * 没有扩展名就直接接上。
+ */
+export function replaceExt(name, ext) {
+  const base = String(name ?? '').trim();
+  if (base === '') return '';
+  const dot = base.lastIndexOf('.');
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  return `${stem}.${ext}`;
+}
+
+/**
  * 没有原始文件名时的兜底名。号码是用户最认得出的东西，放在最前面；
  * 没填就直接写「无号」——空字符串会让文件名变成「发票--1700000000000.ofd」这种看着像出错的东西。
  *

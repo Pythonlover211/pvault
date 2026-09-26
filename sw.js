@@ -33,7 +33,11 @@
 // v13：发票功能的 7 个新文件（invoice-model / image-scale / image-store / invoice-store /
 // ui/invoice-view / ui/invoice-editor / invoice.css）进了预缓存清单。漏掉它们的后果和上面
 // v3 那次一样：离线时这几个 ES module 404，import 链一断，发票 Tab 直接打不开。
-const CACHE = 'pvault-v13';
+// v14：发票支持导入 OFD。新增的 app/file-info.js 进了预缓存清单 —— 它从任务 3 起就是
+// 首屏静态依赖（main → invoice-view → invoice-editor/invoice-store → image-store → file-info），
+// 而 SW 是 cache-first：白名单里没有它，已装旧缓存的设备离线启动会回退到 index.html、
+// import 链一断是整个 app 白屏。所以它必须在消费方 import 之前就位，不能等到收尾再补。
+const CACHE = 'pvault-v14';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -59,6 +63,7 @@ const ASSETS = [
   './app/csv.js',
   './app/dates.js',
   './app/db.js',
+  './app/file-info.js',
   './app/image-scale.js',
   './app/image-store.js',
   './app/import-parse.js',

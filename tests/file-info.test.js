@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_FILE_BYTES, fileKind, mimeForKind, extForKind,
-  sanitizeFilename, fallbackFileName
+  sanitizeFilename, replaceExt, fallbackFileName
 } from '../app/file-info.js';
 
 test('fileKind：mime 说是 OFD 就判 OFD', () => {
@@ -150,6 +150,17 @@ test('sanitizeFilename：先截断再清首尾，结果是幂等的', () => {
 
 test('sanitizeFilename：正常的文件名原样保留', () => {
   assert.equal(sanitizeFilename('25517000000012345678.ofd', 'fb'), '25517000000012345678.ofd');
+});
+
+test('replaceExt：换掉扩展名，主干保留', () => {
+  assert.equal(replaceExt('IMG_1234.HEIC', 'jpg'), 'IMG_1234.jpg');
+  assert.equal(replaceExt('a.png', 'jpg'), 'a.jpg');
+  assert.equal(replaceExt('没有扩展名', 'jpg'), '没有扩展名.jpg');
+  // 开头的点是「隐藏文件」不是扩展名，不能把整个名字当扩展名切掉
+  assert.equal(replaceExt('.hidden', 'jpg'), '.hidden.jpg');
+  // 空名字保持空——兜底名是导出时的事，这里不替它做主
+  assert.equal(replaceExt('', 'jpg'), '');
+  assert.equal(replaceExt(null, 'jpg'), '');
 });
 
 test('fallbackFileName：带号码与时间戳', () => {

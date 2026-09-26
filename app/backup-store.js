@@ -187,6 +187,10 @@ async function encodeFiles() {
     out.push({
       id: f.id,
       mime: f.mime ?? '',
+      // 原始文件名也必须在这个清单里。invoiceFiles 从来不整表导出（blob 进不了 JSON，
+      // 只能 base64 单走这条路），所以字段是**手写**的，新字段不会自动跟着走；漏掉的后果是
+      // 换机恢复之后 name 变成 undefined——预览退回占位、导出退回兜底名，而且不报错、不留痕。
+      name: String(f.name ?? '').trim(),
       // 正常的记录都有 size（saveFile 写的）。缺失时按 base64 长度反推原始字节数（3/4 是
       // base64 的膨胀系数）：留 0 会让恢复后的这份数据在下次导出时被严重低估——
       // 那时界面就不会提醒「文件很大、下载可能被拦掉」，用户以为备份好了。
@@ -395,6 +399,9 @@ export async function importBackup(text, password) {
         blob,
         thumbBlob,
         mime: f.mime ?? '',
+        // 老备份里没有这个键，读出来是 undefined——`String(undefined ?? '')` 就是空串，
+        // 而消费方对空串本来就有兜底（导出时用发票号码现算兜底名），所以这里不判必填。
+        name: String(f.name ?? '').trim(),
         size: Number(f.size) > 0 ? f.size : (blob?.size ?? 0),
         createdAt: f.createdAt ?? null
       }
