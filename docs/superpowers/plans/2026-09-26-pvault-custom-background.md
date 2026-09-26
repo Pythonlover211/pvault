@@ -63,6 +63,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { THEMES, THEME_TOKENS, THEME_IDS } from '../app/theme.js';
 
+// 「5 套皮肤 × 浅/深」共 10 组色板的遍历骨架，本文件的三条测试都要用它。抽成一个函数是为了让
+// 那两道前置守卫只写一次——皮肤缺色板、某一档深浅缺色板时先给一句能读的断言，否则后面会死在
+// TypeError: Cannot read properties of undefined 上；红是红了，但读起来像色值坏了。
+//
+// 深浅写死 ['light', 'dark']，不从主题模块 import MODES：MODES 里还含 'auto'，
+// 那是「跟随系统」这个选项值、不是色板里的一档，混进来会去取不存在的 THEME_TOKENS[id].auto。
+function forEachTokens(fn) {
+  for (const id of THEME_IDS) {
+    assert.ok(THEME_TOKENS[id], `缺少皮肤 ${id} 的色板`);
+    for (const mode of ['light', 'dark']) {
+      const tokens = THEME_TOKENS[id][mode];
+      assert.ok(tokens, `${id}.${mode} 缺失`);
+      fn(tokens, id, mode);
+    }
+  }
+}
+
 // 色板的正典清单：每套皮肤 × 每种深浅都必须**正好**是这 12 个键。
 //
 // 为什么写死在这里，而不是拿 THEME_TOKENS.default.light 当基准：那个基准是**自指**的，
@@ -115,20 +132,15 @@ const SHAPES = {
 };
 
 test('theme：五套皮肤 × 深浅的变量集合与正典清单完全一致', () => {
-  for (const id of THEME_IDS) {
-    assert.ok(THEME_TOKENS[id], `缺少皮肤 ${id} 的色板`);
-    for (const mode of ['light', 'dark']) {
-      const tokens = THEME_TOKENS[id][mode];
-      assert.ok(tokens, `${id}.${mode} 缺失`);
-      // 判据是「键集合与正典清单完全一致」，既不是「数量够」也不是「和 default.light 一样」：
-      // 少一个变量，界面上那块会**静默**退回 base.css 里默认皮肤的颜色——它不会变成黑块或透明，
-      // 只是「这块看着有点不对」，比报错难发现得多；多一个则说明这套皮肤偷偷开了新维度。
-      assert.deepEqual(
-        Object.keys(tokens).sort(), [...TOKEN_NAMES].sort(),
-        `${id}.${mode} 的变量集合与正典清单不一致`
-      );
-    }
-  }
+  forEachTokens((tokens, id, mode) => {
+    // 判据是「键集合与正典清单完全一致」，既不是「数量够」也不是「和 default.light 一样」：
+    // 少一个变量，界面上那块会**静默**退回 base.css 里默认皮肤的颜色——它不会变成黑块或透明，
+    // 只是「这块看着有点不对」，比报错难发现得多；多一个则说明这套皮肤偷偷开了新维度。
+    assert.deepEqual(
+      Object.keys(tokens).sort(), [...TOKEN_NAMES].sort(),
+      `${id}.${mode} 的变量集合与正典清单不一致`
+    );
+  });
 });
 
 test('theme：正典清单里的每个变量都登记了形状', () => {
@@ -143,32 +155,25 @@ test('theme：正典清单里的每个变量都登记了形状', () => {
 test('theme：色值的形状与 --scrim-rgb 的明暗极性', () => {
   // 只断言键名存在等于没测：值是空串、是 'red'、是别的颜色，测试一样全绿。
   // 所以这一条逐值断言形状——它是这套测试里唯一能拦住「值写错」的关卡。
-  for (const id of THEME_IDS) {
-    // 皮肤住进了 THEMES 却没有色板时，这里给一句能读的断言；否则下面会死在
-    // TypeError: Cannot read properties of undefined 上——红是红了，噪音大。
-    assert.ok(THEME_TOKENS[id], `缺少皮肤 ${id} 的色板`);
-    for (const mode of ['light', 'dark']) {
-      const t = THEME_TOKENS[id][mode];
-      assert.ok(t, `${id}.${mode} 缺失`);
-      for (const key of Object.keys(SHAPES)) {
-        // 值缺失或被写成非字符串时 assert.match 抛的是 TypeError（信息量为零），
-        // 先过一道 typeof，报出来的才是「哪个皮肤的哪个变量不对」。
-        assert.equal(typeof t[key], 'string', `${id}.${mode}.${key} 不存在或不是字符串：${t[key]}`);
-        assert.match(t[key], SHAPES[key], `${id}.${mode}.${key} 的形状不对：${t[key]}`);
-      }
-
-      for (const ch of t['--scrim-rgb'].split(',')) {
-        const n = Number(ch);
-        assert.ok(n >= 0 && n <= 255, `${id}.${mode}.--scrim-rgb 的通道越界：${ch}`);
-      }
-      // 极性写死：浅色皮肤用白遮罩压亮、深色皮肤用黑遮罩压暗。写反了遮罩会朝反方向走，
-      // 而且越调滑块越看不清字——这是「值级」断言，不是「键级」。
-      assert.equal(
-        t['--scrim-rgb'], mode === 'light' ? '255,255,255' : '0,0,0',
-        `${id}.${mode}.--scrim-rgb 的明暗极性写反了`
-      );
+  forEachTokens((t, id, mode) => {
+    for (const key of Object.keys(SHAPES)) {
+      // 值缺失或被写成非字符串时 assert.match 抛的是 TypeError（信息量为零），
+      // 先过一道 typeof，报出来的才是「哪个皮肤的哪个变量不对」。
+      assert.equal(typeof t[key], 'string', `${id}.${mode}.${key} 不存在或不是字符串：${t[key]}`);
+      assert.match(t[key], SHAPES[key], `${id}.${mode}.${key} 的形状不对：${t[key]}`);
     }
-  }
+
+    for (const ch of t['--scrim-rgb'].split(',')) {
+      const n = Number(ch);
+      assert.ok(n >= 0 && n <= 255, `${id}.${mode}.--scrim-rgb 的通道越界：${ch}`);
+    }
+    // 极性写死：浅色皮肤用白遮罩压亮、深色皮肤用黑遮罩压暗。写反了遮罩会朝反方向走，
+    // 而且越调滑块越看不清字——这是「值级」断言，不是「键级」。
+    assert.equal(
+      t['--scrim-rgb'], mode === 'light' ? '255,255,255' : '0,0,0',
+      `${id}.${mode}.--scrim-rgb 的明暗极性写反了`
+    );
+  });
 });
 
 test('theme：THEME_IDS 与 THEMES、THEME_TOKENS 三者一一对应且含 default', () => {
@@ -360,11 +365,13 @@ function parseHex(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-// sRGB 线性化：低亮度段走线性，其余走 2.4 次幂。0.03928 这个分段点是 WCAG 2.x 的写法
-// （2.2 起改成 0.04045）。这两个数在 8bit 色值上不可能产生分歧——它们之间夹着的 s 区间
-// 换算回 0..255 是 (10.02, 10.31]，里面没有任何整数——所以色板逐值算出来的结果与用新数一致，
-// 不必为了对齐新标准去改。这也是为什么换成逐值测试之后，这个常量不再是「抄哪个版本」的问题。
-function channel(v) {
+// sRGB 的传递函数：把 8bit 通道值换算成线性光。低亮度段走线性，其余走 2.4 次幂。
+// 名字不叫 channel——那在调用点上只说明「跟通道有关」，看不出它在做哪一步换算。
+//
+// 0.03928 这个分段点是 WCAG 2.x 的写法（2.2 起改成 0.04045）。这两个数在 8bit 色值上不可能
+// 产生分歧——它们之间夹着的 s 区间换算回 0..255 是 (10.02, 10.31]，里面没有任何整数——
+// 所以逐值算出来的结果与用新数一致，不必为了对齐新标准去改。
+function srgbToLinear(v) {
   const s = v / 255;
   return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
 }
@@ -374,7 +381,7 @@ function channel(v) {
 // 这也是调色值时最容易判断失误的地方。
 function luminance(hex) {
   const [r, g, b] = parseHex(hex);
-  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
 }
 
 // WCAG 的对比度是 (较亮者 + 0.05) / (较暗者 + 0.05)，谁亮谁暗由公式自己排，
@@ -389,10 +396,17 @@ function contrast(a, b) {
 // 「文字色 vs 它可能落在的每一种底」——方向固定是「左是文字、右是底」。
 // contrast() 对调两侧得到的是同一个数，所以写反了不会有任何测试响；但意图会变成
 // 「拿底色当文字色去比」，后来的人照着这一对去调色，就会朝着错误的方向使劲。
+//
 // surface-2 必须算进去：输入框、次级按钮都垫在它上面。--text-2 落在它上面是每一组配色里最紧的
 // text 类配对（浅色皮肤里它是最暗的底、深色皮肤里它是最亮的底，两个方向都在往文字色挤；
-// 默认皮肤的老值 #6e6e73 落在这里只有 4.19:1）。
-// 这句只限 text 类——全表最紧的一对是浅色皮肤的 --on-accent on --accent，不在 text 类里。
+// 默认皮肤的老值 #6e6e73 落在这里只有 4.19:1）。这话只限 text 类——这 70 对里最紧的一对是
+// default.light 的 --on-accent on --accent（当前 4.665:1），它不在 text 类里。
+//
+// 有意排除的两类，不是漏测：--text-3 作文字色的那三对、--accent 作文字色的那一对
+// （components.css 里 --accent 就是文字色，父容器是 background: var(--accent-weak)）。
+// 按规格 §5.3 它们不在本断言的范围内，且目前就低于 4.5（实测 --text-3 三对浅色 2.12~3.06、
+// --accent on --accent-weak 浅色最低 4.06）。要处理它们只有两条路：改色值，或者改规格；
+// **不要为了让它们变绿去放松 MIN_CONTRAST**——那会连 --text、--text-2 的守卫一起废掉。
 const CONTRAST_PAIRS = [
   ['--text', '--bg'], ['--text', '--surface'], ['--text', '--surface-2'],
   ['--text-2', '--bg'], ['--text-2', '--surface'], ['--text-2', '--surface-2'],
@@ -401,46 +415,92 @@ const CONTRAST_PAIRS = [
 
 const MIN_CONTRAST = 4.5;
 
-test('theme：对比度断言的键名都来自正典清单', () => {
-  // 键名手滑（写成 --surface3 之类）时，tokens[fg] 是 undefined，下面那条断言会死在
-  // parseHex 抛出的「不是 #rrggbb 形式的颜色：undefined」上——红是红了，但读起来像色值坏了，
-  // 而不是「这一对的键名写错了」。先在这里把表本身钉住，报出来的才是该改哪一行。
+test('theme：对比度对用到的变量都是 #rrggbb 形式的色值', () => {
+  // 判据是**形状**，不是「在正典清单里」。区别很实在：--scrim-rgb 也在正典清单里、也是同一份
+  // 色板里的变量，往 CONTRAST_PAIRS 里补一对时最容易手滑抓到它，可它不是 hex（是三个裸通道
+  // 数字），按清单判定会放过它，然后主断言死在「不是 #rrggbb 形式的颜色：255,255,255」上，
+  // 连是哪一对、哪套皮肤都不说。按形状判定就能当场指名。
+  // 这里没有新增任何数据：SHAPES 早就被「正典清单 ↔ 形状表」那条断言钉住了。
   for (const [fg, bg] of CONTRAST_PAIRS) {
-    assert.ok(TOKEN_NAMES.includes(fg), `对比度对的文字色不在正典清单里：${fg}`);
-    assert.ok(TOKEN_NAMES.includes(bg), `对比度对的背景色不在正典清单里：${bg}`);
+    assert.equal(SHAPES[fg], HEX6, `对比度对的文字色不是 #rrggbb 的色值变量：${fg}`);
+    assert.equal(SHAPES[bg], HEX6, `对比度对的背景色不是 #rrggbb 的色值变量：${bg}`);
   }
 });
 
 test('theme：对比度公式与 WCAG 的已知值一致', () => {
-  // 上面那几行公式没人会去复核，抄错了（漏掉 +0.05、把 0.7152 写成 0.7512）整套色板
-  // 就会在错误的标准下全绿——写测试的人和写实现的人是同一个，两边一起错时没有东西会响。
-  // 所以钉住两个不依赖色板的已知值：黑白 21:1 是 WCAG 定义的极值，同色必然是 1:1
-  // （+0.05 有没有漏，看这一条就知道）。
-  assert.ok(Math.abs(contrast('#ffffff', '#000000') - 21) < 1e-9, '黑白对比度应为 21:1');
-  assert.ok(Math.abs(contrast('#ffffff', '#ffffff') - 1) < 1e-9, '同色的对比度应为 1:1');
+  // 上面那几行公式没人会去复核，抄错了整套色板就会在错误的标准下全绿——写测试的人和写实现
+  // 的人是同一个，两边一起错时没有东西会响。这条用与色板无关的已知向量把公式钉住。
+  //
+  // 为什么偏偏是这几个颜色：把典型抄错逐个试过之后挑的，每一类都得真有向量拦得住——
+  //   0.7152 → 0.7512（绿权重抄错）      → 黑白向量红（21 变成 21.7）
+  //   +0.05 偏移量漏掉或写错              → 同色向量红（1:1 变成 17.7:1）
+  //   0.2126 ↔ 0.0722（红蓝权重对调）      → 纯红对黑红（5.252 变成 2.444）
+  //   parseHex 把 rrggbb 读成 bbggrr       → 纯红对黑红（同上，红蓝一换就露）
+  //   2.4 → 2.41（幂次抄错）               → 中灰对白红（偏差约 0.02，够把 4.49 判成 4.51）
+  //   12.92 → 12.9（线性段除数抄错）        → 深灰对白红（只有 ≤10 的通道走线性段，黑和中灰
+  //                                          都不经过它，所以必须单独放一个 #0a0a0a）
+  //   0.03928 → 0.04045（换 WCAG 版本）    → 全绿，且**应该**全绿：8bit 上没有值落在这两个数
+  //                                          之间（见 srgbToLinear 的注释），结果本来就不会变。
+  //
+  // 最后一行是这张表存在的另一半意义：分清「抄错但无感」和「抄错又有感」，免得后来的人为了让
+  // 测试红，去改一个其实正确的常量。几条消息里都带上实际算出来的值——只报「应为 21:1」而看不到
+  // 21.72，修的人不知道自己偏了多少。
+  //
+  // 容差 1e-4：浮点误差在这套运算里是 1e-15 量级，而上面每一类抄错造成的偏差都在 1e-3 以上。
+  assert.ok(
+    Math.abs(contrast('#ffffff', '#000000') - 21) < 1e-4,
+    `黑白对比度应为 21:1，实际算出 ${contrast('#ffffff', '#000000').toFixed(4)}:1`
+  );
+  assert.ok(
+    Math.abs(contrast('#ffffff', '#ffffff') - 1) < 1e-4,
+    `同色的对比度应为 1:1，实际算出 ${contrast('#ffffff', '#ffffff').toFixed(4)}:1（+0.05 偏移量写错了？）`
+  );
+  assert.ok(
+    Math.abs(contrast('#ff0000', '#000000') - 5.252) < 1e-4,
+    `纯红对黑的对比度应为 5.252:1，实际算出 ${contrast('#ff0000', '#000000').toFixed(4)}:1（亮度权重或通道顺序错了？）`
+  );
+  assert.ok(
+    Math.abs(contrast('#808080', '#ffffff') - 3.94944) < 1e-4,
+    `中灰对白的对比度应为 3.94944:1，实际算出 ${contrast('#808080', '#ffffff').toFixed(5)}:1（2.4 次幂错了？）`
+  );
+  assert.ok(
+    Math.abs(contrast('#0a0a0a', '#ffffff') - 19.79815) < 1e-4,
+    `深灰对白的对比度应为 19.79815:1，实际算出 ${contrast('#0a0a0a', '#ffffff').toFixed(5)}:1（线性段的 12.92 错了？）`
+  );
   // 参数对调必须同值：如果亮度比较那一步被写成「拿第一个减第二个」，这里立刻红。
   assert.equal(contrast('#0a6ef0', '#ffffff'), contrast('#ffffff', '#0a6ef0'));
 });
 
-test('theme：五套皮肤的文字对比度都不低于 4.5:1', () => {
+test(`theme：${THEME_IDS.length} 套皮肤的文字对比度都不低于 ${MIN_CONTRAST}:1`, () => {
   // 一次跑完全部 70 对再断言，而不是每对 assert 一次：第一对不达标就中断的话，
   // 调色的人要「改一处—重跑—再看到下一处」，而这几套皮肤的色值是彼此独立的，
   // 攒齐一次报出来才能一轮改完。
   const bad = [];
-  for (const id of THEME_IDS) {
-    for (const mode of ['light', 'dark']) {
-      const tokens = THEME_TOKENS[id][mode];
-      for (const [fg, bg] of CONTRAST_PAIRS) {
-        const ratio = contrast(tokens[fg], tokens[bg]);
-        if (ratio < MIN_CONTRAST) {
-          // 报出「皮肤.深浅 + 哪一对 + 实际比值 + 用到的两个色值」，四项缺一不可：
-          // 这条断言的唯一修法是改色值，信息不全的报错等于把活原样退回给读日志的人。
-          bad.push(`${id}.${mode}  ${fg} on ${bg} = ${ratio.toFixed(2)}:1  (${tokens[fg]} / ${tokens[bg]})`);
-        }
+  forEachTokens((tokens, id, mode) => {
+    for (const [fg, bg] of CONTRAST_PAIRS) {
+      // 变量被删掉或被写成非字符串时先给一句能读的断言：否则 contrast() 会死在 parseHex 抛出的
+      // 「不是 #rrggbb 形式的颜色：undefined」上——红是红了，但读起来像色值写坏了，实际是这一对
+      // 引用的变量没了。（与「色值的形状」那条同一个纪律：先过 typeof，再谈值对不对。）
+      assert.equal(typeof tokens[fg], 'string', `${id}.${mode}.${fg} 不存在或不是字符串：${tokens[fg]}`);
+      assert.equal(typeof tokens[bg], 'string', `${id}.${mode}.${bg} 不存在或不是字符串：${tokens[bg]}`);
+      const ratio = contrast(tokens[fg], tokens[bg]);
+      if (ratio < MIN_CONTRAST) {
+        // 比值给三位小数而不是两位：色值就是在小数点后第四位做取舍的（4.6651 那对就卡在线上），
+        // 两位会把 4.498 印成「4.50」——报出「4.50 却说不达标」，读的人第一反应是阈值或断言坏了，
+        // 而正确的动作恰恰不是去动阈值。
+        bad.push(`${id}.${mode}  ${fg} on ${bg} = ${ratio.toFixed(3)}:1  (${tokens[fg]} / ${tokens[bg]})`);
       }
     }
-  }
-  assert.deepEqual(bad, [], '这些配色达不到 AA 的 4.5:1，必须调色值：\n' + bad.join('\n'));
+  });
+  // 阈值从常量插值，不在这里写死第二个「4.5」：写死的话，把 MIN_CONTRAST 改成别的值，
+  // 报错还在说 4.5，读的人会去核对一个早就不是阈值的数字。
+  // 报出「皮肤.深浅 + 哪一对 + 实际比值 + 用到的两个色值」，四项缺一不可：这条断言的唯一修法是
+  // 改色值（或查出上面那条公式自证也红了——那是公式抄错，不是色板的问题），信息不全的报错
+  // 等于把活原样退回给读日志的人。判失败用 `<`：AA 正文标准要求的是 ≥ 4.5。
+  assert.equal(
+    bad.length, 0,
+    `这些配色达不到 ${MIN_CONTRAST}:1（AA 正文标准），必须调色值：\n${bad.join('\n')}`
+  );
 });
 ```
 
@@ -450,7 +510,7 @@ test('theme：五套皮肤的文字对比度都不低于 4.5:1', () => {
 
 预期：**全绿**（规格里的色值本来就是按这条规则挑的）。
 
-**如果报红**：不要放宽 `MIN_CONTRAST`，也不要删掉报红的那一对——按报告里的那一对去调那个皮肤的色值（`--text-2` 最深、`--on-accent` 往背景色方向靠、`--accent` 往深色方向压），改到全绿为止。这是设计规格 §5.3 里写明「以测试为准、不迁就表格」的意思。
+**如果报红**：先看「对比度公式与 WCAG 的已知值一致」那条是不是也红了——它也红就说明是公式抄错了（亮度权重、2.4 次幂、线性段的 12.92），**不是色板的问题**，这时候去调色值只会把本来正确的颜色改坏。只有主断言单独红时，才按报告里的那一对去调那个皮肤的色值（`--text-2` 最深、`--on-accent` 往背景色方向靠、`--accent` 往深色方向压），改到全绿为止。这是设计规格 §5.3 里写明「以测试为准、不迁就表格」的意思。
 
 - [ ] **步骤 3：Commit**
 
