@@ -288,6 +288,8 @@ async function render(id) {
 
 **写入口的顺序：先画、再写库。** `setPreset()` / `setMode()` 都是「改内存 → `paint()` → `await setSetting()`」。反过来的话，写库一抛（`db.js` 的 `onblocked` 是真实可达路径，配额满也是）就留下「内存已改、DOM 还是旧皮肤」：面板拿 `currentTheme()` 重绘会显示「已经选中」，页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，写库失败只影响「下次启动记不记得住」。这两个写入口**不 catch**，rejection 交给调用方（面板）去提示「没保存成功」；它们与 `setPhoto` / `removePhoto` / `setOverlay` 一样 `return currentTheme()`。
 
+**已知、接受：`paint()` 自身抛错时不回滚**（内存已改、DOM 未改）。触发前提是色板常量违反了 HEX6——外观系统这两个模块里唯一的 `throw` 就在 `theme.js` 的 `hexToRgb`（`theme-store.js` 一处都没有）。而 `tests/theme.test.js` 的形状断言比它的正则更严（`HEX6 = /^#[0-9a-f]{6}$/`，只认小写 6 位，且对 5 套皮肤 × 2 档深浅逐值断言），所以**能让 `hexToRgb` 抛的色板，必定先在单测红**——实测把 `default.light.--surface` 改成 `'red'`，单测先报 `default.light.--surface 的形状不对：red`，而 `hexToRgb` 那条要到运行时才炸。不回滚的坏状态还是**自愈**的：下一次成功的 `paint()` 会把 DOM 追平。**为什么不加回滚**：真回滚得同时快照 `applied` 与 DOM、再重画一次，而 `paint()` 若因色板坏掉而抛、回滚那次 `paint()` 同样会抛——换来的只是一个更复杂的抛错路径。
+
 **多标签页不做同步。** 两个标签页是两个模块实例，内存不共享（只有 IndexedDB 共享）：A 页选了暖纸，B 页的面板仍显示默认；用户在 B 里点一次「确认」就把库写回默认。`storage` 事件不覆盖 IndexedDB，接它也没用；要同步得引入 `BroadcastChannel` 或轮询，对一个自用记账 app 不值得。**已知、接受。**
 
 ### 5.5 系统栏颜色
@@ -299,7 +301,7 @@ async function render(id) {
 
 后果：用户在浅色系统上手动选深色（或选暖纸 / 紫藤等任意非默认皮肤）→ 页面近黑或换色，而状态栏与导航栏仍是浅灰 + 深色图标，上下两条硬边。APK 里 `meta theme-color` 完全无效，只有 `themes.xml` 生效。
 
-**决定一（做）：浏览器 / PWA 这条路让它跟随。** `paint()` 里同步把 `meta[name=theme-color]` 的 `content` 写成当前 resolved 的 `--bg`，并把 `index.html` 的两条带 media 的 meta **合并成一条不带 media 的**——带 media 的两条只按系统深浅挑一条，用户手动切换时它根本不看。`paint()` 是唯一知道 resolved `--bg` 的地方，这件事该它干；静态那份 `content` 留作「JS 还没跑起来那一帧」的兜底。
+**决定一（做）：浏览器 / PWA 这条路让它跟随。** `paint()` 里同步把 `meta[name=theme-color]` 的 `content` 写成当前 resolved 的 `--bg`，并把 `index.html` 的两条带 media 的 meta **合并成一条不带 media 的**。按 HTML 规范，多条 `meta[name=theme-color]` 只会挑**树序上第一条 media 匹配**的那条，而且**从不重新求值**——所以旧写法比「手动选深浅不看」坏得更彻底：**换皮肤它也不看**，浅色系统下选暖纸（`#fbf7ee`）系统栏仍停在默认的 `#f2f2f5`，紫藤、海玻璃同理（5 套皮肤里 4 套 + 手动深浅，旧写法全错）。合并成一条不带 media 的，是唯一能表达「当前实际皮肤」的写法。`paint()` 是唯一知道 resolved `--bg` 的地方，这件事该它干；静态那份 `content` 留作「JS 还没跑起来那一帧」的兜底。
 
 **决定二（不做）：APK 里系统栏不跟随页面主题。** 评估结论与理由：
 
