@@ -1238,9 +1238,9 @@ test('STORES 里有外观系统的 assets 表', () => {
 // 2 → 3：外观系统新增 assets 表（背景照片）。
 //
 // 新增表必须**同时**上调这个数字：applyMigrations 只在 versionchange 时被调用（生产代码里唯一
-// 调用点是 db.js 的 onupgradeneeded），老库不会补建缺的表。漏了这一步没有任何测试能发现——
-// 加第 10 张表、把 tests/schema.test.js 那两处清单都改对、只有这里不动，仍旧 22 pass / 0 fail
-// （实测）；症状要等「新功能一用就抛错」才暴露（db.transaction 对不存在的表抛 NotFoundError）。
+// 调用点是 db.js 的 onupgradeneeded），老库不会补建缺的表。漏了这一步没有任何测试能发现
+// （实测：加第 10 张表、把 tests/schema.test.js 那两处清单都改对、只有这里不动，测试仍旧全绿）；
+// 症状要等「新功能一用就抛错」才暴露（db.transaction 对不存在的表抛 NotFoundError）。
 // 反方向不成立：只改代码、不动结构时可以不动版本号（OFD 那次就刻意保持 2），所以这里不加
 // 机械断言——那会逼出假阳性。
 export const DB_VERSION = 3;
