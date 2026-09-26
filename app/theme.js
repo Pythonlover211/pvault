@@ -190,3 +190,49 @@ export function normalizeBackground(value) {
 export function scrimAlpha(overlay) {
   return normalizeOverlay(overlay) / 100;
 }
+
+/**
+ * 把 `#rrggbb` 解成 `r,g,b`。
+ *
+ * 存在的理由：卡片半透明的 `rgba(...)` 必须从 `--surface` **现算**。色板里早先另存过一份
+ * `--surface-rgb`（同一个颜色的两种写法），两份手写真相一旦不同步，卡片颜色就只在
+ * 「开了背景照片」这个状态下变掉——不开照片的人永远看不见这个 bug。现算之后不可能漂移。
+ *
+ * 只认 6 位十六进制。调用它的那一处读的是 `--surface`，10 组色板里它都是这个写法
+ * （tests/theme.test.js 的 SHAPES 把 `--surface` 钉成 HEX6，10 组逐值断言过），所以这不是一条
+ * 宽容度不够的判据；万一有人把色板里的色值改成别的写法，先红的会是那条形状断言，
+ * 这里的抛错只是最后一道「宁可当场炸掉，也不要猜一个看起来合理的颜色兜过去」的兜底。
+ */
+function hexToRgb(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+  if (!m) throw new Error(`hexToRgb：不认识的色值 ${hex}`);
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+
+/**
+ * 把 (皮肤, 深浅, 有无照片) 翻译成一组要写到 <html> 上的 CSS 变量。
+ * 这是**唯一**做这件事的地方——theme-store 只把这里返回的键逐个 setProperty 出去。
+ * （另外三个变量不归它管：--bg-image / --bg-scrim / --scrim-a 取决于运行时状态而不是配色选择，
+ * 由 theme-store 自己单独设置。）
+ *
+ * mode 传进来的应该是已经解析过的 'light' | 'dark'（resolveMode 的结果）。
+ * 这里仍然自己兜一次底：万一有人漏了那一步，退成浅色也比抛错好。
+ *
+ * 返回的是副本。THEME_TOKENS 是全模块共享的常量，返回值一旦就是它本身，调用方一次就地写
+ * （`vars['--bg'] = '#000000'`）就永久改掉了那一套皮肤那一档深浅的色板——而只要新值仍是合法的
+ * hex，形状断言照样绿，改坏的颜色会一路带到界面上。照片那条分支自己就在写 vars，更必须落在副本上。
+ */
+export function themeCssVars(themeId, mode, { photo = false } = {}) {
+  const preset = normalizePreset(themeId);
+  const resolved = mode === 'dark' ? 'dark' : 'light';
+  const base = THEME_TOKENS[preset][resolved];
+  const vars = { ...base };
+  if (photo) {
+    // 只动 --surface：卡片本体的半透明。--surface-2 保持不透明，
+    // 因为垫在它上面的是输入框、次级按钮这些必须看清文字的控件。
+    // 通道值从 --surface 现算——色板里没有第二份真相可以跟它对不上。
+    vars['--surface'] = `rgba(${hexToRgb(base['--surface'])}, ${PHOTO_SURFACE_ALPHA})`;
+  }
+  return vars;
+}

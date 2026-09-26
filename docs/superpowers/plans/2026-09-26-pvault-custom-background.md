@@ -539,6 +539,8 @@ git commit -m 'test(theme): 五套皮肤的 WCAG 对比度断言'
 
 追加到 `tests/theme.test.js`，并把 `MODES` / `DEFAULT_PRESET` / `DEFAULT_MODE` 与这 6 个归一化函数合并进文件顶部那一条 import（它们的实现在本任务才出现，所以任务 1 那一步的 import 里没有它们）：
 
+> 下面 `normalizePreset` 那条注释里提到的「themeCssVars 那一节」是**任务 4 才追加**的：重放到本任务时文件里还没有那一节，那时拼错 `DEFAULT_PRESET` 只会红上面这一条。任务 4 落地之后那句才成立（两边的期望值都来自 `default` 的色板）。
+
 ```js
 // ── 归一化与解析 ─────────────────────────────────────────────────────────────
 // 这一节处理的都是外来的脏值：设置从库里读出来（可能被用户用 devtools 手改过、可能是老版本写下的
@@ -555,10 +557,12 @@ const junkLabel = v => (Array.isArray(v) ? '[](array)' : `${String(v)}(${typeof 
 
 test('normalizePreset：认识的留下，其余一律回默认', () => {
   // 常量本身合法是这一节的前置条件，不是兜底逻辑的功劳。两种漂移看到的报错不一样，别弄混：
-  //   · 改成拼错的 'defualt' → 紧下面这条断言当场抓住，只红这一条、消息直指常量，junk 循环根本不会
-  //     执行；
+  //   · 改成拼错的 'defualt' → 紧下面这条断言当场抓住、消息直指常量，本节的 junk 循环根本不会执行
+  //     （但 themeCssVars 那一节会跟着一起红——它的期望值同样来自 default，那边有一道前置守卫把
+  //     它变成一句能读的话，实测就是这两张红）；
   //   · 改成另一套合法皮肤 'paper' → 这条放行，轮到 junk 循环报「输入 undefined(undefined) 没被兜住」，
-  //     那时读者才会误以为坏的是兜底实现。
+  //     那时读者才会误以为坏的是兜底实现（themeCssVars 那一节也会跟着红，不过它跑在这条之后，
+  //     抢不到前面，且那边的守卫消息同样直指常量）。
   // （normalizePreset('default') 那条查不出这件事——'default' 只要还在 THEME_IDS 里就直接返回自己。）
   assert.ok(
     THEME_IDS.includes(DEFAULT_PRESET),
@@ -821,51 +825,137 @@ git commit -m 'feat(theme): 设置项的归一化与深浅解析'
 
 - [ ] **步骤 1：编写失败的测试**
 
-追加到 `tests/theme.test.js`：
+追加到 `tests/theme.test.js`，并把 `themeCssVars` 合并进文件顶部那一条 import（它的实现在本任务才出现，所以任务 1~3 那几步的 import 里没有它）：
 
 ```js
-import { themeCssVars } from '../app/theme.js';
+// ── (皮肤, 深浅, 有无照片) → CSS 变量 ────────────────────────────────────────
+// themeCssVars 是整个外观系统里**唯一**做这层翻译的地方：theme-store 只把它给的键逐个 setProperty
+// 出去。所以它的输出形状就是那个契约——多一个键、少一个键都会直接漏到页面上，这一节测的就是它。
+// 用到的 themeCssVars 合并进了文件顶部那一条 import，不再单独 import 一次同一个模块。
 
 test('themeCssVars：不认识的皮肤/深浅都退回默认', () => {
-  const fallback = themeCssVars('nope', 'nope');
-  assert.deepEqual(fallback, THEME_TOKENS.default.light);
-  // 'auto' 不是合法的深浅（它该先被 resolveMode 解析掉）；万一漏传进来，按浅色处理，不能抛错。
+  // 前置守卫，不是兜底逻辑的功劳：下面每一条都拿 default 的色板当期望值，所以「DEFAULT_PRESET 真的
+  // 指向 default」是这一节的前提。少了它，DEFAULT_PRESET 被拼错时这里会死在
+  // `THEME_TOKENS['defualt'][...]` 的 TypeError: Cannot read properties of undefined 上——红是红了，
+  // 读起来却像色板缺了一档（实测拼成 'defualt' 与改成 'paper' 都会红这一条，消息直指常量）。
+  assert.equal(
+    DEFAULT_PRESET, 'default',
+    `这一节的期望值全部来自 THEME_TOKENS.default，DEFAULT_PRESET 实际是 ${DEFAULT_PRESET}`
+  );
+
+  // 三种「不认识」各走一条不同的路，不能互相代表：
+  //   · 皮肤和深浅都坏 → 退 default.light；
+  //   · 皮肤坏、深浅传进来的是好的 'dark' → 必须是 default.**dark**。写成「拿原始 themeId 去索引、
+  //     兜底落回 default.light」（`THEME_TOKENS[themeId]?.[resolved] ?? THEME_TOKENS.default.light`）
+  //     时，themeCssVars('nope', 'nope') 那一条是全绿的（兜回来的正好就是它），下面这几条里只有
+  //     'nope', 'dark' 会响——而它会让「用户选了深色、皮肤 id 又恰好被改坏」的人看到浅色卡片。
+  //     实测：那个写法下红的就是这一条，actual 是 default.light 那一套、expected 是 default.dark 那一套。
+  //   · 'auto' 不是色板里的一档（它该先被 resolveMode 解析成 light/dark）；万一漏传进来，
+  //     按浅色处理，不能抛错。
+  assert.deepEqual(themeCssVars('nope', 'nope'), THEME_TOKENS.default.light);
+  assert.deepEqual(themeCssVars('nope', 'dark'), THEME_TOKENS.default.dark);
   assert.deepEqual(themeCssVars('default', 'auto'), THEME_TOKENS.default.light);
+
+  // 深浅这一维的脏值逐个列：来源各不相同（'DARK' 是大小写写错、undefined 是字段缺失、42 是类型
+  // 搞错），判据只有一条——不是 'dark' 就按浅色。
+  for (const junk of ['auto', undefined, null, 'DARK', 42, {}, []]) {
+    assert.deepEqual(
+      themeCssVars('default', junk), THEME_TOKENS.default.light,
+      `深浅 ${junkLabel(junk)} 没被兜成浅色`
+    );
+  }
+
+  // 皮肤这一维：themeCssVars 的入参常常直接来自 getSetting，可能被用户在 devtools 里手改过。
+  // 'Paper' 与 ' paper ' 单列，是因为 trim / 转小写这类看起来更「贴心」的归一化会静默把它们洗成
+  // paper——那等于把一个坏值变成一个看着正常的皮肤，回 default 才是安全的那一套。
+  for (const junk of [undefined, null, '', 42, {}, [], 'Paper', ' paper ']) {
+    assert.deepEqual(
+      themeCssVars(junk, 'light'), THEME_TOKENS.default.light,
+      `皮肤 ${junkLabel(junk)} 没被兜成默认皮肤`
+    );
+  }
 });
 
-test('themeCssVars：开照片时只有 --surface 变半透明', () => {
+test('themeCssVars：开照片时只有 --surface 变成半透明', () => {
   const plain = themeCssVars('paper', 'light');
   const withPhoto = themeCssVars('paper', 'light', { photo: true });
 
   assert.equal(plain['--surface'], '#ffffff');
-  assert.equal(plain['--surface-2'], '#f3ece0', '不开照片时 surface-2 是皮肤原值');
-
+  assert.equal(plain['--surface-2'], '#f3ece0', '不开照片时 surface-2 就是皮肤原值');
   assert.equal(withPhoto['--surface'], 'rgba(255,255,255, 0.9)');
-  // --surface-2 必须保持不变：输入框、次级按钮垫在它上面，透了就看不清了（规格 §6.3）。
+
+  // --surface-2 必须一动不动：垫在它上面的是输入框、次级按钮这类必须看清文字的控件，
+  // 透了它们会跟着照片纹理一起花掉（规格 §6.3 的硬要求）。
   assert.equal(withPhoto['--surface-2'], plain['--surface-2'], 'surface-2 不许被改成半透明');
 
-  // 除 --surface 外，其余变量一个都不能变。
-  for (const key of Object.keys(plain)) {
-    if (key === '--surface') continue;
-    assert.equal(withPhoto[key], plain[key], `${key} 不该被照片模式改动`);
-  }
+  // 「只有 --surface 变」的判据写成「哪些键的值不一样」，不写成「逐键期望值」：后者在以后新增变量
+  // 时会自动把新变量算进循环，而这里要钉的是「谁被改了」这个事实本身。
+  const changed = Object.keys(plain).filter(key => withPhoto[key] !== plain[key]);
+  assert.deepEqual(
+    changed, ['--surface'],
+    `照片模式只该改 --surface，实际改动了这些变量：${changed.join('、') || '（无）'}`
+  );
+
+  // 两种模式的键集合必须完全一致，而且必须正好是正典清单本身。只和「彼此一样」还不够：
+  // --surface-rgb 是任务 1 删掉的那份副本（同一个颜色的两种写法），它一旦从这条路漏出去，
+  // paint() 会把它一路 setProperty 到 <html> 上——两份真相就换一种形式长回来了。
+  assert.deepEqual(Object.keys(withPhoto).sort(), Object.keys(plain).sort(), '两种模式的变量集合必须完全一致');
+  assert.deepEqual(
+    Object.keys(withPhoto).sort(), [...TOKEN_NAMES].sort(),
+    'themeCssVars 的输出必须正好是正典清单里的 12 个变量（不该多出 --surface-rgb 这类内部中间值）'
+  );
 });
 
-test('themeCssVars：半透明的通道值从 --surface 现算（深色与浅色不同）', () => {
-  const light = themeCssVars('seaglass', 'light', { photo: true });
-  const dark = themeCssVars('seaglass', 'dark', { photo: true });
-  assert.equal(light['--surface'], 'rgba(255,255,255, 0.9)');
-  assert.equal(dark['--surface'], 'rgba(22,38,42, 0.9)');
-  // 通道值必须与同一套皮肤的 --surface 一致——它是现算的，没有第二份手写真相可以漂移。
+test('themeCssVars：半透明的通道从 --surface 现算，10 组逐组比对', () => {
+  // 浅色那 5 套的 --surface 全是 #ffffff，所以「只测浅色」的断言挡不住「hexToRgb 其实没换算」这类错
+  // ——把实现换成硬编码的 '255,255,255'，实测红的只有下面第二条（seaglass dark：期望 rgba(22,38,42, 0.9)、
+  // 实得 rgba(255,255,255, 0.9)），浅色那一条照样绿。
+  // 深色 5 套的 --surface 各不相同（逐组算过：default #1e1e21 → 30,30,33；paper #262019 → 38,32,25；
+  // sage #1e261e → 30,38,30；wisteria #211b2c → 33,27,44；seaglass #16262a → 22,38,42），
+  // 每一条深色断言都是一道独立的关卡。
+  // 顺带记一笔通道顺序写反（红蓝对调）的覆盖面：10 组里只有 4 组的 r 与 b 不同（default.dark、
+  // paper.dark、wisteria.dark、seaglass.dark），另外 6 组 r=b（5 组 #ffffff 与 sage.dark 的 30/30）
+  // ——也就是说只测浅色的话，连通道写反都发现不了。
+  assert.equal(themeCssVars('seaglass', 'light', { photo: true })['--surface'], 'rgba(255,255,255, 0.9)');
+  assert.equal(themeCssVars('seaglass', 'dark', { photo: true })['--surface'], 'rgba(22,38,42, 0.9)');
+  // 规格 §6.3 点名的这一组单列一条：它是文档与实现之间唯一写死过的例子。
   assert.equal(themeCssVars('default', 'dark', { photo: true })['--surface'], 'rgba(30,30,33, 0.9)');
-  // 色板里不该再有 --surface-rgb 这个键（它就是被删掉的那份副本）。
-  assert.equal('--surface-rgb' in themeCssVars('default', 'dark'), false);
+
+  // 上面三条字面量只能证明「这三组对」，证明不了「十组都是现算的」。逐组把输出里的通道与该组
+  // --surface 解出来的通道对上，这才是「现算」这个说法的判据（10 组全跑，用的是文件里已有的 parseHex）。
+  forEachTokens((tokens, id, mode) => {
+    const vars = themeCssVars(id, mode, { photo: true });
+    const m = /^rgba\((\d+),(\d+),(\d+), ([\d.]+)\)$/.exec(vars['--surface']);
+    // 形状不对时先给一句能读的：否则下一行的 m[1] 会死在 TypeError: Cannot read properties of null 上。
+    assert.ok(m, `${id}.${mode} 的 --surface 不是 rgba(r,g,b, a) 的形状：${vars['--surface']}`);
+    assert.deepEqual(
+      [Number(m[1]), Number(m[2]), Number(m[3])], parseHex(tokens['--surface']),
+      `${id}.${mode} 的 rgba 通道不是从 --surface ${tokens['--surface']} 现算的：${vars['--surface']}`
+    );
+    // 0.9 写成字面量而不是 PHOTO_SURFACE_ALPHA：这个数是规格 §6.3 定死的（太透文字和照片纹理打架、
+    // 完全不透又白瞎一张背景图），常量真被改动时测试本来就该响一声。
+    assert.equal(Number(m[4]), 0.9, `${id}.${mode} 的半透明度不是 0.9：${vars['--surface']}`);
+  });
 });
 
 test('themeCssVars：返回值是副本，改它不会污染色板', () => {
+  // 调用方（theme-store 的 paint()，任务 7）只把返回的键逐个 setProperty 出去、不往里面写；副本挡的是
+  // 「下一个调用方」：返回值一旦就是色板对象本身，任何一次就地写（`vars['--bg'] = '#000000'`）就永久改
+  // 掉了全模块共享的 THEME_TOKENS，而且改动只落在「那一套皮肤 × 那一档深浅」上——形状断言只认 HEX6
+  // 这一层，'#000000' 照样匹配，所以它不会响，改坏的颜色会一路带到界面上。
   const vars = themeCssVars('sage', 'dark');
   vars['--bg'] = '#000000';
   assert.notEqual(THEME_TOKENS.sage.dark['--bg'], '#000000', '色板被调用方改掉了');
+
+  // 但上面那条 notEqual 走的是 photo: false 这条路，抓不到「照片分支改的是色板本身、返回的才是副本」
+  // 那种写法（`if (photo) base['--surface'] = ...`）：实测换上去之后那条 notEqual 照样绿（它只碰 sage.dark
+  // 的 --bg），能抓住它的只有下面这个快照比对——单独跑这一条会红在「不该改动 THEME_TOKENS 本身」；
+  // 跑整份文件时还轮不到它出声，前面几张测试先被污染，这一节会先死在 hexToRgb 的抛错上
+  // （实测消息 `hexToRgb：不认识的色值 rgba(255,255,255, 0.9)`）。
+  const snapshot = JSON.parse(JSON.stringify(THEME_TOKENS));
+  themeCssVars('default', 'dark', { photo: true });
+  themeCssVars('paper', 'light', { photo: true });
+  assert.deepEqual(THEME_TOKENS, snapshot, 'themeCssVars 不该改动 THEME_TOKENS 本身');
 });
 ```
 
@@ -873,7 +963,15 @@ test('themeCssVars：返回值是副本，改它不会污染色板', () => {
 
 运行：`D:\node.exe --test --test-isolation=none tests/theme.test.js`
 
-预期：FAIL —— `themeCssVars is not a function`
+预期：FAIL —— 整个文件加载不起来：
+
+```
+SyntaxError: The requested module '../app/theme.js' does not provide an export named 'themeCssVars'
+```
+
+（ESM 的命名导入在**模块实例化**阶段就检查，所以红法不是「`themeCssVars is not a function`」这种运行期
+报错——真要是死在函数体里，说明 import 已经成功了，那就不是这一步该有的红。实测：`ℹ tests 1 / pass 0 /
+fail 1`，整个文件算一条失败记录，前面 14 条老断言一条都没跑到。）
 
 - [ ] **步骤 3：实现**
 
@@ -887,8 +985,10 @@ test('themeCssVars：返回值是副本，改它不会污染色板', () => {
  * `--surface-rgb`（同一个颜色的两种写法），两份手写真相一旦不同步，卡片颜色就只在
  * 「开了背景照片」这个状态下变掉——不开照片的人永远看不见这个 bug。现算之后不可能漂移。
  *
- * 只认 6 位十六进制：色板是自家常量、全部是这个写法，遇到别的形状宁可当场炸掉
- * （调用它的测试会立刻发现），也不要猜一个看起来合理的颜色兜过去。
+ * 只认 6 位十六进制。调用它的那一处读的是 `--surface`，10 组色板里它都是这个写法
+ * （tests/theme.test.js 的 SHAPES 把 `--surface` 钉成 HEX6，10 组逐值断言过），所以这不是一条
+ * 宽容度不够的判据；万一有人把色板里的色值改成别的写法，先红的会是那条形状断言，
+ * 这里的抛错只是最后一道「宁可当场炸掉，也不要猜一个看起来合理的颜色兜过去」的兜底。
  */
 function hexToRgb(hex) {
   const m = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
@@ -899,13 +999,16 @@ function hexToRgb(hex) {
 
 /**
  * 把 (皮肤, 深浅, 有无照片) 翻译成一组要写到 <html> 上的 CSS 变量。
- * 这是**唯一**做这件事的地方——theme-store 只负责把结果 setProperty 出去。
+ * 这是**唯一**做这件事的地方——theme-store 只把这里返回的键逐个 setProperty 出去。
+ * （另外三个变量不归它管：--bg-image / --bg-scrim / --scrim-a 取决于运行时状态而不是配色选择，
+ * 由 theme-store 自己单独设置。）
  *
  * mode 传进来的应该是已经解析过的 'light' | 'dark'（resolveMode 的结果）。
  * 这里仍然自己兜一次底：万一有人漏了那一步，退成浅色也比抛错好。
  *
- * 返回的是副本：调用方拿到后往往会就地补几个键（比如 --bg-image），
- * 直接返回色板对象会把 THEME_TOKENS 改脏，而它是全模块共享的常量。
+ * 返回的是副本。THEME_TOKENS 是全模块共享的常量，返回值一旦就是它本身，调用方一次就地写
+ * （`vars['--bg'] = '#000000'`）就永久改掉了那一套皮肤那一档深浅的色板——而只要新值仍是合法的
+ * hex，形状断言照样绿，改坏的颜色会一路带到界面上。照片那条分支自己就在写 vars，更必须落在副本上。
  */
 export function themeCssVars(themeId, mode, { photo = false } = {}) {
   const preset = normalizePreset(themeId);
