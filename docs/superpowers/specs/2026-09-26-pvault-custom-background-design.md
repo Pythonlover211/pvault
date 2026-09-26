@@ -292,7 +292,7 @@ async function render(id) {
 
 - 选图入口复用现成的相册 input（`accept="image/*"`）。
 - 压缩：复用 `image-scale.js` 的 `computeTargetSize(w, h, 1600)` 与 `JPEG_QUALITY`；若原图小于 `SKIP_COMPRESS_BYTES` 且不需要缩放，**仍然重新编码为 JPEG**——背景图要进备份，统一的编码格式比省那一次重编码重要（也顺带处理掉 HEIC 这类 WebView 渲染不了但 Canvas 能解的情况）。
-- 压缩动作放在浏览器侧（Canvas），与 `image-store.js` 里已有的做法一致；`theme-store.js` 里写一个私有的 `encodeBackground(file)`。
+- 压缩动作放在浏览器侧（Canvas），与发票那条路已有的做法一致——那份实现在 `canvas-image.js`（任务 5 从 `image-store.js` 搬出来共用）；`theme-store.js` 里写一个私有的 `encodeBackground(file)`。
 - 尺寸上限：长边 1600px（`MAX_EDGE`）。背景铺满手机屏（1080×2400 左右）时，1600 的长边在 `cover` 下够用，而体积从几 MB 降到一两百 KB。
 - 存进 `assets`（`id: 'bg'`），设置里只留 `{ assetId, overlay, createdAt }`。
 
