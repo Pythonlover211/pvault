@@ -8,6 +8,7 @@ import {
   MAX_EDGE, THUMB_EDGE, JPEG_QUALITY, THUMB_QUALITY,
   computeTargetSize, shouldCompress, useCompressed, estimateBackupMB
 } from './image-scale.js';
+import { fileKind, mimeForKind } from './file-info.js';
 
 export { estimateBackupMB };
 
@@ -85,19 +86,9 @@ async function drawTo(source, maxEdge, quality) {
 }
 
 /**
- * 是不是 PDF。只看 `mime === 'application/pdf'` 太严：安卓的文件选择器给出的常常是
- * `application/pdf; charset=binary`、`application/octet-stream`，甚至是空 type，
- * 这些都会被漏成「图片」送进 <img> 解码，用户拍下来的 PDF 最后只剩一张裂图。
- * 所以 mime 里含 pdf、或文件名以 .pdf 结尾，都算数。
- */
-function isPdf(mime, name) {
-  return /pdf/i.test(mime) || /\.pdf$/i.test(name || '');
-}
-
-/**
  * 读入用户选的发票文件，返回可直接落库的形态：
- * `{ blob, thumbBlob, mime, size, originalSize, compressed, failed }`
- * - thumbBlob 可能是 null：PDF 本来就没有缩略图，或连缩略图都没生成出来；
+ * `{ blob, thumbBlob, mime, size, name, originalSize, compressed, failed }`
+ * - thumbBlob 可能是 null：PDF / OFD 本来就没有缩略图，或连缩略图都没生成出来；
  * - failed 为 true 表示压缩环节整个失败、已回退原图（此时 blob 就是 inputFile），
  *   但只要缩略图成功生成过就仍然带出来，列表页不至于只能显示占位方块；
  * - compressed 为 true 时才有 originalSize（压缩前的字节数），界面据此算省了多少。
@@ -106,12 +97,21 @@ function isPdf(mime, name) {
 export async function prepareFile(inputFile) {
   const mime = String(inputFile?.type || '');
   const size = Number(inputFile?.size) || 0;
+  // 原始文件名：选择器有时不给（name 为空），所以这里只做取值、不做兜底，
+  // 兜底名等到导出时用发票号码现算（那时才知道号码）。
+  const name = String(inputFile?.name ?? '');
+  const kind = fileKind(mime, inputFile?.name);
 
-  if (isPdf(mime, inputFile?.name)) {
-    // PDF 不压缩，原样存；也没有缩略图。
-    // mime 一律写成 application/pdf：选择器给的可能带 charset= 参数或是空 type，
-    // 存原文也能用（预览只认 image/ 前缀），但备份里的元数据会留一堆五花八门的写法。
-    return { blob: inputFile, thumbBlob: null, mime: 'application/pdf', size, compressed: false };
+  if (kind === 'pdf' || kind === 'ofd') {
+    // PDF / OFD 都不压缩、都没有缩略图：
+    // - OFD 内部本就是压缩过的 XML 包，再压一遍没有意义；
+    // - 这两类都没有能直接渲染成缩略图的东西。
+    // mime 一律归一化：选择器给的可能是空 type、application/octet-stream 或带 charset 参数，
+    // 归一化后备份里的元数据才不会五花八门（理由同 file-info.mimeForKind）。
+    return {
+      blob: inputFile, thumbBlob: null, mime: mimeForKind(kind, mime),
+      size, name, compressed: false
+    };
   }
 
   // 提到 try 外面：压缩失败时 catch 也要看得见它们，才能把已经生成好的缩略图一起返回。
@@ -124,15 +124,16 @@ export async function prepareFile(inputFile) {
     thumbBlob = await drawTo(source, THUMB_EDGE, THUMB_QUALITY);
 
     if (!shouldCompress(size, w, h)) {
-      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, compressed: false };
+      return { blob: inputFile, thumbBlob, mime: mimeForKind(kind, mime), size, name, compressed: false };
     }
     const out = await drawTo(source, MAX_EDGE, JPEG_QUALITY);
     if (!useCompressed(size, out.size)) {
-      return { blob: inputFile, thumbBlob, mime: mime || 'image/jpeg', size, compressed: false };
+      return { blob: inputFile, thumbBlob, mime: mimeForKind(kind, mime), size, name, compressed: false };
     }
     return {
+      // 这一条是压缩产物，格式确实就是 JPEG，不必过 mimeForKind
       blob: out, thumbBlob, mime: 'image/jpeg',
-      size: out.size, originalSize: size, compressed: true
+      size: out.size, originalSize: size, name, compressed: true
     };
   } catch (err) {
     console.error('发票图片压缩失败，按原样保存', err);
@@ -140,7 +141,7 @@ export async function prepareFile(inputFile) {
     // 而原图其实好好地存在库里。
     return {
       blob: inputFile, thumbBlob,
-      mime: mime || 'application/octet-stream', size, compressed: false, failed: true
+      mime: mime || 'application/octet-stream', size, name, compressed: false, failed: true
     };
   } finally {
     // finally 而不是在成功路径上 close：上面每一条 return 和抛错都是出口，漏一条就漏一张位图。
@@ -158,6 +159,9 @@ export async function saveFile(prepared) {
       thumbBlob: prepared.thumbBlob,
       mime: prepared.mime,
       size: prepared.size ?? prepared.blob.size,
+      // 原始文件名，可能是空串。**总是写这个键**：不写的话读出来是 undefined，
+      // 每个消费方就都得记得写 ?? ''，漏一处就是界面上一个 undefined。
+      name: String(prepared.name ?? '').trim(),
       createdAt: Date.now()
     });
   } catch (err) {
