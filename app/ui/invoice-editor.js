@@ -165,7 +165,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     // 这里直接 return，不碰 previewSeq、不碰 state.fileId——上一次选的文件继续有效，
     // 用户也不该因为选错了一个大文件就丢掉上一张已经选好的票。
     if ((Number(file.size) || 0) > MAX_FILE_BYTES) {
-      errorNode.textContent = '这个文件太大了（超过 20 MB）。发票一般没这么大，确认一下是不是选错了';
+      errorNode.textContent = '这个文件太大了（超过 20 MB）。发票一般没这么大——原来选好的那张没有变';
       return;
     }
     const seq = ++previewSeq;
@@ -514,7 +514,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     previewBox,
     el('div', { class: 'stack', style: 'gap:6px' }, [
       el('button', { class: 'btn', type: 'button', text: '拍照', onclick: () => cameraInput.click() }),
-      el('button', { class: 'btn', type: 'button', text: '图片 / PDF / OFD', onclick: () => albumInput.click() })
+      el('button', { class: 'btn', type: 'button', text: '选图片 / PDF / OFD', onclick: () => albumInput.click() })
     ]),
     cameraInput, albumInput,
     field('发票号码', numberInput),
