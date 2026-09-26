@@ -37,7 +37,11 @@
 // 首屏静态依赖（main → invoice-view → invoice-editor/invoice-store → image-store → file-info），
 // 而 SW 是 cache-first：白名单里没有它，已装旧缓存的设备离线启动会回退到 index.html、
 // import 链一断是整个 app 白屏。所以它必须在消费方 import 之前就位，不能等到收尾再补。
-const CACHE = 'pvault-v14';
+// v15：下载触发从 backup-view 抽到 app/ui/download.js 共用，它要进预缓存清单。
+// （file-info.js 在任务 3 就随 v14 进过清单了 —— 它从那时起是首屏静态依赖，
+//  必须在消费方 import 它之前就位；晚一步的后果是整个 app 白屏，不只是发票面板。）
+// 漏掉 download.js 的后果与上面各次相同：离线时这个 module 404，import 链断。
+const CACHE = 'pvault-v15';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -89,6 +93,7 @@ const ASSETS = [
   './app/ui/categories-view.js',
   './app/ui/clipboard.js',
   './app/ui/dom.js',
+  './app/ui/download.js',
   './app/ui/entry-panel.js',
   './app/ui/import-view.js',
   './app/ui/invoice-editor.js',
