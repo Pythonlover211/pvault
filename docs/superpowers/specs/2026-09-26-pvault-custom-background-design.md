@@ -131,7 +131,7 @@ export function scrimAlpha(overlay)         // 0..60 → 0..0.6（小数）
 export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…', … } 的扁平对象
 ```
 
-`themeCssVars()` 是**唯一**把 (皮肤, 深浅, 有无照片) 翻译成 CSS 变量的地方。开启照片时，它把 `--surface` / `--surface-2` 换成 `rgba(var(--surface-rgb), .9)`。
+`themeCssVars()` 是**唯一**把 (皮肤, 深浅, 有无照片) 翻译成 CSS 变量的地方。开启照片时，它只把 `--surface` 换成 `rgba(var(--surface-rgb), .9)`；`--surface-2` **保持不透明**——垫在它上面的是输入框、次级按钮这些必须看清文字的控件（见 §6.3）。
 
 `app/theme.js` 必须是**纯模块**：不 import `db.js`、不碰 `document`、不碰 `window`，否则 Node 测试跑不起来（与 `file-info.js` 同一纪律）。
 
@@ -318,8 +318,8 @@ body::before {
 
 ### 6.3 可读性（这才是照片背景的真正难点）
 
-- **卡片半透明**：开启照片时 `--surface` / `--surface-2` 变为 `rgba(var(--surface-rgb), .9)`。0.9 是刻意的：太透会让文字与照片纹理打架，不透就看不出背景。
-- **输入框、密码箱正文、数字大屏保持不透明**：这些元素用的是 `--surface` 以外的变量（输入框是 `--surface-2` 或专门规则），实现时要逐个确认——**看不清数字的记账 app 是废的**。实现时若发现某个关键读数垫在半透明层上，就地给它一条不透明的规则。
+- **卡片半透明**：开启照片时 `--surface` 变为 `rgba(var(--surface-rgb), .9)`。0.9 是刻意的：太透会让文字与照片纹理打架，不透就看不出背景。`--surface-2` **不参与**——见下一条。
+- **输入框、密码箱正文、数字大屏保持不透明**：这些元素垫在 `--surface-2` 上，而 `--surface-2` 在照片模式下**刻意不改**——这正是它不参与半透明化的原因。会用 `--surface` 变透的只有卡片本体与 sheet 面板。实现时仍要逐个确认（**看不清数字的记账 app 是废的**）：若发现某个关键读数垫在 `--surface` 上，就地给它一条不依赖 `--surface` 的不透明规则。
 - **遮罩默认 30%**：这是「照片还看得出来」与「卡片文字达标」之间的折中点，用户可以在 0–60% 之间自己挪。
 - **表格与小字**：`ui-ux-pro-max` 的 Glassmorphism 条目自己标注了 `requires: contrast-text-4.5`，这正是照片背景最大的坑；对比度测试只能保证「色板本身达标」，照片之下的实际对比度只能靠遮罩 + 半透明度的组合来兜。**这是本次唯一无法用自动化测试完全覆盖的风险**，所以它进手动验证清单。
 
@@ -365,7 +365,7 @@ body::before {
 3. **归一化**：`normalizePreset` / `normalizeMode` / `normalizeOverlay` / `normalizeBackground` 对 `undefined`、`null`、`''`、`42`、`'paper'`、`{ overlay: 999 }`、`{ assetId: '' }` 等输入的行为。
 4. **`resolveMode`**：`auto` × {系统深、系统浅}、`light` × {系统深}、`dark` × {系统浅}。
 5. **`scrimAlpha`**：0 → 0，60 → 0.6，越界输入被 clamp，`NaN` → 默认 30 对应的值。
-6. **`themeCssVars(..., { photo: true })`**：`--surface` 变成 `rgba(var(--surface-rgb), .9)`；`{ photo: false }` 时是不透明白（或该皮肤的 surface 值）。
+6. **`themeCssVars(..., { photo: true })`**：只有 `--surface` 变成 `rgba(var(--surface-rgb), .9)`，**其余变量（含 `--surface-2`）一个都不许变**；`{ photo: false }` 时 `--surface` 就是该皮肤的不透明值。
 
 ### 9.2 不新增测试但必须回归的
 
