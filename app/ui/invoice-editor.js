@@ -4,9 +4,10 @@
 import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
+import { downloadBlob } from './download.js';
 import * as invoiceStore from '../invoice-store.js';
 import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile, getEditingFile } from '../image-store.js';
-import { MAX_FILE_BYTES, fileKind } from '../file-info.js';
+import { MAX_FILE_BYTES, fileKind, sanitizeFilename, fallbackFileName } from '../file-info.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
@@ -67,6 +68,15 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
 
   const errorNode = el('div', { class: 'vault-error' });
   const previewBox = el('div', {});
+  // 导出按钮只在真的有文件时出现：没有文件时它按下去也没用，
+  // 而一个按了没反应的按钮比没有按钮更让人困惑。
+  const exportBtn = el('button', {
+    class: 'btn', type: 'button', text: '导出这份文件',
+    onclick: () => { exportCurrentFile(); }
+  });
+  // 用 style.display 显隐而不是 hidden 属性：.row 这类类选择器带 display:flex，
+  // 会盖掉 hidden 自带的 display:none。置空字符串是让元素回到 CSS 自己的 display。
+  const exportRow = el('div', { class: 'row', style: 'display:none' }, [exportBtn]);
   const body = el('div', { class: 'stack' });
 
   // 关联账目这一行的三个节点：状态文案、点开后出现的候选列表、两个动作按钮。
@@ -147,6 +157,9 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     // 这张发票永远存不下去（真机上实测踩到过）。序号只由「发起一次新操作」的地方推进：
     // pickFile 与关闭面板。这里只读它，回答「我这次要画的是不是已经过期了」。
     const seq = previewSeq;
+    // 跟着「有没有文件」走，与下面的分支一一对应。放在序号检查之前，
+    // 因为它是同步的、不依赖任何 await 结果。
+    exportRow.style.display = state.fileId ? '' : 'none';
     // 把这次要画的 fileId 固定下来：await 期间它可能被下一次选图换掉，
     // 而那时该由那一次自己来画。
     const fileId = state.fileId;
@@ -214,6 +227,36 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       // busy 只由最新那次选图来清：迟到的旧选图提前把 busy 清零，用户就会在下一张图还没
       // 处理完的时候保存（正是「存下一张没有图的发票」那条路）。
       if (seq === previewSeq) state.busy = false;
+    }
+  }
+
+  // 把当前文件导出到手机的下载目录。
+  // 为什么不是「预览」：OFD / PDF 在这个 WebView 里都渲染不了，能做的只有把原件交出去，
+  // 让系统里的 OFD 阅读器 / PDF 阅读器去打开它。
+  //
+  // 顺序：先 await 把 blob 和名字都取好，再调 downloadBlob。await 之后调没问题
+  // （备份导出就是这么干的，真机验过），要求的是不要在 downloadBlob 内部再插 await。
+  async function exportCurrentFile() {
+    const fileId = state.fileId;
+    if (!fileId) return;
+    try {
+      const rec = await getFile(fileId);
+      if (!rec?.blob) {
+        errorNode.textContent = '文件读不出来了，请重新选择一次';
+        return;
+      }
+      const kind = fileKind(rec.mime, rec.name);
+      const fallback = fallbackFileName({
+        number: state.number, issuedAt: state.issuedAt, kind, mime: rec.mime
+      });
+      // 有原始名就用它（用户认得出这是哪个文件），没有才用兜底名。
+      // 净化交给 sanitizeFilename：库里存的是未净化的原始名（可能含路径分隔符、控制字符、超长）。
+      const filename = sanitizeFilename(rec.name, fallback);
+      downloadBlob(rec.blob, filename);
+      errorNode.textContent = `已导出到手机的下载目录：${filename}`;
+    } catch (err) {
+      console.error('导出发票文件失败', err);
+      errorNode.textContent = '导出失败：' + (err?.message || err);
     }
   }
 
@@ -531,6 +574,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   mount(body,
     errorNode,
     previewBox,
+    exportRow,
     el('div', { class: 'stack', style: 'gap:6px' }, [
       el('button', { class: 'btn', type: 'button', text: '拍照', onclick: () => cameraInput.click() }),
       el('button', { class: 'btn', type: 'button', text: '选图片 / PDF / OFD', onclick: () => albumInput.click() })
