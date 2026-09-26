@@ -1548,23 +1548,31 @@ function setPhotoVars(url) {
 }
 
 /**
- * 从库里读出背景图并应用。
+ * 从库里读出背景图并应用。bgRaw 是 settings.backgroundImage 的**原始值**，由调用方传进来：
+ * initTheme 传它 Promise.all 里刚读到的那份、setPhoto 传它刚写进去的那条——两处都已经有它了，
+ * 让这里再读一次 settings 是纯重复（冷启动那条路上就是白读一次）。
  *
  * 「设置指向一张库里已经没有的图」按「没有背景」处理：走到这一步本来就没有照片可画，抛错
  * 对调用方没有意义。同时把设置清掉——留着它只会让每次启动都多读一次 assets
  * （settings 那条无论有没有背景都要读，省不掉）。
+ * 这种记录有两个真实来源：① 导入一份「设置里有 backgroundImage、备份包里却没有 assets」的
+ * 备份——当前的备份包就没有 assets（规格 §7 的任务 13 接缝）；② removePhoto 删库成功、
+ * 清设置那一步失败。
  */
-async function applyPhoto() {
-  const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
+async function applyPhoto(bgRaw) {
+  const bg = normalizeBackground(bgRaw);
   const row = bg ? await db.get('assets', bg.assetId) : null;
   const blob = row?.blob ?? null;
   if (!blob) {
-    if (bg) await setSetting(BACKGROUND_KEY, null);
     applied.photo = false;
     // 遮罩强度一并复位：没有照片时它没有作用对象，留着只会让「当前状态」多带一个没有意义的数。
     applied.overlay = OVERLAY_DEFAULT;
     setPhotoVars(null);
     paint();
+    // 清设置排在最后：它只是「省掉下次启动的一次 assets 读」的顺手动作，失败不该拦住上面
+    // 那两步——否则页面上会继续显示一张库里已经没有的照片。清失败时设置留着，下一次成功的
+    // 调用会再清一次（自愈），代价只是多读一次 assets。
+    if (bg) await setSetting(BACKGROUND_KEY, null);
     return;
   }
   applied.photo = true;
@@ -1586,8 +1594,12 @@ export async function setPhoto(inputFile) {
     createdAt
   });
   // overlay 沿用内存里当前的值：换一张图不该把用户已经调好的遮罩打回默认。
-  await setSetting(BACKGROUND_KEY, { assetId: BACKGROUND_ASSET_ID, overlay: applied.overlay, createdAt });
-  await applyPhoto();
+  const setting = { assetId: BACKGROUND_ASSET_ID, overlay: applied.overlay, createdAt };
+  // 已知、可接受的降级：assets 那一步已经成功了，设置这一步再失败就留下「库里是新图、
+  // 设置还是旧记录（overlay 与 createdAt 都是旧值）」，而画面上停着上一张图。没有数据丢失，
+  // 重启后看到的是「新图 + 旧遮罩」；再选一次图或随便拖一下滑块，设置就会被补齐。
+  await setSetting(BACKGROUND_KEY, setting);
+  await applyPhoto(setting);
   return currentTheme();
 }
 
@@ -1595,7 +1607,8 @@ export async function setPhoto(inputFile) {
  * 移除背景：删记录、清设置、撤掉两层背景。
  *
  * 顺序是**先删库、成功之后再改内存与 DOM**：反过来的话删库一失败，页面上已经「移除成功」，
- * 而记录还在库里，下次启动背景图又回来了。
+ * 而记录还在库里，下次启动背景图又回来了。反方向（删库成功、清设置失败）会留下一条
+ * 「设置指向已经不存在的图」的记录，那种记录由 applyPhoto 按「没有背景」兜住并清掉。
  * 照片是**用户自己选的**，删掉就是删掉。
  */
 export async function removePhoto() {
@@ -1610,15 +1623,19 @@ export async function removePhoto() {
 
 /** 只改遮罩强度：不重编码图片，也不重写 assets。 */
 export async function setOverlay(value) {
+  // 唯一的判据是 applied.photo，它回答的是「此刻画面上真的有一张照片吗」。不拿设置里那条
+  // 记录当判据：两者会不一致——读 assets 失败被 catch 收住、或上一次清设置失败时，设置说
+  // 有背景、照片却没加载出来；那时按设置走会改内存并写库，而 DOM 上的 --scrim-a 一个字符
+  // 都不写，正是「面板显示新刻度、页面纹丝不动」的那种不一致。
+  if (!applied.photo) return currentTheme();
   const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
-  if (!bg) return currentTheme(); // 没有背景图时滑块不该存在，走到这里说明状态不同步，忽略
   applied.overlay = normalizeOverlay(value);
   // 先写 DOM 再写库，与 setPreset / setMode 同一条纪律：反过来的话写库一抛就留下「内存已改、
-  // DOM 还是旧值」，面板拿 currentTheme() 重绘会显示新刻度而页面上的遮罩纹丝不动。
-  // 判据用 applied.photo 而不是 photoUrl：两处说的是同一件事（当前有没有照片），留一份就够，
-  // 免得将来有一处改了、另一处没跟上。
-  if (applied.photo) document.documentElement.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
-  await setSetting(BACKGROUND_KEY, { ...bg, overlay: applied.overlay });
+  // DOM 还是旧值」。
+  document.documentElement.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
+  // bg 为 null 只可能是设置被外部清掉（applied.photo 为 true 意味着上一次 applyPhoto 读到过
+  // 它）：那时不拿一条空记录去覆盖设置，只把遮罩改在画面上，下次启动按「没有背景」自愈。
+  if (bg) await setSetting(BACKGROUND_KEY, { ...bg, overlay: applied.overlay });
   return currentTheme();
 }
 ```
@@ -1630,15 +1647,19 @@ export async function setOverlay(value) {
 ——一个「半套主题」的中间态。现在实现有了，在 `initTheme()` 的 `attachSystemListener();` **之前**插入：
 
 ```js
-  await applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
+  await applyPhoto(bgRaw).catch(err => console.error('背景照片加载失败，按没有背景处理', err));
 ```
+
+（`bgRaw` 就是上面 `Promise.all` 里读到的那份设置，直接传下去——`applyPhoto` 不再自己读一次
+`settings`，冷启动总共读 3 次 `settings`（`initTheme` 那三条），不是 4 次。）
 
 **为什么是 `await` 而不是 fire-and-forget**：`paint()` 画的是内存里的 `applied`，而卡片的不透明度
 （`--surface`）与背景图（`--bg-image`）要等 `applyPhoto()` 里的第二次 `paint()` 才到位。不 await 的话
 那次补画落在 `initTheme()` 返回之后（通常已经 mount 完了），冷启动时用户看到的是「卡片先实心、
 再突然变半透明并冒出一张照片」。规格 §5.4 要求主题在任何 mount 之前
-应用，照片是同一层外观，没有理由把它排除在外。代价是首屏多等一次读库（settings 一条 + assets 一条），
-与紧挨着的三次 `getSetting` 同量级；`catch` 收在这里，一次照片读取失败不会升级成主题失败。
+应用，照片是同一层外观，没有理由把它排除在外。代价只有首屏多等一次 `assets` 读（`settings` 那条
+上面已经读过、直接传下去），与 mount 之后读交易列表同量级；`catch` 收在这里，一次照片读取失败
+不会升级成主题失败。
 
 顺手把任务 7 留下的那三行「这里先不调用它」的注释删掉：那三行是给「还没有 applyPhoto」这个
 中间态写的，实现补上之后再留着，它就成了与代码相反的假话。同时把 `initTheme()` 那句

@@ -290,6 +290,8 @@ async function render(id) {
 
 **写入口的顺序：先画、再写库。** `setPreset()` / `setMode()` 都是「改内存 → `paint()` → `await setSetting()`」。反过来的话，写库一抛（`db.js` 的 `onblocked` 是真实可达路径，配额满也是）就留下「内存已改、DOM 还是旧皮肤」：面板拿 `currentTheme()` 重绘会显示「已经选中」，页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，写库失败只影响「下次启动记不记得住」。这两个写入口**不 catch**，rejection 交给调用方（面板）去提示「没保存成功」；它们与 `setPhoto` / `removePhoto` / `setOverlay` 一样 `return currentTheme()`。
 
+**`setOverlay()` 的判据是 `applied.photo`**（此刻画面上真的有没有照片），不是设置里那条 `backgroundImage` 记录：两者会不一致——读 `assets` 失败被 `applyPhoto` 的 `catch` 收住、或清设置那一步写库失败时，设置说有背景、照片却没加载出来。那时按设置走会改内存并写库，而 DOM 上的 `--scrim-a` **一个字符都不写**，正是上面刚说不许出现的那种不一致。所以「有没有照片」这条判据全模块只留一份 `applied.photo`。
+
 **已知、接受：`paint()` 自身抛错时不回滚**（内存已改、DOM 未改）。触发前提是色板常量违反了 HEX6——外观系统这两个模块里唯一的 `throw` 就在 `theme.js` 的 `hexToRgb`（`theme-store.js` 一处都没有）。而 `tests/theme.test.js` 的形状断言比它的正则更严（`HEX6 = /^#[0-9a-f]{6}$/`，只认小写 6 位，且对 5 套皮肤 × 2 档深浅逐值断言），所以**能让 `hexToRgb` 抛的色板，必定先在单测红**——实测把 `default.light.--surface` 改成 `'red'`，单测先报 `default.light.--surface 的形状不对：red`，而 `hexToRgb` 那条要到运行时才炸。不回滚的坏状态还是**自愈**的：下一次成功的 `paint()` 会把 DOM 追平。**为什么不加回滚**：真回滚得同时快照 `applied` 与 DOM、再重画一次，而 `paint()` 若因色板坏掉而抛、回滚那次 `paint()` 同样会抛——换来的只是一个更复杂的抛错路径。
 
 **多标签页不做同步。** 两个标签页是两个模块实例，内存不共享（只有 IndexedDB 共享）：A 页选了暖纸，B 页的面板仍显示默认；用户在 B 里点一次「确认」就把库写回默认。`storage` 事件不覆盖 IndexedDB，接它也没用；要同步得引入 `BroadcastChannel` 或轮询，对一个自用记账 app 不值得。**已知、接受。**
@@ -349,7 +351,7 @@ body::before {
 - `--scrim-rgb`：浅色皮肤 `255,255,255`，深色皮肤 `0,0,0`（深浅切换时由 `themeCssVars` 一起给）。
 - `--scrim-a`：由遮罩滑块控制，`scrimAlpha(overlay)`，0–0.6。
 - `background-attachment: fixed` **不用**：移动端 Safari/WebView 上它对 `cover` 的处理不一致，而这里是 `position: fixed` 的伪元素，本来就不随滚动移动。
-- **照片也在首屏之前就位**：`initTheme()` 里是 `await applyPhoto()`，不是 fire-and-forget。它上面的那次 `paint()` 只画了皮肤——那时 `applied.photo` 还是 false，卡片不透明、`--bg-image` 是 none，照片要等 `applyPhoto()` 里的第二次 `paint()` 才出现；不 await 的话那次补画落在 `initTheme()` 返回之后（通常已经 mount 完了），用户看到的是「卡片先实心、再突然变半透明并冒出一张照片」。代价是首屏多等一次读库（settings 一条 + assets 一条）。
+- **照片也在首屏之前就位**：`initTheme()` 里是 `await applyPhoto(bgRaw)`，不是 fire-and-forget。`paint()` 画的是内存里的 `applied`，卡片的不透明度（`--surface`）与背景图（`--bg-image`）要等 `applyPhoto()` 里的第二次 `paint()` 才到位；不 await 的话那次补画落在 `initTheme()` 返回之后（通常已经 mount 完了），冷启动时用户看到的是「卡片先实心、再突然变半透明并冒出一张照片」。代价只有首屏多等一次 `assets` 读（`settings` 那条 `initTheme()` 已经读过、直接传下去，不再重复读）。
 
 ### 6.3 可读性（这才是照片背景的真正难点）
 
@@ -368,6 +370,7 @@ body::before {
   - `data.background` 的读写**必须在同一个函数里成对出现**（导出与导入放在相邻的代码段，由评审逐行对照）；
   - 恢复后的背景图必须能被 `theme-store.js` 正常读到并应用（验证方式见手动清单）；
   - `assets` 表在 `importBackup` 里**不进 `clears` 列表**——它只在背景这一条路上被写，整表清空会让「备份里没有背景」这种正常情况变成一次多余的删除。
+- **任务 13 落地之前，导入必然留下一次悬空设置**：现在的 `importBackup` 整表覆盖 `settings`，而 `assets` 既不进 `clears` 也不在导出内容里（`data` 只有 `txns/accounts/categories/receivables/settings/invoices/invoiceFiles/vault`）。于是在 A 机开过背景的用户把备份导进 B 机之后，`settings.backgroundImage` 指向 `'bg'`，而 B 机的 `assets` 是空的。这不会崩——`theme-store.js` 的 `applyPhoto` 按「没有背景」兜住它、顺手把设置清掉——但用户看到的是「导入后背景没了」，而**任务 13 的导入侧必须把 `assets` 与 `settings.backgroundImage` 成对处理**（有则一起写回、无则一起清掉），否则每次导入都留一条悬空设置。
 
 ---
 
