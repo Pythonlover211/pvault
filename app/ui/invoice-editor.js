@@ -6,6 +6,7 @@ import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import * as invoiceStore from '../invoice-store.js';
 import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile, getEditingFile } from '../image-store.js';
+import { MAX_FILE_BYTES } from '../file-info.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
@@ -159,6 +160,14 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
 
   async function pickFile(file) {
     if (!file) return;
+    // 上限在 prepareFile **之前**判：那个函数的契约是「任何一步失败都回退原图，
+    // 不能因为省体积就把用户的发票弄丢」，往里塞一个「直接拒绝」的分支会把契约弄浑。
+    // 这里直接 return，不碰 previewSeq、不碰 state.fileId——上一次选的文件继续有效，
+    // 用户也不该因为选错了一个大文件就丢掉上一张已经选好的票。
+    if ((Number(file.size) || 0) > MAX_FILE_BYTES) {
+      errorNode.textContent = '这个文件太大了（超过 20 MB）。发票一般没这么大，确认一下是不是选错了';
+      return;
+    }
     const seq = ++previewSeq;
     state.busy = true;
     errorNode.textContent = '';
@@ -200,7 +209,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   }
 
   const cameraInput = fileInput('image/*', 'environment');
-  const albumInput = fileInput('image/*,application/pdf');
+  const albumInput = fileInput('image/*,application/pdf,.ofd,application/ofd');
 
   const amountText = el('div', { class: 'vault-code', text: '¥0.00' });
   const keypad = createKeypad({
@@ -505,7 +514,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     previewBox,
     el('div', { class: 'stack', style: 'gap:6px' }, [
       el('button', { class: 'btn', type: 'button', text: '拍照', onclick: () => cameraInput.click() }),
-      el('button', { class: 'btn', type: 'button', text: '选图片或 PDF', onclick: () => albumInput.click() })
+      el('button', { class: 'btn', type: 'button', text: '图片 / PDF / OFD', onclick: () => albumInput.click() })
     ]),
     cameraInput, albumInput,
     field('发票号码', numberInput),
