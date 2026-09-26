@@ -744,11 +744,40 @@ git commit -m "feat(ofd): 编辑器接受 OFD 文件，并在 20 MB 处拦下误
   // 有原始文件名就显示文件名——存进去的文件从此有了「长相」，不然一堆票在界面上全长一样。
   function filePlaceholder(rec, kind) {
     const name = String(rec?.name ?? '').trim();
-    const text = name || (kind === 'ofd' ? 'OFD 已保存' : 'PDF 已保存');
-    // title 放完整名字：块里的文字会被 CSS 截断，长文件名只有悬停/长按才看得全。
-    return el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', title: text, text });
+    const text = name || (kind === 'ofd' ? 'OFD 已保存'
+      : kind === 'pdf' ? 'PDF 已保存'
+      // kind 走到 'image' 只可能是「记录在、blob 却空了」这种坏数据（正常图片有 URL 就渲染成图了）
+      : '文件读不出来');
+    // title 与 aria-label 都放完整名字。真机上没有悬停、长按弹的也是文本选择而不是它，
+    // 所以这两个属性主要给读屏和桌面浏览器——「看全名」靠的是导出时那个名字，不是这里。
+    return el('div', { class: 'inv-thumb inv-file-thumb', title: text, 'aria-label': text, text });
   }
 ```
+
+尺寸从内联样式移交给新的 `.inv-file-thumb` 类（见步骤 1b）——因为 `.inv-thumb` 是给列表页那个 52×52 的 emoji 缩略图设计的，装不下任意长度的文件名。
+
+- [ ] **步骤 1b：给文件占位块加一个自己的样式类**
+
+在 `styles/invoice.css` 里 `.inv-thumb` 那条规则之后新增（**不要动 `.inv-thumb` 本身**，列表页的 `<img class="inv-thumb">` 还在用它，加 padding 会连带压小那些 52×52 的缩略图）：
+
+```css
+/* 编辑器预览区的文件占位块：本来只有一个 emoji 的 .inv-thumb，现在要装任意长度的文件名。
+   不截断不改断行的话，无空格的长英文名会横向顶出块外、压住下面的按钮。 */
+.inv-file-thumb {
+  width: 100%;
+  height: 130px;
+  padding: 10px 12px;
+  font-size: var(--font-sm);
+  line-height: 1.45;
+  text-align: center;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  user-select: none;
+}
+```
+
+（字号用 `styles/base.css` 里已有的 `--font-sm`，别写死 20px——那是给一个 emoji 用的。）
 
 - [ ] **步骤 2：改 `paintPreview` 的分支**
 
@@ -770,7 +799,11 @@ git commit -m "feat(ofd): 编辑器接受 OFD 文件，并在 20 MB 处拦下误
     // 判类型要看 mime 与文件名两样，统一走 file-info.fileKind——不要在视图里另写一套正则，
     // 否则「OFD 该按什么算」这件事就有了两个说法。
     const kind = rec ? fileKind(rec.mime, rec.name) : 'image';
-    if (!rec || kind !== 'image') {
+    // fileKind 的 'image' 是「不认识就按图片算」的兜底，**不是**「确认这是一张图」。
+    // 能不能塞进 <img> 得看 mime 真的以 image/ 开头——否则 application/octet-stream
+    // 的记录会走进 <img>，得到裂图加一行浅灰 alt 文字，那正是这段代码一直在防的东西。
+    const canRenderImage = String(rec?.mime || '').startsWith('image/');
+    if (!rec || !canRenderImage) {
       mountPreview(filePlaceholder(rec, kind));
       return;
     }
