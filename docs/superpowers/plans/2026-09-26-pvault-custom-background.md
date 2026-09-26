@@ -38,7 +38,7 @@
 | `app/ui/settings-sheet.js` | 加「外观与背景」入口（插在 `budget` 与 `backup` 之间）。 |
 | `app/backup-store.js` | 导出/导入 `data.background`。 |
 | `app/backup.js` | `buildBackup` 里带上 `background`。 |
-| `sw.js` | `ASSETS` 加 6 个新文件；`CACHE` 升 `pvault-v16`。 |
+| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5 提前加，其余 4 个在任务 14）；`CACHE` 升到 `pvault-v17`（任务 5 已用到 v16）。 |
 | `index.html` | 加一行 `styles/appearance.css`。 |
 | `tests/schema.test.js` | 三处会被这次改动打红的断言（见任务 6）。 |
 | `docs/手动验证清单.md` | 加外观章节。 |
@@ -1138,7 +1138,21 @@ Select-String -Path app/image-store.js -Pattern 'function (loadViaImg|decode|rel
 ```bash
 git add app/canvas-image.js app/image-store.js app/image-scale.js app/file-info.js docs/superpowers/plans/2026-09-26-pvault-custom-background.md
 git commit -m 'refactor(image): 图片编解码工具抽到 canvas-image.js 供背景图复用'
+git add sw.js
+git commit -m 'chore(sw): canvas-image.js 提前进预缓存白名单，避免消费方先行的 404 白屏'
 ```
+
+**第二个 commit 不能挪到任务 14**：本步让 `image-store.js` 静态依赖 `canvas-image.js`，而 SW 是 cache-first——
+清单里没有它，已装旧缓存的设备离线启动就会断在 `main → invoice-view → invoice-editor → image-store →
+canvas-image` 这一环：那一个 module 404、import 链一断是**整个 app 白屏**（不只是发票面板）。这与 v14 那次
+（`file-info.js`）是同一条规矩：**白名单必须跟产生依赖的那次提交一起走，不能等到收尾再补**。具体改法：
+`ASSETS` 加 `'./app/canvas-image.js'`（排在 `budget.js` 与 `chart.js` 之间，保持 ASC 书写风格）、`CACHE`
+升到 `'pvault-v16'` 并写下这一版的说明。外观功能其余四个文件（theme / theme-store / ui/appearance-sheet /
+appearance.css）此刻还不存在，仍由任务 14 负责。
+
+**白名单要全量校验一遍**（`cache.addAll` 是原子的，一个 404 就让整次 install 失败，表现是"离线打开白屏"）：
+把 `sw.js` 里所有 `'./…'` 路径抽出来逐个 `Test-Path`。任务 14 步骤 2 里有现成脚本，这里跑完的实测结果是
+**`全部存在，共 56 个`**（`ASSETS` 里是 57 个条目，其中 `'./'` 不匹配那条正则、脚本不数它）。
 
 - [ ] **步骤 5：发票图片的回归验证（不能省）**
 
@@ -2134,14 +2148,16 @@ git commit -m 'feat(backup): 备份携带背景照片与遮罩强度'
 
 - [ ] **步骤 1：改 `CACHE` 与 `ASSETS`**
 
+**`canvas-image.js` 已在任务 5 提前进清单**（那一步让 `image-store.js` 静态依赖了它，白名单必须跟产生依赖的
+提交一起走），`CACHE` 那时已经用到 `pvault-v16`。所以这一步只加剩下的这四个文件，版本号再升一版：
+
 ```js
-const CACHE = 'pvault-v16';
+const CACHE = 'pvault-v17';
 ```
 
 在 `ASSETS` 数组里加（位置与其它条目保持一致的书写风格）：
 
 ```js
-  './app/canvas-image.js',
   './app/theme.js',
   './app/theme-store.js',
   './app/ui/appearance-sheet.js',
@@ -2159,7 +2175,7 @@ $missing = $paths | Where-Object { -not (Test-Path $_) }
 if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Host "全部存在，共 $($paths.Count) 个" }
 ```
 
-预期：`全部存在，共 61 个`（56 + 5 个新增）
+预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个）
 
 - [ ] **步骤 3：验证离线可用**
 
@@ -2167,13 +2183,13 @@ if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Ho
 2. DevTools → Application → Service Workers 勾 Offline
 3. 刷新页面
 
-预期：页面正常打开、账目都在。**如果白屏**，看 Application → Cache Storage 里 `pvault-v16` 是否存在——不存在就是 `addAll` 被某个 404 整批拒绝了。
+预期：页面正常打开、账目都在。**如果白屏**，看 Application → Cache Storage 里 `pvault-v17` 是否存在——不存在就是 `addAll` 被某个 404 整批拒绝了。
 
 - [ ] **步骤 4：Commit**
 
 ```bash
 git add sw.js
-git commit -m 'chore(sw): 新模块进预缓存白名单，缓存版本升到 v16'
+git commit -m 'chore(sw): 新模块进预缓存白名单，缓存版本升到 v17'
 ```
 
 ---

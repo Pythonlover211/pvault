@@ -41,7 +41,14 @@
 // （file-info.js 在任务 3 就随 v14 进过清单了 —— 它从那时起是首屏静态依赖，
 //  必须在消费方 import 它之前就位；晚一步的后果是整个 app 白屏，不只是发票面板。）
 // 漏掉 download.js 的后果与上面各次相同：离线时这个 module 404，import 链断。
-const CACHE = 'pvault-v15';
+// v16：canvas-image.js 提前进预缓存清单 —— 任务 5 把图片编解码工具（loadViaImg / decode /
+// releaseSource / drawTo）从 image-store.js 搬到了新模块 app/canvas-image.js，image-store
+// 从此静态依赖它。白名单不跟着那一次提交一起加的话，已装旧缓存的设备离线启动会断在
+// main → invoice-view → invoice-editor → image-store → canvas-image 这一环：那一个 module 404、
+// import 链一断是整个 app 白屏（不只是发票面板）——与上面 v14 那次同一个坑，所以不等任务 14。
+// 外观功能其余的文件（theme / theme-store / ui/appearance-sheet / appearance.css）此刻还不存在，
+// 等它们出现时再按同一条纪律进清单。
+const CACHE = 'pvault-v16';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -62,6 +69,7 @@ const ASSETS = [
   './app/backup-store.js',
   './app/backup.js',
   './app/budget.js',
+  './app/canvas-image.js',
   './app/chart.js',
   './app/crypto.js',
   './app/csv.js',
