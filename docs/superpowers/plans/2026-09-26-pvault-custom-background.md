@@ -378,7 +378,7 @@ function contrast(a, b) {
 }
 
 // 文字色 vs 它可能落在的每一种底。surface-2 必须算进去：输入框、次级按钮都垫在它上面，
-// 而这一对恰恰是最容易不达标的（默认皮肤的老值 #6e6e73 就是在这里只有 4.25:1）。
+// 而这一对恰恰是最容易不达标的（默认皮肤的老值 #6e6e73 就是在这里只有 4.18:1）。
 const CONTRAST_PAIRS = [
   ['--text', '--bg'], ['--text', '--surface'], ['--text', '--surface-2'],
   ['--text-2', '--bg'], ['--text-2', '--surface'], ['--text-2', '--surface-2'],
