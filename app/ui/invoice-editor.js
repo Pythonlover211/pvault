@@ -6,7 +6,7 @@ import { openSheet } from './sheet.js';
 import { createKeypad } from './keypad.js';
 import * as invoiceStore from '../invoice-store.js';
 import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile, getEditingFile } from '../image-store.js';
-import { MAX_FILE_BYTES } from '../file-info.js';
+import { MAX_FILE_BYTES, fileKind } from '../file-info.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
@@ -126,6 +126,16 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     if (old?.tagName === 'IMG') revokeUrl(old.src);
   }
 
+  // 非图片文件（PDF / OFD）在预览区只能给一个占位块：它们没有缩略图，也不能塞进 <img>
+  // （getFullUrl 对任何存在的记录都返回 blob URL，直接塞进去得到的是裂图加一行浅灰 alt 文字）。
+  // 有原始文件名就显示文件名——存进去的文件从此有了「长相」，不然一堆票在界面上全长一样。
+  function filePlaceholder(rec, kind) {
+    const name = String(rec?.name ?? '').trim();
+    const text = name || (kind === 'ofd' ? 'OFD 已保存' : 'PDF 已保存');
+    // title 放完整名字：块里的文字会被 CSS 截断，长文件名只有悬停/长按才看得全。
+    return el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', title: text, text });
+  }
+
   async function paintPreview() {
     // 这里**不能**自增 previewSeq。paintPreview 基本总是被 pickFile 在结尾调用，它自增之后
     // pickFile 的 finally 里那句 `seq === previewSeq` 就永远不成立，state.busy 再也清不掉——
@@ -137,22 +147,23 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     // 而那时该由那一次自己来画。
     const fileId = state.fileId;
     if (!fileId) {
-      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有图片' }));
+      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '🧾 还没有文件' }));
       return;
     }
-    // PDF 不能塞进 <img>：getFullUrl 对任何存在的记录都返回一个 blob URL，
-    // 只判 `!url` 是拦不住它的——那样 <img src="blob:…pdf"> 加载失败，用户看到的是裂图加
-    // 一行浅灰的 alt 文字，比干脆不显示更糟。所以先取一次记录看 mime，只有图片才走 <img>。
     const rec = await getFile(fileId).catch(() => null);
     if (seq !== previewSeq) return;
-    if (!rec || !String(rec.mime || '').startsWith('image/')) {
-      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
+    // 判类型要看 mime 与文件名两样，统一走 file-info.fileKind——不要在视图里另写一套正则，
+    // 否则「OFD 该按什么算」这件事就有了两个说法。
+    const kind = rec ? fileKind(rec.mime, rec.name) : 'image';
+    if (!rec || kind !== 'image') {
+      mountPreview(filePlaceholder(rec, kind));
       return;
     }
     const url = await getFullUrl(fileId).catch(() => null);
     if (seq !== previewSeq) return;
     if (!url) {
-      mountPreview(el('div', { class: 'inv-thumb', style: 'width:100%;height:130px', text: '📄 PDF 已保存' }));
+      // 记录在、URL 却建不出来：按图片算但只能给占位。老记录没有 name，会落到默认文案上。
+      mountPreview(filePlaceholder(rec, kind));
       return;
     }
     mountPreview(el('img', { class: 'inv-preview', src: url, alt: '发票' }));
