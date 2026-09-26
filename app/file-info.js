@@ -96,3 +96,33 @@ export function extForKind(kind, mime) {
   // （image/../../x）都会落到这里，一律按 jpg。
   return /^[a-z0-9]+$/.test(sub) ? sub : 'jpg';
 }
+
+/**
+ * 净化文件名：它会落到手机的文件系统上。路径分隔符、控制字符、首尾的点都不能留
+ * （".." 与结尾的点在 Windows 上会被截掉、或产生一个看不出问题的怪文件）。
+ * 净化后为空时用调用方给的 fallback——空文件名在下载时会退化成一个乱码名。
+ */
+export function sanitizeFilename(name, fallback = 'file') {
+  const cleaned = String(name ?? '')
+    .replace(/[/\\:*?"<>|]/g, '_')
+    // 控制字符单独一条：塞进上面的字符类里会写成不可见的字面量，读代码的人会以为这里漏了
+    .replace(/[\u0000-\u001f]/g, '_')
+    .replace(/^[.\s]+/, '')
+    .replace(/[.\s]+$/, '')
+    .slice(0, 100);
+  return cleaned === '' ? fallback : cleaned;
+}
+
+/**
+ * 没有原始文件名时的兜底名。号码是用户最认得出的东西，放在最前面；
+ * 没填就直接写「无号」——空字符串会让文件名变成「发票--1700000000000.ofd」这种看着像出错的东西。
+ * 时间戳保证同一天的多张票不会重名。
+ */
+export function fallbackFileName({ number, issuedAt, kind, mime } = {}) {
+  const n = String(number ?? '').trim() || '无号';
+  const t = Number.isSafeInteger(issuedAt) ? issuedAt : 0;
+  // 扩展名要吃 mime：图片记录的 mime 可能是 image/png，而这条路恰恰只在
+  // 「没有原始文件名」时才走（见 extForKind 的注释）。
+  const ext = extForKind(kind, mime);
+  return sanitizeFilename(`发票-${n}-${t}.${ext}`, `发票.${ext}`);
+}

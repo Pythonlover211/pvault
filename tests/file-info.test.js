@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAX_FILE_BYTES, fileKind, mimeForKind, extForKind
+  MAX_FILE_BYTES, fileKind, mimeForKind, extForKind,
+  sanitizeFilename, fallbackFileName
 } from '../app/file-info.js';
 
 test('fileKind：mime 说是 OFD 就判 OFD', () => {
@@ -100,4 +101,56 @@ test('同一条记录走完三个函数，口径一致', () => {
 
 test('MAX_FILE_BYTES 是 20 MB', () => {
   assert.equal(MAX_FILE_BYTES, 20 * 1024 * 1024);
+});
+
+test('sanitizeFilename：去掉路径分隔符与非法字符', () => {
+  assert.equal(sanitizeFilename('a/b\\c:d*e?f"g<h>i|j', 'fb'), 'a_b_c_d_e_f_g_h_i_j');
+});
+
+test('sanitizeFilename：去掉首尾的点与空格', () => {
+  assert.equal(sanitizeFilename('  ..name..  ', 'fb'), 'name');
+  assert.equal(sanitizeFilename('...', 'fb'), 'fb');
+});
+
+test('sanitizeFilename：空、全空白、非字符串都用 fallback', () => {
+  assert.equal(sanitizeFilename('   ', 'fb'), 'fb');
+  assert.equal(sanitizeFilename('', 'fb'), 'fb');
+  assert.equal(sanitizeFilename(null, 'fb'), 'fb');
+  assert.equal(sanitizeFilename(undefined, 'fb'), 'fb');
+});
+
+test('sanitizeFilename：超长截断到 100 字符', () => {
+  assert.equal(sanitizeFilename('x'.repeat(300), 'fb').length, 100);
+});
+
+test('sanitizeFilename：正常的文件名原样保留', () => {
+  assert.equal(sanitizeFilename('25517000000012345678.ofd', 'fb'), '25517000000012345678.ofd');
+});
+
+test('fallbackFileName：带号码与时间戳', () => {
+  assert.equal(
+    fallbackFileName({ number: '123', issuedAt: 1700000000000, kind: 'ofd' }),
+    '发票-123-1700000000000.ofd'
+  );
+});
+
+test('fallbackFileName：没号码时用「无号」，issuedAt 无效时用 0', () => {
+  assert.equal(
+    fallbackFileName({ number: '  ', issuedAt: null, kind: 'pdf' }),
+    '发票-无号-0.pdf'
+  );
+});
+
+test('fallbackFileName：号码里的非法字符会被净化', () => {
+  assert.equal(
+    fallbackFileName({ number: 'A/B', issuedAt: 1, kind: 'image' }),
+    '发票-A_B-1.jpg'
+  );
+});
+
+test('fallbackFileName：图片带 PNG 的 mime 时扩展名跟着变', () => {
+  assert.equal(
+    fallbackFileName({ number: '9', issuedAt: 5, kind: 'image', mime: 'image/png' }),
+    '发票-9-5.png'
+  );
 });
