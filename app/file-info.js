@@ -133,6 +133,8 @@ function truncateKeepingExt(name, max) {
  *
  * 整串只有扩展名时（'.ofd'）前导点会被清掉、退化成 'ofd'：这是已知且接受的，
  * 安卓选择器给出这种名字的概率极低。
+ * 同理，原本就没有扩展名的名字（「发票」）净化后也仍然没有——导出时系统就没有派发依据。
+ * 当前接受这个代价：库里存的是用户给的原始名，替它编一个扩展名反而可能与字节不符。
  */
 export function sanitizeFilename(name, fallback = 'file') {
   const raw = String(name ?? '')

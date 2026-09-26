@@ -65,6 +65,8 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   let delArmed = false;
   let delTimer = null;
   let deleting = false;
+  // 导出防重入，与 saving / deleting 同一套：连点两次会读两遍、下载两份。
+  let exporting = false;
 
   const errorNode = el('div', { class: 'vault-error' });
   const previewBox = el('div', {});
@@ -238,7 +240,8 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   // （备份导出就是这么干的，真机验过），要求的是不要在 downloadBlob 内部再插 await。
   async function exportCurrentFile() {
     const fileId = state.fileId;
-    if (!fileId) return;
+    if (!fileId || exporting) return;
+    exporting = true;
     try {
       const rec = await getFile(fileId);
       if (!rec?.blob) {
@@ -257,6 +260,8 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     } catch (err) {
       console.error('导出发票文件失败', err);
       errorNode.textContent = '导出失败：' + (err?.message || err);
+    } finally {
+      exporting = false;
     }
   }
 

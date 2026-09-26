@@ -13,7 +13,7 @@
 }
 
 /* 错误提示常驻一行高度：出现与消失之间按钮不会跳一下（与录入面板的 .share-note 同源处理）。 */
-.vault-error { color: var(--error); font-size: var(--font-sm); min-height: calc(var(--font-sm) * 1.5); }
+.vault-error { color: var(--error); font-size: var(--font-sm); min-height: calc(var(--font-sm) * 1.5); overflow-wrap: anywhere; }
 
 .vault-lock { display: flex; flex-direction: column; gap: 10px; }
 

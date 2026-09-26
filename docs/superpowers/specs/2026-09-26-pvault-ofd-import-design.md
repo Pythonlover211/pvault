@@ -155,7 +155,7 @@ export function fallbackFileName({ number, issuedAt, kind, mime })
 - **文案**：「导出这份文件」
 - **行为**：`getFile(state.fileId)` 取记录 → `downloadBlob(rec.blob, filename)`
 - **文件名**：有 `rec.name` 就用它；没有则兜底 `发票-<号码，没填就用「无号」>-<时间戳>.<ext>`，`ext` 由 mime 推（ofd / pdf / jpg）
-- 点击直接来自用户手势，满足「`.click()` 必须在用户手势里发起」这条既有约定
+- 点击由用户发起即可；**不是**「必须在手势调用栈里」——`<a download>` 的 click 不受手势限制，先 `await` 取数据再点，已经在备份导出上真机验证过（见 `app/ui/download.js` 的注释）。受手势限制的是 `<input type="file">` 的 click，别把两者混了。
 
 ### 7.4 发票列表
 

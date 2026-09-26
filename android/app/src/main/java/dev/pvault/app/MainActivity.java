@@ -73,7 +73,7 @@ public class MainActivity extends Activity {
                     + "var fr=new FileReader();"
                     + "fr.onload=function(){"
                     + "var s=String(fr.result);var i=s.indexOf(',');"
-                    + "PvaultShell.saveFile(name,i>=0?s.slice(i+1):'');};"
+                    + "PvaultShell.saveFile(name,i>=0?s.slice(i+1):'',b.type||'');};"
                     + "fr.readAsDataURL(b);"
                     + "}).catch(function(e){"
                     + "if(window.console)console.error('pvault export failed',e);"
@@ -239,7 +239,7 @@ public class MainActivity extends Activity {
          * 脚本，把 blob 转成 base64 后走这里落盘。
          */
         @JavascriptInterface
-        public void saveFile(String filename, String base64) {
+        public void saveFile(String filename, String base64, String mime) {
             String name = (filename == null || filename.isEmpty()) ? "pvault-export.bin" : filename;
             byte[] data;
             try {
@@ -252,7 +252,7 @@ public class MainActivity extends Activity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues cv = new ContentValues();
                     cv.put(MediaStore.Downloads.DISPLAY_NAME, name);
-                    cv.put(MediaStore.Downloads.MIME_TYPE, "application/json");
+                    cv.put(MediaStore.Downloads.MIME_TYPE, exportMimeOf(name, mime));
                     Uri uri = getContentResolver()
                             .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
                     if (uri == null) throw new IOException("无法在下载目录创建文件");
@@ -272,6 +272,27 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 toast("导出失败：" + e.getMessage());
             }
+        }
+
+        /**
+         * 导出文件落盘时用的 MIME。以前这里写死 application/json —— 那是对的，因为当时
+         * 只有加密备份一种出口。现在发票原件（OFD / PDF / 图片）也从这条桥出去，写死就会
+         * 让 MediaStore 里留下「文件名 xxx.ofd、类型 application/json」这种自相矛盾的记录，
+         * 而手机是按这个类型决定「用哪个 App 打开」的 —— OFD 阅读器可能压根不出现在候选列表里。
+         *
+         * 优先信页面给的 blob.type（它就是这份字节的真实类型），拿不到再按扩展名兜。
+         */
+        private String exportMimeOf(String name, String mime) {
+            if (mime != null && !mime.isEmpty()) return mime;
+            String lower = (name == null ? "" : name).toLowerCase();
+            if (lower.endsWith(".ofd")) return "application/ofd";
+            if (lower.endsWith(".pdf")) return "application/pdf";
+            if (lower.endsWith(".png")) return "image/png";
+            if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+            if (lower.endsWith(".webp")) return "image/webp";
+            if (lower.endsWith(".heic")) return "image/heic";
+            if (lower.endsWith(".json")) return "application/json";
+            return "application/octet-stream";
         }
 
         /** 页面可以用来问「我是不是在安卓壳里」，以便调整提示文案。 */
