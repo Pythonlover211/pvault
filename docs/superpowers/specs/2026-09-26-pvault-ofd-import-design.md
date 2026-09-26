@@ -76,11 +76,17 @@
 
 ## 5. 文件类型识别
 
-`app/image-store.js`：把模块私有的 `isPdf(mime, name)` 换成一个对外可测的
+新建 `app/file-info.js`——**纯模块**，不碰 DOM / indexedDB / Canvas，可以在 Node 里直接 import 并单测。为什么不放进 `image-store.js`：那个文件的第一行注释就写着「依赖 Canvas / Blob / indexedDB，**不能在 Node 里 import**」，判定逻辑摆在那儿等于放弃单测。
 
 ```js
-export function fileKind(mime, name)   // → 'image' | 'pdf' | 'ofd'
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+export function fileKind(mime, name)      // → 'image' | 'pdf' | 'ofd'
+export function mimeForKind(kind)         // → 归一化后的 mime
+export function sanitizeFilename(name, fallback)
+export function fallbackFileName({ number, issuedAt, kind })
 ```
+
+`image-store.js` 里那个模块私有的 `isPdf()` **删掉**（唯一调用点就在 `prepareFile` 内），改调 `fileKind()`。
 
 判定规则，**mime 优先、扩展名兜底**（沿用「选择器给的 mime 不可信」这个已经踩过的坑）：
 
@@ -96,7 +102,11 @@ export function fileKind(mime, name)   // → 'image' | 'pdf' | 'ofd'
 
 **存库前归一化 mime**：`'ofd'` → `application/ofd`，`'pdf'` → `application/pdf`，`'image'` → 原 mime 或 `image/jpeg`。理由与 PDF 那一处相同：备份的元数据里不该出现 `application/pdf; charset=binary`、空字符串这类五花八门的写法。
 
-`fileKind` 需要 export：它要能被单测直接覆盖，而经由 `prepareFile` 间接测拿不到判定表。
+上面五个导出全是纯函数或纯常量：判定表能被单测逐条覆盖，而不是只能经由 `prepareFile` 去间接猜。
+
+**`sanitizeFilename`**：去掉 `/ \ : * ? " < > |` 与控制字符，去掉首尾的点和空格，截断到 100 字符，结果为空则用调用方给的 fallback。
+
+**`fallbackFileName`**：没有原始文件名时的兜底，产出 `发票-<号码，没填就用「无号」>-<时间戳>.<ext>`，扩展名由 `mimeForKind` 推。
 
 ---
 
@@ -149,7 +159,7 @@ export function fileKind(mime, name)   // → 'image' | 'pdf' | 'ofd'
 ### 7.4 发票列表
 
 - 无缩略图的记录继续用占位节点（现状如此，不新增逻辑）
-- 占位节点补 `title` 与 `aria-label`，内容按 `fileKind` 给（「OFD 文件」/「PDF 文件」）
+- 占位节点补 `title` 与 `aria-label`，**固定文案「发票文件」**，不做 PDF / OFD 的类型区分：要区分就得为列表每一行多读一次 IndexedDB 记录（`getThumbUrl` 只回 URL，不带 mime），这个代价不值得
 - 列表**不显示文件名**：一行放不下，列表已经够密。要看全名去编辑器
 
 ### 7.5 记账首页
@@ -164,12 +174,13 @@ export function fileKind(mime, name)   // → 'image' | 'pdf' | 'ofd'
 
 ```js
 export function downloadBlob(blob, filename)
-export function sanitizeFilename(name, fallback)
 ```
+
+（`sanitizeFilename` 不在这个文件里——它是纯函数，归 `app/file-info.js`；放在这个碰 DOM 的模块里就同样测不了了。）
 
 - `downloadBlob` 是现有 `download(filename, text)` 的泛化：接受 Blob。步骤一字不改——`createObjectURL` → 隐藏 `<a download>` → **append 到 document**（Firefox 里游离的 `<a>` 点击不触发下载）→ `click` → `remove` → **延后 1 秒** `revokeObjectURL`（立刻撤销会让部分浏览器在下载真正开始前拿到失效 URL）。这两条理由随代码一起搬进注释，别丢。
 - `backup-view.js` 的 `download()` 改为调 `downloadBlob(new Blob([text], { type: 'application/json' }), filename)`，行为完全不变
-- `sanitizeFilename`：去掉 `/ \ : * ? " < > |` 与控制字符，去掉首尾的点和空格，截断到 100 字符，结果为空则用调用方给的 fallback
+- `sanitizeFilename` 与 `fallbackFileName` 的规则见第 5 节，它们归 `app/file-info.js`
 
 ---
 
@@ -183,7 +194,7 @@ export function sanitizeFilename(name, fallback)
 | 老 PDF 记录（无 `name`） | 预览显示回退文案，导出用兜底名 |
 | 手机里没有 OFD 阅读器 | 不是本 App 的问题：文件已落到下载目录，用户自己找 App 打开。导出成功提示里写明「已导出到手机的下载目录」 |
 
-**上限在哪里判**：在 `app/ui/invoice-editor.js` 的 `pickFile` 里、调 `prepareFile` **之前**判。`prepareFile` 的既有契约是「任何一步失败都回退原图，不能因为省体积就把用户的发票弄丢」，往里塞一个「直接拒绝」的分支会把这个契约弄浑。上限常量 `MAX_FILE_BYTES = 20 * 1024 * 1024` 由 `app/image-store.js` 导出，编辑器与测试共用同一个数，避免两处各写一个字面量。
+**上限在哪里判**：在 `app/ui/invoice-editor.js` 的 `pickFile` 里、调 `prepareFile` **之前**判。`prepareFile` 的既有契约是「任何一步失败都回退原图，不能因为省体积就把用户的发票弄丢」，往里塞一个「直接拒绝」的分支会把这个契约弄浑。上限常量 `MAX_FILE_BYTES = 20 * 1024 * 1024` 由 `app/file-info.js` 导出，编辑器与测试共用同一个数，避免两处各写一个字面量。
 
 **20 MB 这个数怎么来的**：全电票的 OFD 通常一两百 KB，20 MB 已经大到不像发票了。这个上限唯一的目的是拦住误选（比如手滑选了个几百 MB 的扫描 PDF），不是业务限制，所以不做成可配置项。
 
@@ -191,7 +202,7 @@ export function sanitizeFilename(name, fallback)
 
 ## 10. 测试
 
-单元测试（`D:\node.exe --test --test-isolation=none`，当前基线 221 通过 / 0 失败）：
+单元测试（新增 `tests/file-info.test.js`；命令 `D:\node.exe --test --test-isolation=none`，当前基线 221 通过 / 0 失败）：
 
 1. **`fileKind`**：`('', 'a.ofd')`、`('application/ofd', '')`、`('application/octet-stream', 'b.OFD')`、`('application/pdf', 'c.ofd')`（mime 优先判成 pdf）、`('image/jpeg', 'd.jpg')`、空 mime + 空名字
 2. **`prepareFile` 的 OFD 分支**：mime 归一化成 `application/ofd`、`thumbBlob === null`、`name` 原样带出、`compressed === false`
