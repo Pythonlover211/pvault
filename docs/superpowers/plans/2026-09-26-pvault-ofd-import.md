@@ -679,11 +679,10 @@ git commit -m "refactor(download): 把下载触发抽到 app/ui/download.js 共�
 在 `app/ui/invoice-editor.js` 的 import 段（`image-store.js` 那一行之后）加：
 
 ```js
-import { fileKind, sanitizeFilename, fallbackFileName, MAX_FILE_BYTES } from '../file-info.js';
-import { downloadBlob } from './download.js';
+import { MAX_FILE_BYTES } from '../file-info.js';
 ```
 
-（`downloadBlob` 这个任务还用不到，但和 `file-info` 一起加进来能少跑一次编辑；任务 7 会用到它。）
+（只 import 本任务真正用到的那一个。`fileKind` 归任务 6，`sanitizeFilename` / `fallbackFileName` / `downloadBlob` 归任务 7——一次加一堆用不到的 import，会让审查看不出每一步到底该动什么。）
 
 - [ ] **步骤 2：`pickFile` 开头加 20 MB 拦截**
 
@@ -695,7 +694,7 @@ import { downloadBlob } from './download.js';
     // 这里直接 return，不碰 previewSeq、不碰 state.fileId——上一次选的文件继续有效，
     // 用户也不该因为选错了一个大文件就丢掉上一张已经选好的票。
     if ((Number(file.size) || 0) > MAX_FILE_BYTES) {
-      errorNode.textContent = '这个文件太大了（超过 20 MB）。发票一般没这么大，确认一下是不是选错了';
+      errorNode.textContent = '这个文件太大了（超过 20 MB）。发票一般没这么大——原来选好的那张没有变';
       return;
     }
     const seq = ++previewSeq;
@@ -712,7 +711,7 @@ import { downloadBlob } from './download.js';
 按钮文案（原 508 行）：
 
 ```js
-      el('button', { class: 'btn', type: 'button', text: '图片 / PDF / OFD', onclick: () => albumInput.click() })
+      el('button', { class: 'btn', type: 'button', text: '选图片 / PDF / OFD', onclick: () => albumInput.click() })
 ```
 
 - [ ] **步骤 4：跑全量测试**
@@ -883,7 +882,7 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
     exportRow,
     el('div', { class: 'stack', style: 'gap:6px' }, [
       el('button', { class: 'btn', type: 'button', text: '拍照', onclick: () => cameraInput.click() }),
-      el('button', { class: 'btn', type: 'button', text: '图片 / PDF / OFD', onclick: () => albumInput.click() })
+      el('button', { class: 'btn', type: 'button', text: '选图片 / PDF / OFD', onclick: () => albumInput.click() })
     ]),
 ```
 
@@ -1014,6 +1013,7 @@ git commit -m "chore(sw): 缓存版本提到 v15，白名单加 ui/download"
 ### 发票 · OFD 文件
 
 - [ ] 点「图片 / PDF / OFD」能选到一个 `.ofd` 文件，选完面板不报错
+- [ ] **这一条决定整个功能的成败**：确认 `.ofd` 在系统选择器里**真的能被选中**。安卓把 OFD 报成 `application/octet-stream`、或 WebView 忽略扩展名过滤，都会让它在选择器里被置灰——那时功能等于没做，而且是静默的（用户只会以为这个 App 不支持 OFD）。选不中的话把 accept 放宽（加 `application/octet-stream`，或干脆 `*/*`），但**必须同时加类型白名单**：`fileKind` 对不认识的一律返回 `'image'`，一放宽就会把 xlsx / docx 也收进来，以「图片未能压缩，已按原样保存」的姿态存进库，导出时还会被命名成 `.jpg`
 - [ ] 保存后列表里出现这张票，缩略图位置是占位块而不是裂图
 - [ ] 重新点开这张票，预览区显示的**是文件的原始名字**（不是「OFD 已保存」）
 - [ ] 点「导出这份文件」，提示「已导出到手机的下载目录：xxx.ofd」
