@@ -1275,6 +1275,7 @@ git commit -m 'feat(schema): 新增 assets 表存放背景照片，DB_VERSION �
 
 **文件：**
 - 创建：`app/theme-store.js`
+- 修改：`index.html`（步骤 5：两条 `meta[name=theme-color]` 合成一条不带 media 的）
 
 - [ ] **步骤 1：写模块骨架与「应用」逻辑**
 
@@ -1332,7 +1333,14 @@ export function currentTheme() {
 }
 
 /**
- * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上。
+ * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上，顺带更新系统栏颜色。
+ *
+ * **改这个函数时要整条守住这份合同**：themeCssVars 返回多少个键就写多少个（不筛、不挑），
+ * 三个 dataset 一个不少。少写一个变量的后果不是「没变化」而是「上一套皮肤的值留在 DOM 上」——
+ * styles/base.css 的 :root 兜底清单里没有 --scrim-rgb 这类变量，从深色切回浅色时它会留着
+ * 深色那套的 '0,0,0'，于是浅色皮肤 + 背景照片时遮罩发黑、字压不住，而界面上零报错。
+ * 这份合同眼下只有注释在守：tests/theme.test.js 钉住的是 themeCssVars 的键集与色板的键集，
+ * 没有一条测试看得见 paint 的循环本身；手动清单里那三条 Console 核对是唯一的兜底。
  *
  * 用 inline style 而不是切 class：色板的唯一真相在 theme.js 里，
  * 若同时存在一份 CSS 规则表，两处就会各自漂移——而测试读不到 CSS，
@@ -1350,6 +1358,12 @@ function paint() {
   root.dataset.theme = applied.preset;
   root.dataset.mode = applied.mode;
   root.dataset.photo = applied.photo ? 'on' : 'off';
+  // 系统栏 / 浏览器 UI 的颜色跟着背景走。index.html 里那条 meta 刻意不带 media 属性：
+  // 带 media 的两条只按系统深浅挑一条，用户手动选皮肤、手动选深浅时它根本不看——
+  // 而 resolved 的 --bg 只有这里知道（照片只改 --surface，不动 --bg）。
+  // 拿不到这条 meta 就跳过：它不在时不该让整个主题应用失败。
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', vars['--bg']);
 }
 
 function attachSystemListener() {
@@ -1379,7 +1393,15 @@ function attachSystemListener() {
 ```js
 /**
  * 启动时读设置并应用。**必须在首屏渲染之前完成**，晚一帧就是
- * 「先闪一下默认蓝、再变成暖纸」。main.js 的 render() 会 await 它。
+ * 「先闪一下默认蓝、再变成暖纸」。
+ *
+ * **调用方必须 catch**：主题读不出来时照常渲染，只是外观是 CSS 里的兜底默认值。
+ * （任务 10）的 main.js 把 `initTheme().catch(...)` 挂在渲染路径上正是为此；少了那个 catch，
+ * 一次主题失败就会升级成整页「页面加载失败」。这条路径失败时页面上是 0 个变量、0 个 dataset、
+ * 0 个监听——连「半套主题」都不是，所以宁可要默认外观也不要它冒到视图层。
+ *
+ * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写），监听不重复挂。
+ * 将来需要「不刷新页面就把外部改动读进来」（比如导入备份之后）就用这个入口。
  */
 export async function initTheme() {
   const [presetRaw, modeRaw, bgRaw] = await Promise.all([
@@ -1399,18 +1421,29 @@ export async function initTheme() {
   return currentTheme();
 }
 
+/**
+ * 换皮肤：立即应用 + 写库。**不 catch**：写库失败时 rejection 交给调用方，
+ * 由调用方（面板）决定怎么提示「没保存成功」。
+ */
 export async function setPreset(themeId) {
   const preset = normalizePreset(themeId);
   applied.preset = preset;
-  await setSetting(PRESET_KEY, preset);
+  // 先画再写库。反过来的话，写库一抛（db.js 的 blocked、配额满都是真实路径）就留下
+  // 「内存已改、DOM 还是旧皮肤」——面板拿 currentTheme() 重绘会显示「已经选中」，
+  // 页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，
+  // 写库失败只影响「下次启动记不记得住」。
   paint();
+  await setSetting(PRESET_KEY, preset);
+  return currentTheme();
 }
 
+/** 换深浅（含「跟随系统」）：立即应用 + 写库，失败处置与 setPreset 同。 */
 export async function setMode(mode) {
   applied.modeChoice = normalizeMode(mode);
   applied.mode = resolveMode(applied.modeChoice, systemDark());
+  paint();                                  // 同 setPreset：先画再写库
   await setSetting(MODE_KEY, applied.modeChoice);
-  paint();
+  return currentTheme();
 }
 ```
 
@@ -1420,10 +1453,28 @@ export async function setMode(mode) {
 
 预期：无输出（退出码 0）
 
-- [ ] **步骤 4：Commit**
+- [ ] **步骤 4：`index.html` 的 `theme-color` 合并成一条**
+
+`paint()` 现在会更新 `meta[name=theme-color]` 的 `content`（写成解析后的 `--bg`），所以要先把
+`index.html` 里那两条**带 media** 的 meta 合并成一条**不带 media** 的——带 media 的两条只按
+系统深浅挑一条，用户手动选皮肤、手动选深浅时它根本不看，`paint()` 改了也不生效。
+
+改成（保留默认皮肤浅色作为「JS 还没跑起来那一帧」的兜底，与 `base.css` 的 `:root` 同一个道理）：
+
+```html
+<!-- 系统栏 / 浏览器 UI 的颜色。这里只留一条**不带 media** 的：
+     带 media 的两条只按系统深浅挑一条，用户手动选皮肤、手动选深浅时它根本不看，
+     于是页面变了、系统栏还是默认色。真正写它的是 app/theme-store.js 的 paint()
+     （按当前 resolved 的 --bg）；这一份只是 JS 还没跑起来那一帧的兜底。
+     注意：APK（安卓壳）里这条 meta 完全无效，壳的状态栏由 themes.xml 写死，
+     原因见 docs/superpowers/specs/2026-09-26-pvault-custom-background-design.md 的「系统栏颜色」一节。 -->
+<meta name="theme-color" content="#f2f2f5">
+```
+
+- [ ] **步骤 5：Commit**
 
 ```bash
-git add app/theme-store.js
+git add app/theme-store.js index.html
 git commit -m 'feat(theme): theme-store 读取并应用外观设置'
 ```
 
@@ -2277,6 +2328,12 @@ git commit -m 'chore(sw): 新模块进预缓存白名单，缓存版本升到 v1
 - [ ] 完全退出 app 再打开（不是刷新），皮肤仍然是选中的那套
 - [ ] 深浅选「跟随系统」，然后改系统的深色开关，app 实时跟着变
 - [ ] 深浅选「浅色」，系统切到深色，app **不**跟着变（手动选择必须压过系统）
+- [ ] Console 里核对 `document.documentElement.dataset.theme` = 当前皮肤 id（换一套皮肤后立刻变）
+- [ ] Console 里核对 `document.documentElement.dataset.mode` = 解析后的 `light` / `dark`（选「跟随系统」时它**不是** `auto`）
+- [ ] Console 里核对 `document.documentElement.dataset.photo` 随照片开关在 `on` / `off` 之间变
+      （这三条是 `paint()` 那份「整条写出去」合同的唯一兜底，见设计规格 §5.4）
+- [ ] （已知项，不是 bug）浏览器 / PWA 里系统栏颜色应跟着皮肤变；**APK 里不会变**——壳的状态栏由
+      `themes.xml` 写死，原因与将来怎么改见设计规格 §5.5
 
 ### 背景照片
 - [ ] 从相册选一张竖拍照片，确认背景铺满、没有拉伸变形、方向正确
@@ -2334,6 +2391,7 @@ git commit -m 'docs: 手动验证清单加入外观与背景章节'
 | §5.2 变量清单 | 任务 1（齐全性测试）、任务 4 |
 | §5.3 五套皮肤色值 | 任务 1 |
 | §5.4 应用机制 / 首屏不闪 / 跟随系统 / blob URL | 任务 7、8、10 |
+| §5.5 系统栏颜色（PWA 跟随 / APK 不跟随） | 任务 7（`index.html` 的 meta 与 `paint()`）、任务 15（已知项核对） |
 | §6.1 存储与压缩 | 任务 5、8 |
 | §6.2 渲染（`body::before`） | 任务 9 |
 | §6.3 可读性（`--surface` 半透明、`--surface-2` 不变） | 任务 4、9 |

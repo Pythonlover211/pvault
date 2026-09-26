@@ -265,6 +265,8 @@ export function currentTheme()             // 同步读当前已应用的状态�
 
 应用 = 把 `themeCssVars()` 的每个键 `setProperty` 到 `document.documentElement.style`，加上三个属性：`data-theme` / `data-mode`（**解析后的值**，不是 `'auto'`）/ `data-photo`。
 
+**这份清单就是 `paint()` 的合同**：`themeCssVars()` 返回多少个键就写多少个，一个不筛、一个不落；三个属性一个不少。少写一个变量不会表现为「没变化」，而是「上一套皮肤的值留在 DOM 上」——`--scrim-rgb` 不在 `base.css` 的 `:root` 兜底清单里，从深色切回浅色时它会留着深色那套的 `0,0,0`，于是浅色皮肤 + 背景照片的遮罩发黑、字压不住，而界面上零报错。这条合同**没有自动测试能覆盖**（测试看得见的是 `themeCssVars()` 的键集与色板的键集，看不见 `paint()` 的循环本身），所以手动验证清单里补了三条 Console 核对（`theme` / `mode` / `photo`）。
+
 **首屏不闪色的保证**：`main.js` 里加一个模块级的 promise：
 
 ```js
@@ -283,6 +285,30 @@ async function render(id) {
 **blob URL 生命周期**：照片的 `URL.createObjectURL()` 结果缓存在 `theme-store.js` 的模块级变量里；换图或移除时先 `revokeObjectURL` 旧的再换新的（否则每换一次图泄漏一份 blob）。
 
 `base.css` 保留一份 `:root`（默认皮肤浅色）+ 一条 `@media (prefers-color-scheme: dark) { :root { …默认皮肤深色… } }` 作为「JS 还没跑完的那一帧」的兜底。带属性的规则特异性 `(0,2,0)`／`(0,3,0)` 天然压过 `:root` 的 `(0,1,0)`——但**因为实际值由 JS 写进 inline style，这一条其实用不上**，留着只是让 `base.css` 单独看仍然是完整可用的（也方便将来做纯 CSS 的预览页）。
+
+**写入口的顺序：先画、再写库。** `setPreset()` / `setMode()` 都是「改内存 → `paint()` → `await setSetting()`」。反过来的话，写库一抛（`db.js` 的 `onblocked` 是真实可达路径，配额满也是）就留下「内存已改、DOM 还是旧皮肤」：面板拿 `currentTheme()` 重绘会显示「已经选中」，页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，写库失败只影响「下次启动记不记得住」。这两个写入口**不 catch**，rejection 交给调用方（面板）去提示「没保存成功」；它们与 `setPhoto` / `removePhoto` / `setOverlay` 一样 `return currentTheme()`。
+
+**多标签页不做同步。** 两个标签页是两个模块实例，内存不共享（只有 IndexedDB 共享）：A 页选了暖纸，B 页的面板仍显示默认；用户在 B 里点一次「确认」就把库写回默认。`storage` 事件不覆盖 IndexedDB，接它也没用；要同步得引入 `BroadcastChannel` 或轮询，对一个自用记账 app 不值得。**已知、接受。**
+
+### 5.5 系统栏颜色
+
+这件事在改动前**没有任何人决定过**：规格与计划里 grep 不到任何一处，而现状是两条互不相干的写死值——
+
+- `index.html` 的两条 `meta[name=theme-color]`（默认皮肤的浅色 / 深色，各带一条 `prefers-color-scheme` 的 media）；
+- 安卓壳 `android/app/src/main/res/values/themes.xml`：`statusBarColor` / `navigationBarColor` 写死 `#f2f2f5`，`windowLightStatusBar=true`（状态栏图标恒为深色）。
+
+后果：用户在浅色系统上手动选深色（或选暖纸 / 紫藤等任意非默认皮肤）→ 页面近黑或换色，而状态栏与导航栏仍是浅灰 + 深色图标，上下两条硬边。APK 里 `meta theme-color` 完全无效，只有 `themes.xml` 生效。
+
+**决定一（做）：浏览器 / PWA 这条路让它跟随。** `paint()` 里同步把 `meta[name=theme-color]` 的 `content` 写成当前 resolved 的 `--bg`，并把 `index.html` 的两条带 media 的 meta **合并成一条不带 media 的**——带 media 的两条只按系统深浅挑一条，用户手动切换时它根本不看。`paint()` 是唯一知道 resolved `--bg` 的地方，这件事该它干；静态那份 `content` 留作「JS 还没跑起来那一帧」的兜底。
+
+**决定二（不做）：APK 里系统栏不跟随页面主题。** 评估结论与理由：
+
+1. 状态栏 / 导航栏是**窗口级**状态，只有 Java 侧能改；而页面侧唯一的知情点是 `paint()`。要做就得在壳里新增一条「页面 → Java」的桥（`PvaultShell.setThemeColors(...)`），也就是本项目第一处**把渲染状态复制到宿主**的耦合——现有三条桥（落盘、剪贴板、壳版本）都是无状态的能力，主题不是。
+2. 复制出去的状态还得自己维护一致性：WebView 重载、`onPageFinished` 的时序、旋转、「系统深色 + 页面手动浅色」等组合各是一条要真机验证的路径，而收益只是两条硬边。
+3. **时间窗**：`targetSdk` 现在是 34，`setStatusBarColor` / `setNavigationBarColor` 仍然有效；升到 35（Android 15）后强制 edge-to-edge，这两个 API 被忽略，跟随要改成 `WindowInsetsController` + 让内容延伸到系统栏后面（连带 `viewport-fit=cover` 与 safe-area 的布局处理）。**现在写的实现会在下一次 `targetSdk` 升级时作废**，不如等那一步一起做。
+4. `values-night/themes.xml`（纯资源、零代码）看着便宜，但它只跟**系统**深浅、不跟页面主题：用户在系统深色下手动选浅色皮肤时，得到的反而是「状态栏深、页面浅」——把一种不一致换成另一种，且很难向用户解释。不做。
+
+**已知项**：任务 15 的「五套皮肤 × 深浅逐个截图」会拍到这两条硬边，这是上面这个决定的结果，不是 bug。
 
 ---
 

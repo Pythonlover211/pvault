@@ -51,7 +51,14 @@ export function currentTheme() {
 }
 
 /**
- * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上。
+ * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上，顺带更新系统栏颜色。
+ *
+ * **改这个函数时要整条守住这份合同**：themeCssVars 返回多少个键就写多少个（不筛、不挑），
+ * 三个 dataset 一个不少。少写一个变量的后果不是「没变化」而是「上一套皮肤的值留在 DOM 上」——
+ * styles/base.css 的 :root 兜底清单里没有 --scrim-rgb 这类变量，从深色切回浅色时它会留着
+ * 深色那套的 '0,0,0'，于是浅色皮肤 + 背景照片时遮罩发黑、字压不住，而界面上零报错。
+ * 这份合同眼下只有注释在守：tests/theme.test.js 钉住的是 themeCssVars 的键集与色板的键集，
+ * 没有一条测试看得见 paint 的循环本身；手动清单里那三条 Console 核对是唯一的兜底。
  *
  * 用 inline style 而不是切 class：色板的唯一真相在 theme.js 里，
  * 若同时存在一份 CSS 规则表，两处就会各自漂移——而测试读不到 CSS，
@@ -69,6 +76,12 @@ function paint() {
   root.dataset.theme = applied.preset;
   root.dataset.mode = applied.mode;
   root.dataset.photo = applied.photo ? 'on' : 'off';
+  // 系统栏 / 浏览器 UI 的颜色跟着背景走。index.html 里那条 meta 刻意不带 media 属性：
+  // 带 media 的两条只按系统深浅挑一条，用户手动选皮肤、手动选深浅时它根本不看——
+  // 而 resolved 的 --bg 只有这里知道（照片只改 --surface，不动 --bg）。
+  // 拿不到这条 meta 就跳过：它不在时不该让整个主题应用失败。
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', vars['--bg']);
 }
 
 function attachSystemListener() {
@@ -92,7 +105,15 @@ function attachSystemListener() {
 
 /**
  * 启动时读设置并应用。**必须在首屏渲染之前完成**，晚一帧就是
- * 「先闪一下默认蓝、再变成暖纸」。main.js 的 render() 会 await 它。
+ * 「先闪一下默认蓝、再变成暖纸」。
+ *
+ * **调用方必须 catch**：主题读不出来时照常渲染，只是外观是 CSS 里的兜底默认值。
+ * （任务 10）的 main.js 把 `initTheme().catch(...)` 挂在渲染路径上正是为此；少了那个 catch，
+ * 一次主题失败就会升级成整页「页面加载失败」。这条路径失败时页面上是 0 个变量、0 个 dataset、
+ * 0 个监听——连「半套主题」都不是，所以宁可要默认外观也不要它冒到视图层。
+ *
+ * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写），监听不重复挂。
+ * 将来需要「不刷新页面就把外部改动读进来」（比如导入备份之后）就用这个入口。
  */
 export async function initTheme() {
   const [presetRaw, modeRaw, bgRaw] = await Promise.all([
@@ -112,16 +133,27 @@ export async function initTheme() {
   return currentTheme();
 }
 
+/**
+ * 换皮肤：立即应用 + 写库。**不 catch**：写库失败时 rejection 交给调用方，
+ * 由调用方（面板）决定怎么提示「没保存成功」。
+ */
 export async function setPreset(themeId) {
   const preset = normalizePreset(themeId);
   applied.preset = preset;
-  await setSetting(PRESET_KEY, preset);
+  // 先画再写库。反过来的话，写库一抛（db.js 的 blocked、配额满都是真实路径）就留下
+  // 「内存已改、DOM 还是旧皮肤」——面板拿 currentTheme() 重绘会显示「已经选中」，
+  // 页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，
+  // 写库失败只影响「下次启动记不记得住」。
   paint();
+  await setSetting(PRESET_KEY, preset);
+  return currentTheme();
 }
 
+/** 换深浅（含「跟随系统」）：立即应用 + 写库，失败处置与 setPreset 同。 */
 export async function setMode(mode) {
   applied.modeChoice = normalizeMode(mode);
   applied.mode = resolveMode(applied.modeChoice, systemDark());
+  paint();                                  // 同 setPreset：先画再写库
   await setSetting(MODE_KEY, applied.modeChoice);
-  paint();
+  return currentTheme();
 }
