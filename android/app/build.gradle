@@ -19,9 +19,12 @@ android {
         targetSdk 34
         // 1.0 → 改动：发票模块（票据存档 + 账目挂账 + 报销状态）、图片压缩与缩略图、
         // 备份扩展到发票图片、转账计入支出/收入环形图。
+        // 1.1.0 → 1.2.0：发票可以导入 OFD —— 选得进来、原样存下并记住原始文件名、
+        // 导出去交给系统里的阅读器打开。顺带修了壳里导出落盘时把类型写死成 JSON 的问题
+        // （OFD / PDF / 图片从同一条桥出去，会被系统按 JSON 派发）。
         // versionCode 必须严格递增，否则手机上覆盖安装会被 PackageManager 拒掉。
-        versionCode 2
-        versionName "1.1.0"
+        versionCode 3
+        versionName "1.2.0"
     }
 
     // 静态站点由 scripts/build-apk.ps1 从仓库根目录复制进来，不纳入版本管理。
