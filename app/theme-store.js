@@ -10,9 +10,13 @@ import * as db from './db.js';
 import { getSetting, setSetting } from './store.js';
 import {
   DEFAULT_PRESET, DEFAULT_MODE, OVERLAY_DEFAULT,
-  normalizePreset, normalizeMode, normalizeBackground,
+  normalizePreset, normalizeMode, normalizeBackground, normalizeOverlay,
   resolveMode, scrimAlpha, themeCssVars
 } from './theme.js';
+// 解码 / 缩放 / JPEG 导出与发票那条路共用同一份（理由见 canvas-image.js 的头注释），
+// 压缩参数也用发票同一套（长边 1600、质量 0.72），背景图不另立一套。
+import { decode, drawTo, releaseSource } from './canvas-image.js';
+import { MAX_EDGE, JPEG_QUALITY } from './image-scale.js';
 
 /** 背景图在 assets 表里的固定主键。只存一张，重复选图就是覆盖同一条。 */
 export const BACKGROUND_ASSET_ID = 'bg';
@@ -112,7 +116,8 @@ function attachSystemListener() {
  * 一次主题失败就会升级成整页「页面加载失败」。这条路径失败时页面上是 0 个变量、0 个 dataset、
  * 0 个监听——连「半套主题」都不是，所以宁可要默认外观也不要它冒到视图层。
  *
- * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写），监听不重复挂。
+ * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写；有照片时还会重读一次 assets，
+ * 重建 blob URL 并当场释放上一个），监听不重复挂。
  * 将来需要「不刷新页面就把外部改动读进来」（比如导入备份之后）就用这个入口。
  */
 export async function initTheme() {
@@ -126,9 +131,14 @@ export async function initTheme() {
   applied.mode = resolveMode(applied.modeChoice, systemDark());
   applied.overlay = normalizeBackground(bgRaw)?.overlay ?? OVERLAY_DEFAULT;
   paint();
-  // 背景照片的加载（applyPhoto）在任务 8 才实现。这里先不调用它：调一个尚不存在的函数
-  // 会让 initTheme 直接 reject，而那时变量已经写进页面、监听却还没挂上——一个「半套主题」的中间态。
-  // 任务 8 实现 applyPhoto 后，把调用补在下面这行之前，并在提交说明里点明它关闭了这个中间态。
+  // 照片要 await 出来，**不能**挂成 fire-and-forget：上面这次 paint() 画的是内存里的 applied，
+  // 而卡片的不透明度（--surface）与背景图（--bg-image）要等 applyPhoto 里的第二次 paint() 才到位。
+  // 不 await 的话那次补画落在 initTheme 返回之后（常常已经 mount 完了），冷启动时用户看到的是
+  // 「卡片先实心、再突然变半透明并冒出一张照片」——规格 §5.4 要求主题在任何 mount 之前应用，
+  // 照片是同一层外观，没有理由把它排除在外。代价是首屏多等一次读库（settings 一条 + assets 一条），
+  // 与紧挨着的三次 getSetting、以及 mount 之后读交易列表同量级。
+  // 失败只记一条日志：一次照片读取失败不该升级成主题失败，initTheme 照常返回、监听照常挂上。
+  await applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
   attachSystemListener();
   return currentTheme();
 }
@@ -155,5 +165,128 @@ export async function setMode(mode) {
   applied.mode = resolveMode(applied.modeChoice, systemDark());
   paint();                                  // 同 setPreset：先画再写库
   await setSetting(MODE_KEY, applied.modeChoice);
+  return currentTheme();
+}
+
+// ── 背景照片 ────────────────────────────────────────────────
+
+/**
+ * 把用户选的照片压成背景图：长边 1600、JPEG。
+ *
+ * 为什么不复用 image-store.prepareFile：那个函数还要生成缩略图、还要判断
+ * 「压完是不是比原图更小」（压小了才用压缩版）。背景图这里**必须**走 JPEG——
+ * HEIC 之类格式 WebView 画不出来，而背景层是 CSS 直接引用的；
+ * 即使压完比原图大也得用这个编码结果。
+ */
+async function encodeBackground(inputFile) {
+  const source = await decode(inputFile);
+  try {
+    return await drawTo(source, MAX_EDGE, JPEG_QUALITY);
+  } finally {
+    // finally 而不是只写在成功路径上：drawTo 抛错（尺寸无效、toBlob 返回空）时同样要放掉位图。
+    // ImageBitmap 背后是一整张解压后的像素，漏一张就是几十 MB。
+    releaseSource(source);
+  }
+}
+
+/**
+ * 把照片相关的变量写进页面。
+ *
+ * 有图时三个都写：--bg-image（照片本身）、--bg-scrim（压在上面的遮罩层）、--scrim-a（遮罩强度）。
+ * url 为 null 表示「没有背景」：两层背景都设成 none、整层等于不存在，此时 --scrim-a 没有作用对象，
+ * 不再写它（下一次选图时会被重写）。
+ */
+function setPhotoVars(url) {
+  const root = document.documentElement;
+  if (photoUrl && photoUrl !== url) URL.revokeObjectURL(photoUrl);
+  photoUrl = url;
+  if (!url) {
+    root.style.setProperty('--bg-image', 'none');
+    root.style.setProperty('--bg-scrim', 'none');
+    return;
+  }
+  // url(...) 里的引号是必须的：blob URL 本身不含特殊字符，但一旦有人把这里
+  // 换成 file:// 或含括号的地址，没有引号就会把整条声明打断。
+  root.style.setProperty('--bg-image', `url("${url}")`);
+  // 遮罩层压着照片。这里写进去的是**表达式**（颜色取自 --scrim-rgb、强度取自 --scrim-a），
+  // 不是算好的颜色：自定义属性在使用点求值，所以 paint() 每次切深浅重写 --scrim-rgb 时，
+  // body::before 的 background-image 会跟着重新求值——不必在切深浅时再写一次 --bg-scrim。
+  root.style.setProperty('--bg-scrim',
+    'linear-gradient(rgba(var(--scrim-rgb), var(--scrim-a)), rgba(var(--scrim-rgb), var(--scrim-a)))');
+  root.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
+}
+
+/**
+ * 从库里读出背景图并应用。
+ *
+ * 「设置指向一张库里已经没有的图」按「没有背景」处理：走到这一步本来就没有照片可画，抛错
+ * 对调用方没有意义。同时把设置清掉——留着它只会让每次启动都多读一次 assets
+ * （settings 那条无论有没有背景都要读，省不掉）。
+ */
+async function applyPhoto() {
+  const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
+  const row = bg ? await db.get('assets', bg.assetId) : null;
+  const blob = row?.blob ?? null;
+  if (!blob) {
+    if (bg) await setSetting(BACKGROUND_KEY, null);
+    applied.photo = false;
+    // 遮罩强度一并复位：没有照片时它没有作用对象，留着只会让「当前状态」多带一个没有意义的数。
+    applied.overlay = OVERLAY_DEFAULT;
+    setPhotoVars(null);
+    paint();
+    return;
+  }
+  applied.photo = true;
+  applied.overlay = bg.overlay;
+  setPhotoVars(URL.createObjectURL(blob));
+  // 照片影响 --surface（半透明），所以 paint 必须跟着走一次。
+  paint();
+}
+
+/** 选一张照片当背景：压缩 → 存 assets → 写设置 → 应用。 */
+export async function setPhoto(inputFile) {
+  const blob = await encodeBackground(inputFile);
+  const createdAt = Date.now();
+  await db.put('assets', {
+    id: BACKGROUND_ASSET_ID,
+    blob,
+    mime: 'image/jpeg',
+    size: blob.size,
+    createdAt
+  });
+  // overlay 沿用内存里当前的值：换一张图不该把用户已经调好的遮罩打回默认。
+  await setSetting(BACKGROUND_KEY, { assetId: BACKGROUND_ASSET_ID, overlay: applied.overlay, createdAt });
+  await applyPhoto();
+  return currentTheme();
+}
+
+/**
+ * 移除背景：删记录、清设置、撤掉两层背景。
+ *
+ * 顺序是**先删库、成功之后再改内存与 DOM**：反过来的话删库一失败，页面上已经「移除成功」，
+ * 而记录还在库里，下次启动背景图又回来了。
+ * 照片是**用户自己选的**，删掉就是删掉。
+ */
+export async function removePhoto() {
+  await db.remove('assets', BACKGROUND_ASSET_ID);
+  await setSetting(BACKGROUND_KEY, null);
+  applied.photo = false;
+  applied.overlay = OVERLAY_DEFAULT;
+  setPhotoVars(null);
+  paint();
+  return currentTheme();
+}
+
+/** 只改遮罩强度：不重编码图片，也不重写 assets。 */
+export async function setOverlay(value) {
+  const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
+  if (!bg) return currentTheme(); // 没有背景图时滑块不该存在，走到这里说明状态不同步，忽略
+  applied.overlay = normalizeOverlay(value);
+  // 先写 DOM 再写库，与 setPreset / setMode 同一条纪律：反过来的话写库一抛就留下「内存已改、
+  // DOM 还是旧值」，面板拿 currentTheme() 重绘会显示新刻度而页面上的遮罩纹丝不动。
+  // 判据用 applied.photo 而不是 photoUrl：两处说的是同一件事（当前有没有照片），留一份就够，
+  // 免得将来有一处改了、另一处没跟上。
+  if (applied.photo) document.documentElement.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
+  await setSetting(BACKGROUND_KEY, { ...bg, overlay: applied.overlay });
   return currentTheme();
 }
