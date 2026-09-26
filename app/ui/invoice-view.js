@@ -143,7 +143,14 @@ export async function renderInvoices(root) {
     // 几十张票的时候 listBox 会在几百毫秒内完全是空的——而用户只是切回来看一眼列表。
     // 缩略图位置先放占位节点，真实图片随后填进去。
     const items = rows.map(inv => {
-      const thumb = el('div', { class: 'inv-thumb', text: inv.fileId ? '📄' : '🧾' });
+      // 占位块（没图 / PDF / OFD 都会留在这里）。文案固定成「发票文件」而不区分 PDF / OFD：
+      // getThumbUrl 只回 URL、不回 mime，要区分就得为列表每一行多读一次 IndexedDB 记录。
+      const thumb = el('div', {
+        class: 'inv-thumb',
+        title: inv.fileId ? '发票文件' : '没有文件',
+        'aria-label': inv.fileId ? '发票文件' : '没有文件',
+        text: inv.fileId ? '📄' : '🧾'
+      });
       if (inv.fileId) pending.push({ fileId: inv.fileId, thumb });
       return el('button', {
         class: 'inv-item',
