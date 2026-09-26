@@ -153,8 +153,10 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | 变量 | 谁设置 | 取值 |
 |---|---|---|
 | `--bg-image` | 选图/移除时 | `url(blob:…)` 或 `none` |
-| `--bg-scrim` | 选图/移除 + 每次切深浅时 | `linear-gradient(rgba(var(--scrim-rgb), var(--scrim-a)), rgba(var(--scrim-rgb), var(--scrim-a)))`；没有照片时 `none` |
+| `--bg-scrim` | 选图/移除时（写一次；切深浅由值里的 `var(--scrim-rgb)` 间接跟随，见下） | `linear-gradient(rgba(var(--scrim-rgb), var(--scrim-a)), rgba(var(--scrim-rgb), var(--scrim-a)))`；没有照片时 `none` |
 | `--scrim-a` | 遮罩滑块每次变化时 | `scrimAlpha(overlay)` 的结果，0–0.6 |
+
+`--bg-scrim` **只在选图 / 移除时写一次**（不是每次切深浅）：写进 DOM 的是**表达式**而不是算好的颜色——`linear-gradient` 里的 `--scrim-rgb` 要等到使用点（`body::before` 的 `background-image`）才求值，而 `paint()` 每次切深浅都会重写 `--scrim-rgb`，遮罩颜色因此自动跟着变。切深浅时再写一次只是把同一条表达式重设一遍，还会让「有没有照片」这件事再漏进 `paint()` 的合同里。
 
 `--radius*`、`--font-*`、`--tab-h`、`--safe-b` 等**不属于皮肤**，继续留在 `base.css` 的 `:root` 里不动。
 
@@ -257,7 +259,7 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 export async function initTheme()          // 读设置 → 应用；返回已应用的 { preset, mode, photo }
 export async function setPreset(id)        // 写库 + 立即应用
 export async function setMode(mode)        // 写库 + 立即应用（'auto' 时解析当前系统状态）
-export async function setPhoto(blob, mime) // 压缩 → 存 assets → 写库 → 应用
+export async function setPhoto(file)       // 压缩 → 存 assets → 写库 → 应用（file 是相册 input 给的 File）
 export async function removePhoto()        // 删 assets 记录 + 清设置 + 应用
 export async function setOverlay(pct)      // 只改遮罩，不重编码图片
 export function currentTheme()             // 同步读当前已应用的状态（面板用）
@@ -347,6 +349,7 @@ body::before {
 - `--scrim-rgb`：浅色皮肤 `255,255,255`，深色皮肤 `0,0,0`（深浅切换时由 `themeCssVars` 一起给）。
 - `--scrim-a`：由遮罩滑块控制，`scrimAlpha(overlay)`，0–0.6。
 - `background-attachment: fixed` **不用**：移动端 Safari/WebView 上它对 `cover` 的处理不一致，而这里是 `position: fixed` 的伪元素，本来就不随滚动移动。
+- **照片也在首屏之前就位**：`initTheme()` 里是 `await applyPhoto()`，不是 fire-and-forget。它上面的那次 `paint()` 只画了皮肤——那时 `applied.photo` 还是 false，卡片不透明、`--bg-image` 是 none，照片要等 `applyPhoto()` 里的第二次 `paint()` 才出现；不 await 的话那次补画落在 `initTheme()` 返回之后（通常已经 mount 完了），用户看到的是「卡片先实心、再突然变半透明并冒出一张照片」。代价是首屏多等一次读库（settings 一条 + assets 一条）。
 
 ### 6.3 可读性（这才是照片背景的真正难点）
 

@@ -1487,9 +1487,11 @@ git commit -m 'feat(theme): theme-store 读取并应用外观设置'
 
 - [ ] **步骤 1：加照片相关实现**
 
-在 `app/theme-store.js` 顶部的 import 区补：
+在 `app/theme-store.js` 顶部的 import 区补（`normalizeOverlay` 并进 `./theme.js` 那条 import 的清单）：
 
 ```js
+// 解码 / 缩放 / JPEG 导出与发票那条路共用同一份（理由见 canvas-image.js 的头注释），
+// 压缩参数也用发票同一套（长边 1600、质量 0.72），背景图不另立一套。
 import { decode, drawTo, releaseSource } from './canvas-image.js';
 import { MAX_EDGE, JPEG_QUALITY } from './image-scale.js';
 ```
@@ -1512,13 +1514,18 @@ async function encodeBackground(inputFile) {
   try {
     return await drawTo(source, MAX_EDGE, JPEG_QUALITY);
   } finally {
+    // finally 而不是只写在成功路径上：drawTo 抛错（尺寸无效、toBlob 返回空）时同样要放掉位图。
+    // ImageBitmap 背后是一整张解压后的像素，漏一张就是几十 MB。
     releaseSource(source);
   }
 }
 
 /**
- * 把照片相关的三个变量写进页面。
- * url 为 null 表示「没有背景」，此时两层背景都撤掉，整层等于不存在。
+ * 把照片相关的变量写进页面。
+ *
+ * 有图时三个都写：--bg-image（照片本身）、--bg-scrim（压在上面的遮罩层）、--scrim-a（遮罩强度）。
+ * url 为 null 表示「没有背景」：两层背景都设成 none、整层等于不存在，此时 --scrim-a 没有作用对象，
+ * 不再写它（下一次选图时会被重写）。
  */
 function setPhotoVars(url) {
   const root = document.documentElement;
@@ -1532,8 +1539,9 @@ function setPhotoVars(url) {
   // url(...) 里的引号是必须的：blob URL 本身不含特殊字符，但一旦有人把这里
   // 换成 file:// 或含括号的地址，没有引号就会把整条声明打断。
   root.style.setProperty('--bg-image', `url("${url}")`);
-  // 遮罩层压着照片：颜色由 --scrim-rgb（皮肤 × 深浅决定，切深浅时自动跟着变）
-  // 与 --scrim-a（滑块决定）合成。
+  // 遮罩层压着照片。这里写进去的是**表达式**（颜色取自 --scrim-rgb、强度取自 --scrim-a），
+  // 不是算好的颜色：自定义属性在使用点求值，所以 paint() 每次切深浅重写 --scrim-rgb 时，
+  // body::before 的 background-image 会跟着重新求值——不必在切深浅时再写一次 --bg-scrim。
   root.style.setProperty('--bg-scrim',
     'linear-gradient(rgba(var(--scrim-rgb), var(--scrim-a)), rgba(var(--scrim-rgb), var(--scrim-a)))');
   root.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
@@ -1541,9 +1549,10 @@ function setPhotoVars(url) {
 
 /**
  * 从库里读出背景图并应用。
- * 「设置里指向一张不存在的图」是真实存在的情况：备份里只有设置没有图、
- * 或用户在导入后删掉了 assets 记录。这种时候按「没有背景」处理，
- * 并把设置一并清掉——留着它只会让每次启动都白读一次库。
+ *
+ * 「设置指向一张库里已经没有的图」按「没有背景」处理：走到这一步本来就没有照片可画，抛错
+ * 对调用方没有意义。同时把设置清掉——留着它只会让每次启动都多读一次 assets
+ * （settings 那条无论有没有背景都要读，省不掉）。
  */
 async function applyPhoto() {
   const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
@@ -1552,6 +1561,7 @@ async function applyPhoto() {
   if (!blob) {
     if (bg) await setSetting(BACKGROUND_KEY, null);
     applied.photo = false;
+    // 遮罩强度一并复位：没有照片时它没有作用对象，留着只会让「当前状态」多带一个没有意义的数。
     applied.overlay = OVERLAY_DEFAULT;
     setPhotoVars(null);
     paint();
@@ -1575,12 +1585,19 @@ export async function setPhoto(inputFile) {
     size: blob.size,
     createdAt
   });
+  // overlay 沿用内存里当前的值：换一张图不该把用户已经调好的遮罩打回默认。
   await setSetting(BACKGROUND_KEY, { assetId: BACKGROUND_ASSET_ID, overlay: applied.overlay, createdAt });
   await applyPhoto();
   return currentTheme();
 }
 
-/** 移除背景：删记录、清设置、撤掉两层背景。照片是**用户自己选的**，删掉就是删掉。 */
+/**
+ * 移除背景：删记录、清设置、撤掉两层背景。
+ *
+ * 顺序是**先删库、成功之后再改内存与 DOM**：反过来的话删库一失败，页面上已经「移除成功」，
+ * 而记录还在库里，下次启动背景图又回来了。
+ * 照片是**用户自己选的**，删掉就是删掉。
+ */
 export async function removePhoto() {
   await db.remove('assets', BACKGROUND_ASSET_ID);
   await setSetting(BACKGROUND_KEY, null);
@@ -1596,24 +1613,36 @@ export async function setOverlay(value) {
   const bg = normalizeBackground(await getSetting(BACKGROUND_KEY, null));
   if (!bg) return currentTheme(); // 没有背景图时滑块不该存在，走到这里说明状态不同步，忽略
   applied.overlay = normalizeOverlay(value);
+  // 先写 DOM 再写库，与 setPreset / setMode 同一条纪律：反过来的话写库一抛就留下「内存已改、
+  // DOM 还是旧值」，面板拿 currentTheme() 重绘会显示新刻度而页面上的遮罩纹丝不动。
+  // 判据用 applied.photo 而不是 photoUrl：两处说的是同一件事（当前有没有照片），留一份就够，
+  // 免得将来有一处改了、另一处没跟上。
+  if (applied.photo) document.documentElement.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
   await setSetting(BACKGROUND_KEY, { ...bg, overlay: applied.overlay });
-  if (photoUrl) document.documentElement.style.setProperty('--scrim-a', String(scrimAlpha(applied.overlay)));
   return currentTheme();
 }
 ```
 
-（`normalizeOverlay` 要补进从 `./theme.js` 的 import 清单里。）
+（`normalizeOverlay` 已并进 `./theme.js` 那条 import 的清单里，见本节开头。）
 
 **还要把 `applyPhoto()` 的调用补回 `initTheme()`。** 任务 7 交付时那里**故意**留空：当时
 `applyPhoto` 还不存在，调它会立刻让 `initTheme` reject，而那时变量已经写进页面、监听却还没挂上
 ——一个「半套主题」的中间态。现在实现有了，在 `initTheme()` 的 `attachSystemListener();` **之前**插入：
 
 ```js
-  applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
+  await applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
 ```
 
+**为什么是 `await` 而不是 fire-and-forget**：`paint()` 画的是内存里的 `applied`，而卡片的不透明度
+（`--surface`）与背景图（`--bg-image`）要等 `applyPhoto()` 里的第二次 `paint()` 才到位。不 await 的话
+那次补画落在 `initTheme()` 返回之后（通常已经 mount 完了），冷启动时用户看到的是「卡片先实心、
+再突然变半透明并冒出一张照片」。规格 §5.4 要求主题在任何 mount 之前
+应用，照片是同一层外观，没有理由把它排除在外。代价是首屏多等一次读库（settings 一条 + assets 一条），
+与紧挨着的三次 `getSetting` 同量级；`catch` 收在这里，一次照片读取失败不会升级成主题失败。
+
 顺手把任务 7 留下的那三行「这里先不调用它」的注释删掉：那三行是给「还没有 applyPhoto」这个
-中间态写的，实现补上之后再留着，它就成了与代码相反的假话。
+中间态写的，实现补上之后再留着，它就成了与代码相反的假话。同时把 `initTheme()` 那句
+「可以重复调用」的注释补全：第二次会连照片一起重读，重建 blob URL 并释放上一个。
 
 **本步做完才算关闭任务 7 的中间态**：到这里 `initTheme()` 才是一条完整的启动路径
 （读设置 → 写变量 → 加载照片 → 挂监听），提交说明里要点明这一点。
