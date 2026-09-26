@@ -129,3 +129,94 @@ test('theme：每套皮肤都有非空的中文名', () => {
     assert.ok(t.name.trim(), `${t.id} 的名字是空的`);
   }
 });
+
+// ── WCAG 对比度 ───────────────────────────────────────────────────────────────
+// 自己实现而不是引依赖：整套换算只用到相对亮度一个公式，而零依赖是这个项目的底线。
+
+function parseHex(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) throw new Error(`不是 #rrggbb 形式的颜色：${hex}`);
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// sRGB 线性化：低亮度段走线性，其余走 2.4 次幂。0.03928 这个分段点是 WCAG 2.x 的写法
+// （2.2 起改成 0.04045）。这两个数在 8bit 色值上不可能产生分歧——它们之间夹着的 s 区间
+// 换算回 0..255 是 (10.02, 10.31]，里面没有任何整数——所以色板逐值算出来的结果与用新数一致，
+// 不必为了对齐新标准去改。这也是为什么换成逐值测试之后，这个常量不再是「抄哪个版本」的问题。
+function channel(v) {
+  const s = v / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+// 0.2126 / 0.7152 / 0.0722 是 sRGB 的三原色亮度权重（Rec.709）。绿色占七成，
+// 所以「把红色调深一点」对对比度的贡献远小于「把绿色调深一点」——
+// 这也是调色值时最容易判断失误的地方。
+function luminance(hex) {
+  const [r, g, b] = parseHex(hex);
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+// WCAG 的对比度是 (较亮者 + 0.05) / (较暗者 + 0.05)，谁亮谁暗由公式自己排，
+// 不靠调用方保证顺序。
+function contrast(a, b) {
+  const la = luminance(a);
+  const lb = luminance(b);
+  const [hi, lo] = la >= lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// 「文字色 vs 它可能落在的每一种底」——方向固定是「左是文字、右是底」。
+// contrast() 对调两侧得到的是同一个数，所以写反了不会有任何测试响；但意图会变成
+// 「拿底色当文字色去比」，后来的人照着这一对去调色，就会朝着错误的方向使劲。
+// surface-2 必须算进去：输入框、次级按钮都垫在它上面，而 --text-2 落在它上面是每套皮肤里
+// 最紧的一对——浅色皮肤里它是最暗的底、深色皮肤里它是最亮的底，两个方向都在往文字色挤。
+const CONTRAST_PAIRS = [
+  ['--text', '--bg'], ['--text', '--surface'], ['--text', '--surface-2'],
+  ['--text-2', '--bg'], ['--text-2', '--surface'], ['--text-2', '--surface-2'],
+  ['--on-accent', '--accent']
+];
+
+const MIN_CONTRAST = 4.5;
+
+test('theme：对比度断言的键名都来自正典清单', () => {
+  // 键名手滑（写成 --surface3 之类）时，tokens[fg] 是 undefined，下面那条断言会死在
+  // parseHex 抛出的「不是 #rrggbb 形式的颜色：undefined」上——红是红了，但读起来像色值坏了，
+  // 而不是「这一对的键名写错了」。先在这里把表本身钉住，报出来的才是该改哪一行。
+  for (const [fg, bg] of CONTRAST_PAIRS) {
+    assert.ok(TOKEN_NAMES.includes(fg), `对比度对的文字色不在正典清单里：${fg}`);
+    assert.ok(TOKEN_NAMES.includes(bg), `对比度对的背景色不在正典清单里：${bg}`);
+  }
+});
+
+test('theme：对比度公式与 WCAG 的已知值一致', () => {
+  // 上面那几行公式没人会去复核，抄错了（漏掉 +0.05、把 0.7152 写成 0.7512）整套色板
+  // 就会在错误的标准下全绿——写测试的人和写实现的人是同一个，两边一起错时没有东西会响。
+  // 所以钉住两个不依赖色板的已知值：黑白 21:1 是 WCAG 定义的极值，同色必然是 1:1
+  // （+0.05 有没有漏，看这一条就知道）。
+  assert.ok(Math.abs(contrast('#ffffff', '#000000') - 21) < 1e-9, '黑白对比度应为 21:1');
+  assert.ok(Math.abs(contrast('#ffffff', '#ffffff') - 1) < 1e-9, '同色的对比度应为 1:1');
+  // 参数对调必须同值：如果亮度比较那一步被写成「拿第一个减第二个」，这里立刻红。
+  assert.equal(contrast('#0a6ef0', '#ffffff'), contrast('#ffffff', '#0a6ef0'));
+});
+
+test('theme：五套皮肤的文字对比度都不低于 4.5:1', () => {
+  // 一次跑完全部 70 对再断言，而不是每对 assert 一次：第一对不达标就中断的话，
+  // 调色的人要「改一处—重跑—再看到下一处」，而这几套皮肤的色值是彼此独立的，
+  // 攒齐一次报出来才能一轮改完。
+  const bad = [];
+  for (const id of THEME_IDS) {
+    for (const mode of ['light', 'dark']) {
+      const tokens = THEME_TOKENS[id][mode];
+      for (const [fg, bg] of CONTRAST_PAIRS) {
+        const ratio = contrast(tokens[fg], tokens[bg]);
+        if (ratio < MIN_CONTRAST) {
+          // 报出「皮肤.深浅 + 哪一对 + 实际比值 + 用到的两个色值」，四项缺一不可：
+          // 这条断言的唯一修法是改色值，信息不全的报错等于把活原样退回给读日志的人。
+          bad.push(`${id}.${mode}  ${fg} on ${bg} = ${ratio.toFixed(2)}:1  (${tokens[fg]} / ${tokens[bg]})`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(bad, [], '这些配色达不到 AA 的 4.5:1，必须调色值：\n' + bad.join('\n'));
+});
