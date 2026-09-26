@@ -149,7 +149,7 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       : '文件读不出来');
     // title 与 aria-label 都放完整名字。真机上没有悬停、长按弹的也是文本选择而不是它，
     // 所以这两个属性主要给读屏和桌面浏览器——「看全名」靠的是导出时那个名字，不是这里。
-    return el('div', { class: 'inv-thumb inv-file-thumb', title: text, 'aria-label': text, text });
+    return el('div', { class: 'inv-thumb inv-file-thumb', role: 'img', title: text, 'aria-label': text, text });
   }
 
   async function paintPreview() {

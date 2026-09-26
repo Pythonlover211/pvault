@@ -147,6 +147,7 @@ export async function renderInvoices(root) {
       // getThumbUrl 只回 URL、不回 mime，要区分就得为列表每一行多读一次 IndexedDB 记录。
       const thumb = el('div', {
         class: 'inv-thumb',
+        role: 'img',
         title: inv.fileId ? '发票文件' : '没有文件',
         'aria-label': inv.fileId ? '发票文件' : '没有文件',
         text: inv.fileId ? '📄' : '🧾'
@@ -187,7 +188,7 @@ export async function renderInvoices(root) {
         keep.add(p.fileId);
         // 只替换这一个占位节点，不整块重挂列表：整块重挂会让列表闪一下，
         // 也会把用户正按住的那一行从手指底下抽走。
-        p.thumb.replaceWith(el('img', { class: 'inv-thumb', src: url, alt: '' }));
+        p.thumb.replaceWith(el('img', { class: 'inv-thumb', src: url, alt: '发票文件' }));
       });
     }
     if (seq !== paintSeq) return;
