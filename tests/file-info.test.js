@@ -107,6 +107,11 @@ test('sanitizeFilename：去掉路径分隔符与非法字符', () => {
   assert.equal(sanitizeFilename('a/b\\c:d*e?f"g<h>i|j', 'fb'), 'a_b_c_d_e_f_g_h_i_j');
 });
 
+test('sanitizeFilename：控制字符单独处理', () => {
+  assert.equal(sanitizeFilename('a\u0000b\u001fc', 'fb'), 'a_b_c');
+  assert.equal(sanitizeFilename('a\nb\tc', 'fb'), 'a_b_c');
+});
+
 test('sanitizeFilename：去掉首尾的点与空格', () => {
   assert.equal(sanitizeFilename('  ..name..  ', 'fb'), 'name');
   assert.equal(sanitizeFilename('...', 'fb'), 'fb');
@@ -119,8 +124,28 @@ test('sanitizeFilename：空、全空白、非字符串都用 fallback', () => {
   assert.equal(sanitizeFilename(undefined, 'fb'), 'fb');
 });
 
-test('sanitizeFilename：超长截断到 100 字符', () => {
+test('sanitizeFilename：fallback 自己也要过净化', () => {
+  // 返回值唯一的用途是喂给 <a download> 的 filename，那里不能出现路径分隔符，也不能超长。
+  // fallback 由调用方随手传进来，不净化就等于开了个后门。
+  assert.equal(sanitizeFilename('', 'a/b:c*?'), 'a_b_c__');
+  assert.equal(sanitizeFilename('', 'x'.repeat(300)).length, 100);
+  assert.equal(sanitizeFilename('', '...'), 'file');
+});
+
+test('sanitizeFilename：超长时截断，但保住扩展名', () => {
+  const out = sanitizeFilename('a'.repeat(120) + '.pdf', 'fb');
+  assert.equal(out.length, 100);
+  assert.ok(out.endsWith('.pdf'), `扩展名被切掉了：${out}`);
+  // 没有扩展名时就是普通截断
   assert.equal(sanitizeFilename('x'.repeat(300), 'fb').length, 100);
+});
+
+test('sanitizeFilename：先截断再清首尾，结果是幂等的', () => {
+  // 反过来的话，截断处会重新长出一个点或空格
+  const once = sanitizeFilename('a'.repeat(99) + '.tail', 'fb');
+  assert.equal(once, 'a'.repeat(95) + '.tail');
+  assert.ok(!/[.\s]$/.test(once), `结尾不该留点或空格：${once}`);
+  assert.equal(sanitizeFilename(once, 'fb'), once);
 });
 
 test('sanitizeFilename：正常的文件名原样保留', () => {
@@ -153,4 +178,17 @@ test('fallbackFileName：图片带 PNG 的 mime 时扩展名跟着变', () => {
     fallbackFileName({ number: '9', issuedAt: 5, kind: 'image', mime: 'image/png' }),
     '发票-9-5.png'
   );
+});
+
+test('真实链路：兜底名与净化串起来', () => {
+  // 各个函数单独都测过，但审查发现的问题全长在「函数之间的缝」上。
+  const fallback = fallbackFileName({
+    number: '25517000000012345678', issuedAt: 1700000000000, kind: 'image', mime: 'image/png'
+  });
+  assert.equal(fallback, '发票-25517000000012345678-1700000000000.png');
+  // 外部 App 给的长名字：净化后要保住扩展名，且再净化一次不再变化
+  const external = '微信图片_' + 'x'.repeat(120) + '.ofd';
+  const once = sanitizeFilename(external, fallback);
+  assert.ok(once.endsWith('.ofd'), `扩展名被切掉了：${once}`);
+  assert.equal(sanitizeFilename(once, fallback), once);
 });

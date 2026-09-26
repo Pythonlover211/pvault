@@ -97,26 +97,65 @@ export function extForKind(kind, mime) {
   return /^[a-z0-9]+$/.test(sub) ? sub : 'jpg';
 }
 
+// 文件名的长度上限（按码点算）。取 100：安卓上单个文件名的上限是 255 字节，
+// 一个汉字占 3 字节，所以 100 个汉字会顶到 300 字节 —— 这条注释是承认这个近似，
+// 不是保证。真实场景里没有哪个外部 App 会给出 100 个汉字的发票文件名。
+const NAME_MAX = 100;
+
+/**
+ * 截断到上限，但**保住扩展名**。
+ *
+ * 为什么不能直接 slice：原始文件名是外部 App 给的（扫描类 App、从聊天或浏览器另存下来的
+ * 名字经常又长又啰嗦），一刀切下去很容易正好切在扩展名上。名字没了扩展名，手机就失去了
+ * 派发依据 —— 而导出的本意正是「交给别的 App 打开」，那一步会变成一个看起来像环境问题的失败。
+ *
+ * 按码点切（Array.from）而不是按 UTF-16 码元：直接 slice 会把 emoji 的代理对劈成两半，
+ * 留下一个孤立的高位代理，落到文件系统上是乱码、或被直接拒掉。
+ */
+function truncateKeepingExt(name, max) {
+  const chars = Array.from(name);
+  if (chars.length <= max) return name;
+  // 最后一个点之后才算扩展名；点在开头（.hidden 这种）或压根没有点，都当作没有扩展名
+  const dot = chars.lastIndexOf('.');
+  const ext = dot > 0 ? chars.slice(dot) : [];
+  // 扩展名自己就长到没有保留价值（甚至比上限还长）：按普通截断处理，别为了它把正文切光
+  if (ext.length === 0 || ext.length >= max) return chars.slice(0, max).join('');
+  return chars.slice(0, max - ext.length).join('') + ext.join('');
+}
+
 /**
  * 净化文件名：它会落到手机的文件系统上。路径分隔符、控制字符、首尾的点都不能留
  * （".." 与结尾的点在 Windows 上会被截掉、或产生一个看不出问题的怪文件）。
- * 净化后为空时用调用方给的 fallback——空文件名在下载时会退化成一个乱码名。
+ *
+ * 顺序有讲究：**先截断、再清首尾**。反过来的话，截断处会重新长出一个点或空格
+ * （「aaa…a.tail」切到 100 位正好留在一个点上），而那正是上面说不该留的东西；
+ * 顺带地，函数也就不再幂等 —— 同一个名字过两遍净化会得到两个不同结果。
+ *
+ * 整串只有扩展名时（'.ofd'）前导点会被清掉、退化成 'ofd'：这是已知且接受的，
+ * 安卓选择器给出这种名字的概率极低。
  */
 export function sanitizeFilename(name, fallback = 'file') {
-  const cleaned = String(name ?? '')
+  const raw = String(name ?? '')
     .replace(/[/\\:*?"<>|]/g, '_')
     // 控制字符单独一条：塞进上面的字符类里会写成不可见的字面量，读代码的人会以为这里漏了
-    .replace(/[\u0000-\u001f]/g, '_')
+    .replace(/[\u0000-\u001f]/g, '_');
+  const cleaned = truncateKeepingExt(raw, NAME_MAX)
     .replace(/^[.\s]+/, '')
-    .replace(/[.\s]+$/, '')
-    .slice(0, 100);
-  return cleaned === '' ? fallback : cleaned;
+    .replace(/[.\s]+$/, '');
+  // fallback 也要过一道净化：它可能是调用方随手传进来的（比如记录里的某个字段）。
+  // 不过这一道，这个函数就会同时存在「净化过的返回值」和「没净化的返回值」两种形态，
+  // 而它唯一的用途是喂给 <a download> 的 filename —— 那里不能出现路径分隔符。
+  // 递归是安全的：默认值 'file' 净化后非空，所以最多再走一层就停。
+  return cleaned === '' ? sanitizeFilename(fallback ?? 'file') : cleaned;
 }
 
 /**
  * 没有原始文件名时的兜底名。号码是用户最认得出的东西，放在最前面；
  * 没填就直接写「无号」——空字符串会让文件名变成「发票--1700000000000.ofd」这种看着像出错的东西。
- * 时间戳保证同一天的多张票不会重名。
+ *
+ * 结尾的时间戳**不是**用来区分同一天的多张票的（那些票共享同一个 issuedAt，名字会一模一样）：
+ * 它的作用有两个——让「同一张票重复导出」稳定落到同一个文件名上（真重名时浏览器自己会加 (1)），
+ * 以及让 issuedAt 不合法时退化成一个确定的常量 0。真正区分多张票的是号码。
  */
 export function fallbackFileName({ number, issuedAt, kind, mime } = {}) {
   const n = String(number ?? '').trim() || '无号';
