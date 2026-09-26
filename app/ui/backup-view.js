@@ -227,7 +227,7 @@ export function openBackupSheet({ onChanged } = {}) {
     }
   }
 
-  // 触发一次下载：步骤在 app/ui/download.js 里，两个导出入口共用同一份实现。
+  // blob 与 mime 是业务决定（备份文件是 JSON），留在这里；下载动作本身走 app/ui/download.js。
   function download(filename, text) {
     downloadBlob(new Blob([text], { type: 'application/json' }), filename);
   }
