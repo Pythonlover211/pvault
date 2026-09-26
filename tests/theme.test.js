@@ -502,6 +502,16 @@ test('themeCssVars：不认识的皮肤/深浅都退回默认', () => {
   assert.deepEqual(themeCssVars('nope', 'dark'), THEME_TOKENS.default.dark);
   assert.deepEqual(themeCssVars('default', 'auto'), THEME_TOKENS.default.light);
 
+  // 组合也要测：「不认识的皮肤」×「开着照片」。这一节前面那十几项全是 photo: false，照片那两张又全用
+  // 合法 id——两条路径各自被测、组合没人测。实测：把照片分支的取值换成未归一化的 id
+  // （`hexToRgb(THEME_TOKENS[themeId]?.[resolved]?.['--surface'])`）时 18 条全绿，而它在「用户手改坏
+  // preset、同时又开着背景照片」时会抛 `hexToRgb：不认识的色值 undefined`——抛点在任务 7/10 的首屏路径上。
+  assert.deepEqual(
+    themeCssVars('nope', 'dark', { photo: true }),
+    { ...THEME_TOKENS.default.dark, '--surface': 'rgba(30,30,33, 0.9)' },
+    '不认识的皮肤在开着照片时也要退到 default.dark 的半透明卡片（照片这条路径同样得先归一化）'
+  );
+
   // 深浅这一维的脏值逐个列：来源各不相同（'DARK' 是大小写写错、undefined 是字段缺失、42 是类型
   // 搞错），判据只有一条——不是 'dark' 就按浅色。
   for (const junk of ['auto', undefined, null, 'DARK', 42, {}, []]) {
@@ -534,10 +544,10 @@ test('themeCssVars：开照片时只有 --surface 变成半透明', () => {
   // 透了它们会跟着照片纹理一起花掉（规格 §6.3 的硬要求）。
   assert.equal(withPhoto['--surface-2'], plain['--surface-2'], 'surface-2 不许被改成半透明');
 
-  // 「只有 --surface 变」用一个差集来钉（哪些键的值不一样），不逐键写死期望值：失败时它直接报出
-  // 被改动的键名（`实际改动了这些变量：--surface、--surface-2`），而逐键断言只会说某个键的值不对，
-  // 读的人还得自己去拼「到底改了几个」。两种写法在「以后新增变量」上没有区别——两边遍历的都是
-  // Object.keys(plain)，新变量都会自动进圈，别把「自动进圈」当成选差集的理由。
+  // 「只有 --surface 变」用一个差集来钉（`Object.keys(plain)` 里过滤出值不一样的键），不逐键写死期望值：
+  // 差集失败时直接报出被改动的键名（`实际改动了这些变量：--surface、--surface-2`），而逐键断言只会说
+  // 某个键的值不对，读的人还得自己去拼「到底改了几个」。这两种写法在「以后新增变量」上没有区别——
+  // 差集和逐键比较遍历的都是 Object.keys(plain)，新变量都会自动进圈，别把「自动进圈」当成选差集的理由。
   const changed = Object.keys(plain).filter(key => withPhoto[key] !== plain[key]);
   assert.deepEqual(
     changed, ['--surface'],
@@ -550,17 +560,23 @@ test('themeCssVars：开照片时只有 --surface 变成半透明', () => {
   assert.deepEqual(Object.keys(withPhoto).sort(), Object.keys(plain).sort(), '两种模式的变量集合必须完全一致');
   assert.deepEqual(
     Object.keys(withPhoto).sort(), [...TOKEN_NAMES].sort(),
-    'themeCssVars 的输出必须正好是正典清单里的 12 个变量（不该多出 --surface-rgb 这类内部中间值）'
+    `themeCssVars 的输出必须正好是正典清单里的 ${TOKEN_NAMES.length} 个变量（不该多出 --surface-rgb 这类内部中间值）`
   );
 });
 
 test('themeCssVars：半透明的通道从 --surface 现算，10 组逐组比对', () => {
   // 浅色那 5 套的 --surface 全是 #ffffff，所以「只测浅色」的断言挡不住「hexToRgb 其实没换算」这类错
-  // ——把实现换成硬编码的 '255,255,255'，实测红的只有下面第二条（seaglass dark：期望 rgba(22,38,42, 0.9)、
-  // 实得 rgba(255,255,255, 0.9)），浅色那一条照样绿。
+  // ——把实现换成硬编码的 '255,255,255'，浅色那条仍然绿。整份文件实测红两条：先红的是上一张测试里那条
+  // 「不认识的皮肤 × 开着照片」的组合断言（它要的是 default.dark 的 rgba(30,30,33, 0.9)，拿到的是白色），
+  // 然后才是这张里的 seaglass dark（`+ 'rgba(255,255,255, 0.9)' - 'rgba(22,38,42, 0.9)'`）。
+  // 但 seaglass dark 也只是排在这张的最前面，不是「只有它拦得住」：实测把它注释掉再跑，规格 §6.3 点名的
+  // default.dark 那条立刻红（`+ 'rgba(255,255,255, 0.9)' - 'rgba(30,30,33, 0.9)'`）；三条字面量全注释掉
+  // 就轮到下面的循环，第一个红的还是 default.dark
+  // （`default.dark 的 rgba 通道不是从 --surface #1e1e21 现算的`）。
   // 深色 5 套的 --surface 各不相同（逐组算过：default #1e1e21 → 30,30,33；paper #262019 → 38,32,25；
-  // sage #1e261e → 30,38,30；wisteria #211b2c → 33,27,44；seaglass #16262a → 22,38,42），
-  // 每一条深色断言都是一道独立的关卡。
+  // sage #1e261e → 30,38,30；wisteria #211b2c → 33,27,44；seaglass #16262a → 22,38,42），所以深色的
+  // 每一组都能被这三层里的某一层拦下（seaglass.dark 与 default.dark 上面实测过，paper/sage/wisteria
+  // 由那个循环兜住）。
   // 顺带记一笔通道顺序写反（红蓝对调）的覆盖面：10 组里只有 4 组的 r 与 b 不同（default.dark、
   // paper.dark、wisteria.dark、seaglass.dark），另外 6 组 r=b（5 组 #ffffff 与 sage.dark 的 30/30）
   // ——也就是说只测浅色的话，连通道写反都发现不了。
@@ -595,12 +611,18 @@ test('themeCssVars：返回值是副本，改它不会污染色板', () => {
   vars['--bg'] = '#000000';
   assert.notEqual(THEME_TOKENS.sage.dark['--bg'], '#000000', '色板被调用方改掉了');
 
-  // 但上面那条 notEqual 走的是 photo: false 这条路，抓不到「照片分支改的是色板本身、返回的才是副本」
-  // 那种写法（`if (photo) base['--surface'] = ...`）：实测换上去之后那条 notEqual 照样绿（它只碰 sage.dark
-  // 的 --bg），能直接抓住它的只有下面这个快照比对（别处的红都是别的原因：返回值不对，或后续调用死在
-  // hexToRgb 的抛错上）——单独跑这一条会红在「不该改动 THEME_TOKENS 本身」；
-  // 跑整份文件时还轮不到它出声，前面几张测试先被污染，这一节会先死在 hexToRgb 的抛错上
-  // （实测消息 `hexToRgb：不认识的色值 rgba(255,255,255, 0.9)`）。
+  // 但上面那条 notEqual 走的是 photo: false 这条路，抓不到「照片分支改的是色板本身」那种写法
+  // （`if (photo) base['--surface'] = ...`，返回值仍是副本）：实测换上去之后那条 notEqual 照样绿
+  // （它只碰 sage.dark 的 --bg），能直接抓住它的只有下面这个快照比对——这一条单独跑会红在
+  // 「不该改动 THEME_TOKENS 本身」。
+  // 跑整份文件时轮不到它出声：那个写法一共红四条，这一条死在 hexToRgb 的抛错上——
+  // `hexToRgb：不认识的色值 rgba(30,30,33, 0.9)`（最先那张测试里的组合断言先把 default.dark 的
+  // --surface 写脏了）。另三条：「不认识的皮肤/深浅都退回默认」红在组合断言的 deepEqual 上（副本里
+  // 的 --surface 还是 hex），「开照片时只有 --surface 变成半透明」与「半透明的通道从 --surface 现算」
+  // 都报 `+ '#ffffff' - 'rgba(255,255,255, 0.9)'`（副本是在写色板之前复制的，返回的还是原值）。
+  // 等价的「返回值就是色板本身」（`const vars = base`）红法完全不同：这一条死在上面那条 notEqual 的
+  // 「色板被调用方改掉了」上（快照同样轮不到），「10 组逐组比对」则死在 hexToRgb 上——别把某一次的
+  // 红法当成这类写法的通用红法。
   const snapshot = JSON.parse(JSON.stringify(THEME_TOKENS));
   themeCssVars('default', 'dark', { photo: true });
   themeCssVars('paper', 'light', { photo: true });

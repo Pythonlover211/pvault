@@ -202,6 +202,10 @@ export function scrimAlpha(overlay) {
  * （tests/theme.test.js 的 SHAPES 把 `--surface` 钉成 HEX6，10 组逐值断言过），所以这不是一条
  * 宽容度不够的判据；万一有人把色板里的色值改成别的写法，先红的会是那条形状断言，
  * 这里的抛错只是最后一道「宁可当场炸掉，也不要猜一个看起来合理的颜色兜过去」的兜底。
+ *
+ * 但**这条判据自己没有任何测试钉住**：hexToRgb 是私有函数、测试 import 不到，而它的 10 组输入恒为
+ * 小写 6 位 hex——实测把正则放宽成 `/^#?([0-9a-f]{3,8})$/i`、或者去掉 `/i`（大写不再认），测试都照样
+ * 全绿。将来若把它复用到别处（比如去解一个从 getSetting 读来的色值），这两条行为得自己补守卫。
  */
 function hexToRgb(hex) {
   const m = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
