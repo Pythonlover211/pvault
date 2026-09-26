@@ -604,14 +604,21 @@ git commit -m "feat(ofd): prepareFile 认 OFD，原始文件名一并落库"
 - [ ] **步骤 1：创建 `app/ui/download.js`**
 
 ```js
-// 触发一次浏览器下载。从 backup-view.js 里抽出来共用：
-// 导出备份与导出发票原件（PDF / OFD / 图片）走的是同一条路。
+// 触发一次浏览器下载：把 Blob 存成 filename 命名的文件。
 //
-// 三条都是踩过的坑，搬过来的时候一句都不能改：
+// 两条是踩过的坑，搬过来的时候一句都不能改：
 // 1. 必须 append 到 document 再 click：Firefox 里游离（不在文档中）的 <a> 点击不触发下载。
 // 2. revokeObjectURL 延后 1 秒：立刻撤销会让部分浏览器在下载真正开始前就拿到一个失效 URL。
-// 3. click() 必须在用户手势的调用栈里发起：await 之后再点会被浏览器当成非用户操作吞掉。
-//    调用方如果是在 async 函数里导出，要先 await 取数据、再同步调这里，别把 click 放在 await 后面。
+//
+// 这一整段必须同步跑完，中间不要插 await。但**click 本身并不要求用户手势**——
+// 备份导出就是先 await 完 exportBackup() 再点这里的，安卓真机验过、能落文件。
+// （`<input type="file">` 的 click 才受手势限制，那是另一回事，别把它的约束搬过来。）
+// 真在某个浏览器上撞到「点了没反应」，先怀疑这一条，别先去重构调用方。
+//
+// 约定：filename 由调用方给全——非空、已经过 app/file-info.js 的 sanitizeFilename、
+// 带好扩展名。本函数不净化、也不补扩展名：扩展名只认 filename，不看 blob.type
+// （createObjectURL 不会把 MIME 变成文件后缀）。
+/** 把 blob 存成 filename 命名的文件。同步触发，不报告成败（下载被拦截不会抛错）。 */
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -635,7 +642,7 @@ import { downloadBlob } from './download.js';
 把它内部那个私有函数（原 229-242 行）整个换成：
 
 ```js
-  // 触发一次下载：步骤在 app/ui/download.js 里，两个导出入口共用同一份实现。
+  // blob 与 mime 是业务决定（备份文件是 JSON），留在这里；下载动作本身走 app/ui/download.js。
   function download(filename, text) {
     downloadBlob(new Blob([text], { type: 'application/json' }), filename);
   }
@@ -837,8 +844,8 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
   // 为什么不是「预览」：OFD / PDF 在这个 WebView 里都渲染不了，能做的只有把原件交出去，
   // 让系统里的 OFD 阅读器 / PDF 阅读器去打开它。
   //
-  // 顺序有讲究：先 await 把 blob 和名字都取好，最后**同步**调 downloadBlob——
-  // click() 必须在用户手势的调用栈里发起，中间隔一次 await 就会被浏览器吞掉。
+  // 顺序：先 await 把 blob 和名字都取好，再调 downloadBlob。await 之后调没有任何问题
+  // （备份导出就是这么干的，真机验过），要求的是**不要在 downloadBlob 内部再插 await**。
   async function exportCurrentFile() {
     const fileId = state.fileId;
     if (!fileId) return;
