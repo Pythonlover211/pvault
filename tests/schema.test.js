@@ -139,6 +139,9 @@ function fakeDb(existing = []) {
 }
 
 test('applyMigrations 按 STORES 建仓并建索引', () => {
+  // 这条是自洽断言：两边的清单都取自 STORES，所以它守的是「建仓动作覆盖了 STORES 的每一项」，
+  // 而不是「STORES 里有哪几张表」——STORES 少一张或多一张它都照样绿（两种情况都实测过）。
+  // 表清单本身由上面那条仓库清单断言与下面那条迁移清单断言守着（那两条比的是写死的数组）。
   const db = fakeDb();
   applyMigrations(db, 0);
   assert.deepEqual([...db.created.keys()], Object.keys(STORES));

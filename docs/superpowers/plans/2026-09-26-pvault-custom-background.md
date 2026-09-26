@@ -38,7 +38,7 @@
 | `app/ui/settings-sheet.js` | 加「外观与背景」入口（插在 `budget` 与 `backup` 之间）。 |
 | `app/backup-store.js` | 导出/导入 `data.background`。 |
 | `app/backup.js` | `buildBackup` 里带上 `background`。 |
-| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5 提前加，其余 4 个在任务 14）；`CACHE` 升到 `pvault-v17`（任务 5 已用到 v16）。 |
+| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5、`theme-store.js` 在任务 10 提前加，其余 3 个在任务 14）；`CACHE` 依次升到 `pvault-v17`（任务 10）与 `pvault-v18`（任务 14），任务 5 已用到 v16。 |
 | `index.html` | 加一行 `styles/appearance.css`。 |
 | `tests/schema.test.js` | 三处会被这次改动打红的断言（见任务 6）。 |
 | `docs/手动验证清单.md` | 加外观章节。 |
@@ -1148,7 +1148,8 @@ canvas-image` 这一环：那一个 module 404、import 链一断是**整个 app
 （`file-info.js`）是同一条规矩：**白名单必须跟产生依赖的那次提交一起走，不能等到收尾再补**。具体改法：
 `ASSETS` 加 `'./app/canvas-image.js'`（排在 `budget.js` 与 `chart.js` 之间，保持 ASC 书写风格）、`CACHE`
 升到 `'pvault-v16'` 并写下这一版的说明。外观功能其余四个文件（theme / theme-store / ui/appearance-sheet /
-appearance.css）此刻还不存在，仍由任务 14 负责。
+appearance.css）此刻还不存在：`theme-store.js` 由任务 10 进清单（那一步让 `main.js` 静态依赖它），其余三个仍由
+任务 14 负责。
 
 **白名单要全量校验一遍**（`cache.addAll` 是原子的，一个 404 就让整次 install 失败，表现是"离线打开白屏"）：
 把 `sw.js` 里所有 `'./…'` 路径抽出来逐个 `Test-Path`。任务 14 步骤 2 里有现成脚本，这里跑完的实测结果是
@@ -1616,6 +1617,7 @@ git commit -m 'feat(styles): body::before 背景照片层'
 
 **文件：**
 - 修改：`app/main.js`
+- 修改：`sw.js`（步骤 4：`theme-store.js` 进预缓存白名单、缓存版本升到 `pvault-v17`）
 
 - [ ] **步骤 1：加 import 与模块级 promise**
 
@@ -1655,12 +1657,42 @@ let themeReady = null;
 
 4. 再打开浏览器的性能面板确认 `data-theme="paper"` 在首次绘制前就已设在 `<html>` 上（在 Console 里执行 `document.documentElement.dataset.theme` 应返回 `'paper'`）。
 
-- [ ] **步骤 4：Commit**
+- [ ] **步骤 4：`theme-store.js` 进预缓存白名单（顺带把新的 `schema.js` 铺到设备上）**
+
+**为什么必须跟这一步一起走**：本步让 `main.js` 静态 `import` 了 `theme-store.js`（步骤 1），与任务 5 让
+`image-store.js` 依赖 `canvas-image.js` 是**同一条纪律**——白名单必须跟产生依赖的那次提交一起走，不能等到任务 14
+收尾再补。`cache.addAll` 是原子的：清单里漏了它，已装旧缓存的设备离线启动就断在 `main → theme-store` 这一环，
+一个 module 404、import 链一断就是整个 app 白屏。
+
+**顺带效果才是它非做不可的原因**：`CACHE` 一变，已装旧缓存的设备会重新 `install`（`addAll` 把清单重新抓一遍
+全量）、`activate` 时删掉旧缓存，再加上 `skipWaiting` 与 `clients.claim`，设备下一次冷启动拿到的就是新缓存里的
+`schema.js`——**任务 6 已把它升到 `DB_VERSION = 3`，不做这一步，那次数据库升级永远不会发生**：SW 是缓存优先，
+设备一直命中缓存里的旧 `schema.js`（`DB_VERSION = 2`），`assets` 表建不出来，背景图一存就抛错。
+
+改法：`CACHE` 从 `'pvault-v16'` 升到 `'pvault-v17'`，`ASSETS` 里加一条（保持 ASC 书写风格，插在
+`'./app/summary.js'` 与 `'./app/vault-model.js'` 之间）：
+
+```js
+  './app/theme-store.js',
+```
+
+`theme-store.js` 是任务 7 建好的，跑这一步时**必须已在磁盘上**——一个 404 会让整次 install 失败。
+
+再跑一遍白名单全量校验（脚本在任务 14 步骤 2）：
+
+预期：`全部存在，共 57 个`（任务 5 之后是 56 个；本步加的那条就是 `app/theme-store.js`。这个数在 `sw.js` 副本
+上实测过：当前 56 条加本步 1 条，再加任务 14 的 3 条，正好是那一步预期的 60 条）
+
+- [ ] **步骤 5：Commit**
 
 ```bash
 git add app/main.js
 git commit -m 'feat(theme): 首屏渲染前应用外观设置，避免闪色'
+git add sw.js
+git commit -m 'chore(sw): theme-store.js 提前进预缓存白名单，缓存版本升到 v17'
 ```
+
+**两个 commit 分开**：白名单要跟产生依赖的那次提交一起走，与任务 5 的两个 commit 是同一个道理。
 
 ---
 
@@ -2149,18 +2181,21 @@ git commit -m 'feat(backup): 备份携带背景照片与遮罩强度'
 
 - [ ] **步骤 1：改 `CACHE` 与 `ASSETS`**
 
-**`canvas-image.js` 已在任务 5 提前进清单**（那一步让 `image-store.js` 静态依赖了它，白名单必须跟产生依赖的
-提交一起走），`CACHE` 那时已经用到 `pvault-v16`。所以这一步只加剩下的这四个文件，版本号再升一版：
+**`canvas-image.js` 已在任务 5、`theme-store.js` 已在任务 10 提前进清单**（那两步分别让 `image-store.js` 与
+`main.js` 静态依赖了它们，白名单必须跟产生依赖的提交一起走），`CACHE` 那时已经用到 `pvault-v17`。所以这一步只加
+剩下的这三个文件，版本号再升一版：
 
 ```js
-const CACHE = 'pvault-v17';
+const CACHE = 'pvault-v18';
 ```
 
-在 `ASSETS` 数组里加（位置与其它条目保持一致的书写风格）：
+在 `ASSETS` 数组里加（位置与其它条目保持一致的书写风格：`'./app/theme.js'` 按 ASC 排在任务 10 已加的
+`'./app/theme-store.js'` **之后**——`'-'`(0x2D) 小于 `'.'`(0x2E)；`'./app/ui/appearance-sheet.js'` 排在
+`'./app/ui/accounts-view.js'` **之前**；`'./styles/appearance.css'` 排在 styles 段的**最前**——
+`appearance.css` < `base.css`）：
 
 ```js
   './app/theme.js',
-  './app/theme-store.js',
   './app/ui/appearance-sheet.js',
   './styles/appearance.css',
 ```
@@ -2176,7 +2211,7 @@ $missing = $paths | Where-Object { -not (Test-Path $_) }
 if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Host "全部存在，共 $($paths.Count) 个" }
 ```
 
-预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个）
+预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个、任务 10 之后是 57 个）
 
 - [ ] **步骤 3：验证离线可用**
 
@@ -2184,13 +2219,13 @@ if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Ho
 2. DevTools → Application → Service Workers 勾 Offline
 3. 刷新页面
 
-预期：页面正常打开、账目都在。**如果白屏**，看 Application → Cache Storage 里 `pvault-v17` 是否存在——不存在就是 `addAll` 被某个 404 整批拒绝了。
+预期：页面正常打开、账目都在。**如果白屏**，看 Application → Cache Storage 里 `pvault-v18` 是否存在——不存在就是 `addAll` 被某个 404 整批拒绝了。
 
 - [ ] **步骤 4：Commit**
 
 ```bash
 git add sw.js
-git commit -m 'chore(sw): 新模块进预缓存白名单，缓存版本升到 v17'
+git commit -m 'chore(sw): 新模块进预缓存白名单，缓存版本升到 v18'
 ```
 
 ---
