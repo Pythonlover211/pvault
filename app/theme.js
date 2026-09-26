@@ -128,7 +128,7 @@ export const THEME_TOKENS = {
 
 export function normalizePreset(value) {
   // 用 includes 精确匹配，不 trim、不忽略大小写：带空格或大小写不符的 id 不属于这五套里的任何一套，
-  // 猜成 paper 等于把一个坏值悄悄洗成一套看起来正常的皮肤，回 default 才是安全的那一套。
+  // 猜成某一套看起来正常的皮肤，等于把一个坏值悄悄洗掉，回 default 才是安全的那一套。
   return THEME_IDS.includes(value) ? value : DEFAULT_PRESET;
 }
 
@@ -145,13 +145,12 @@ export function resolveMode(mode, systemDark) {
 }
 
 /**
- * 遮罩强度：取整后夹到 0..60；非数字一律回默认 30。
- * 判据是「类型对得上」而不是直接 Number()：Number(null) / Number('') / Number([]) /
+ * 遮罩强度：数字、或非空的可解析数字字符串（滑块的 el.value）→ 取整 → 夹到 0..60；其余一律回默认 30。
+ * 判据是「类型 + 非空字符串」而不是直接 Number()：Number(null) / Number('') / Number([]) /
  * Number(false) 都是 0、Number(true) 是 1，直接转换会把「这个设置没有」静默变成 0% 或 1% 的遮罩
- * ——照片上的字就再也压不住了，而用户根本没动过滑块。字符串单独认，是因为滑块的 el.value
- * 天生是字符串。返回值若是 NaN，它替换进 rgba() 之后是个无效值，background-image 那条声明会在
- * computed-value time 整条失效——遮罩与照片是同一句里的两层（var(--bg-scrim), var(--bg-image)），
- * 失效时两层一起没，所以宁可回默认。
+ * ——照片上的字就再也压不住了，而用户根本没动过滑块。返回值若是 NaN，它替换进 rgba() 之后是个无效值，
+ * background-image 属性会在 computed-value time 失效并回退到初始值 none——遮罩与照片是同一句里的
+ * 两层（var(--bg-scrim), var(--bg-image)），回退时两层一起没，所以宁可回默认。
  */
 export function normalizeOverlay(value) {
   let n = NaN;
@@ -174,8 +173,9 @@ export function normalizeBackground(value) {
   const assetId = typeof value.assetId === 'string' ? value.assetId.trim() : '';
   if (!assetId) return null;
   // createdAt 比 overlay 紧，只认数字：Number(null) / Number('') / Number(false) 都是 0，而 0 是
-  // 1970-01-01——界面上会显示一个像坏数据的时间，而不是「没有」。它也没有字符串来源（背景记录的
-  // 时间就是 Date.now() 写进去的毫秒数字），所以收紧不会拒绝任何真实数据。
+  // 1970-01-01——一个像真实时间的哨兵值，会污染将来任何要展示或比较它的地方（这个字段目前没有消费点，
+  // 正因为还没有，才不该让 0 混进去）。它也没有字符串来源（背景记录的时间就是 Date.now() 写进去的
+  // 毫秒数字），所以收紧不会拒绝任何真实数据。
   const createdAt = typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
     ? value.createdAt
     : null;
