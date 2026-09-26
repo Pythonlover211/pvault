@@ -22,7 +22,7 @@
 |---|---|
 | `app/theme.js` | 纯模块：五套皮肤的色板数据、归一化函数、`themeCssVars()`。**不 import `db.js`、不碰 `document`**，否则 Node 测试跑不起来。 |
 | `app/theme-store.js` | 应用层：读写 settings、把变量写进 `documentElement`、管理背景照片（压缩、存取、blob URL 回收）。 |
-| `app/canvas-image.js` | 浏览器侧图片编解码工具（`decode` / `drawTo` / `releaseSource`），从 `image-store.js` 搬出来共用。 |
+| `app/canvas-image.js` | 浏览器侧图片编解码工具（`loadViaImg` / `decode` / `releaseSource` / `drawTo`），从 `image-store.js` 搬出来共用。 |
 | `app/ui/appearance-sheet.js` | 「外观与背景」面板。 |
 | `styles/appearance.css` | 面板的样式（皮肤卡、遮罩滑块）。 |
 | `tests/theme.test.js` | 主题纯逻辑测试（含 WCAG 对比度断言）。 |
@@ -1096,6 +1096,19 @@ git commit -m 'feat(theme): themeCssVars 统一翻译皮肤/深浅/照片'
 
 **搬过去时一个字都不要改**——包括 `imageOrientation: 'from-image'` 那条注释、`drawTo` 里的 `imageSmoothingQuality = 'high'` 与铺白底、`releaseSource` 的可选调用。这个任务只搬位置，不改进。
 
+**下面三处原文没写、但漏了就直接坏（或让旁边的注释变成假话），执行时补上：**
+
+1. `canvas-image.js` 里要加 `import { computeTargetSize } from './image-scale.js';`——`drawTo` 用它，
+   原来靠 `image-store.js` 那份 import 供着，搬走就断了。漏掉的后果是浏览器里的 `ReferenceError`，
+   而这两个文件都在 Node 测试范围之外，全量测试不会报出来。
+2. `image-store.js` 侧要从 `image-scale.js` 的 import 清单里删掉 `computeTargetSize`——它随 `drawTo`
+   一起搬走了，留在这边已经没人用。
+3. 这次搬移会让两处**既有**注释变成假话，要一并改掉（前四个任务被打回的正是这一类）：`app/image-scale.js`
+   第 2 行「真正的 Canvas 压缩在 image-store.js 里」改成 `canvas-image.js`；`app/file-info.js` 第 4 行
+   「那个文件依赖 Canvas / Blob / indexedDB」改成「那个文件（以及它 import 的 canvas-image.js）依赖
+   Canvas / Blob / indexedDB」——Canvas 依赖现在是间接的，而那句的论证（在 Node 里 import 不了）靠的是
+   indexedDB / Blob，仍然成立。
+
 - [ ] **步骤 2：改 `app/image-store.js`**
 
 删掉 `loadViaImg` / `decode` / `releaseSource` / `drawTo` 四个函数（第 15–86 行），在 import 区加上：
@@ -1110,7 +1123,7 @@ import { decode, drawTo, releaseSource } from './canvas-image.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：247 pass / 0 fail（`image-store.js` 不在 Node 测试范围里，这一步只是确认没有把 import 图改坏）
+预期：265 pass / 0 fail（任务 1-4 完成后基准线就是这个数；`image-store.js` 不在 Node 测试范围里，这一步只是确认没有把 import 图改坏）
 
 再运行一次搜索确认 `image-store.js` 里已经没有这四个函数的定义：
 
@@ -1123,11 +1136,16 @@ Select-String -Path app/image-store.js -Pattern 'function (loadViaImg|decode|rel
 - [ ] **步骤 4：Commit**
 
 ```bash
-git add app/canvas-image.js app/image-store.js
+git add app/canvas-image.js app/image-store.js app/image-scale.js app/file-info.js docs/superpowers/plans/2026-09-26-pvault-custom-background.md
 git commit -m 'refactor(image): 图片编解码工具抽到 canvas-image.js 供背景图复用'
 ```
 
 - [ ] **步骤 5：发票图片的回归验证（不能省）**
+
+**这一步的执行位置是任务 15 的模拟器验收**：本机没有可用的浏览器环境（`puppeteer-core` 未安装、系统 Edge 的
+`--headless` 输出为空）。任务 5 交付时只做静态验证——`node --check` 两个文件、真 import 两个模块、以及在
+Node 里真调 `prepareFile` 的 PDF / OFD / 图片三条非 Canvas 分支（图片那条会走到 `decode → loadViaImg` 才抛错，
+恰好证明跨模块调用与失败回退都还在）。下面这四步的真机回归连同任务 15 一起做。
 
 这条路径没有自动化测试，只能手动走一遍：
 

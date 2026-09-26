@@ -1,8 +1,8 @@
 // 发票文件的类型判定与命名：纯函数 + 常量。
 // 不碰 DOM / indexedDB / Canvas，因此可以在 Node 里直接 import 并单测（见 tests/file-info.test.js）。
 //
-// 为什么不放进 image-store.js：那个文件依赖 Canvas / Blob / indexedDB，
-// 在 Node 里 import 不了，判定表就只能经由 prepareFile 去间接猜。
+// 为什么不放进 image-store.js：那个文件（以及它 import 的 canvas-image.js）依赖
+// Canvas / Blob / indexedDB，在 Node 里 import 不了，判定表就只能经由 prepareFile 去间接猜。
 
 /**
  * 单个发票文件的字节上限。全电票的 OFD 通常一两百 KB，20 MB 已经大到不像发票了。

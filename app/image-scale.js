@@ -1,5 +1,5 @@
 // 图片压缩的尺寸计算与取舍判断。纯函数，可在 Node 里单测。
-// 真正的 Canvas 压缩在 image-store.js 里，那部分只能在浏览器 / WebView 里跑。
+// 真正的 Canvas 压缩在 canvas-image.js 里，那部分只能在浏览器 / WebView 里跑。
 
 /** 原图长边上限。发票上的字要看得清，1600 足够，再大只是浪费体积。 */
 export const MAX_EDGE = 1600;
