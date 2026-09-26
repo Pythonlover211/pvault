@@ -1392,7 +1392,9 @@ export async function initTheme() {
   applied.mode = resolveMode(applied.modeChoice, systemDark());
   applied.overlay = normalizeBackground(bgRaw)?.overlay ?? OVERLAY_DEFAULT;
   paint();
-  applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
+  // 背景照片的加载（applyPhoto）在任务 8 才实现。这里先不调用它：调一个尚不存在的函数
+  // 会让 initTheme 直接 reject，而那时变量已经写进页面、监听却还没挂上——一个「半套主题」的中间态。
+  // 任务 8 实现 applyPhoto 后，把调用补在下面这行之前，并在提交说明里点明它关闭了这个中间态。
   attachSystemListener();
   return currentTheme();
 }
@@ -1550,6 +1552,20 @@ export async function setOverlay(value) {
 ```
 
 （`normalizeOverlay` 要补进从 `./theme.js` 的 import 清单里。）
+
+**还要把 `applyPhoto()` 的调用补回 `initTheme()`。** 任务 7 交付时那里**故意**留空：当时
+`applyPhoto` 还不存在，调它会立刻让 `initTheme` reject，而那时变量已经写进页面、监听却还没挂上
+——一个「半套主题」的中间态。现在实现有了，在 `initTheme()` 的 `attachSystemListener();` **之前**插入：
+
+```js
+  applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
+```
+
+顺手把任务 7 留下的那三行「这里先不调用它」的注释删掉：那三行是给「还没有 applyPhoto」这个
+中间态写的，实现补上之后再留着，它就成了与代码相反的假话。
+
+**本步做完才算关闭任务 7 的中间态**：到这里 `initTheme()` 才是一条完整的启动路径
+（读设置 → 写变量 → 加载照片 → 挂监听），提交说明里要点明这一点。
 
 - [ ] **步骤 2：语法自检**
 

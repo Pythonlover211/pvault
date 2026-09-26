@@ -105,7 +105,9 @@ export async function initTheme() {
   applied.mode = resolveMode(applied.modeChoice, systemDark());
   applied.overlay = normalizeBackground(bgRaw)?.overlay ?? OVERLAY_DEFAULT;
   paint();
-  applyPhoto().catch(err => console.error('背景照片加载失败，按没有背景处理', err));
+  // 背景照片的加载（applyPhoto）在任务 8 才实现。这里先不调用它：调一个尚不存在的函数
+  // 会让 initTheme 直接 reject，而那时变量已经写进页面、监听却还没挂上——一个「半套主题」的中间态。
+  // 任务 8 实现 applyPhoto 后，把调用补在下面这行之前，并在提交说明里点明它关闭了这个中间态。
   attachSystemListener();
   return currentTheme();
 }
