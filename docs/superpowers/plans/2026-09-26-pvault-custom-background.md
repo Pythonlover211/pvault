@@ -1282,7 +1282,10 @@ git commit -m 'feat(schema): 新增 assets 表存放背景照片，DB_VERSION �
 // 外观的应用层：读设置、把变量写进页面、管理背景照片。
 // 与 theme.js 的分工：theme.js 只「算」（纯函数、可以在 Node 里单测），
 // 这里只「做」（碰 document、IndexedDB、Canvas），两边都不越界。
-// 本模块依赖 DOM 与 indexedDB，因此不能在 Node 里 import。
+// 本模块依赖 DOM 与 indexedDB：Node 里 import 它会成功（模块体不碰这两个全局），
+// 但导出函数一调用就会碰到它们（只有 currentTheme() 例外，它只读内存里的状态），
+// 所以它不能像 theme.js 那样进 node --test 的黑盒单测——
+// 要验证行为得先造桩（假 document / 假 indexedDB）再调用。
 
 import * as db from './db.js';
 import { getSetting, setSetting } from './store.js';
@@ -1310,8 +1313,8 @@ let applied = {
   overlay: OVERLAY_DEFAULT
 };
 
-// 背景图的 blob URL。同一份 Blob 只建一次，换图/移除时先 revoke 旧的——
-// 漏掉 revoke 就是每换一次图泄漏一整张照片的内存。
+// 背景图的 blob URL（这里存着当前建好的那一个）。换图/移除时先把旧的 revoke 掉——
+// 漏掉 revoke 就是每建一次 URL 泄漏一整张照片的内存。
 let photoUrl = null;
 
 // 跟随系统深浅的监听只挂一次。每开一次面板就挂一个的话，切一次系统主题会连跑 N 次应用，
@@ -1329,14 +1332,16 @@ export function currentTheme() {
 }
 
 /**
- * 把所有变量与三个属性一次性写到 <html> 上。
+ * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上。
  *
  * 用 inline style 而不是切 class：色板的唯一真相在 theme.js 里，
  * 若同时存在一份 CSS 规则表，两处就会各自漂移——而测试读不到 CSS，
  * 漂移的结果是「某套皮肤在深色下数字看不清」这种没人会发现的问题。
- * inline style 的优先级天然高于任何样式表规则，不存在「哪条赢」的疑问。
+ * inline style 的优先级天然高于样式表里的普通规则（本仓库的样式表里一处 !important 都没有），
+ * 不存在「哪条赢」的疑问。
  *
- * data-* 三个属性是留给 CSS 与调试用的钩子（也是验收时肉眼确认状态的抓手）。
+ * data-* 三个属性是留给 CSS 与调试用的钩子：现在还没有 CSS 用到它们，
+ * 但验收时靠它们在 Console 里肉眼确认状态（刷新后 dataset.theme 应等于选中的那套皮肤）。
  */
 function paint() {
   const root = document.documentElement;
