@@ -61,11 +61,9 @@
 // 外观系统的纯逻辑测试。theme.js 不碰 DOM 与 IndexedDB，所以这一套能直接在 Node 里跑。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  THEMES, THEME_TOKENS, THEME_IDS, MODES, DEFAULT_PRESET, DEFAULT_MODE,
-  normalizePreset, normalizeMode, resolveMode, normalizeOverlay,
-  normalizeBackground, scrimAlpha
-} from '../app/theme.js';
+// 这一步只有这三个符号：归一化那 6 个函数与 MODES / DEFAULT_PRESET / DEFAULT_MODE 到任务 3 才存在，
+// 那一步再把它们合并进这一条 import（此刻写进来会红在 does not provide an export named）。
+import { THEMES, THEME_TOKENS, THEME_IDS } from '../app/theme.js';
 
 // 「5 套皮肤 × 浅/深」共 10 组色板的遍历骨架，本文件里遍历色板的测试都要用它。抽成一个函数是为了让
 // 那两道前置守卫只写一次——皮肤缺色板、某一档深浅缺色板时先给一句能读的断言，否则后面会死在
@@ -539,7 +537,7 @@ git commit -m 'test(theme): 五套皮肤的 WCAG 对比度断言'
 
 - [ ] **步骤 1：编写失败的测试**
 
-追加到 `tests/theme.test.js`：
+追加到 `tests/theme.test.js`，并把 `MODES` / `DEFAULT_PRESET` / `DEFAULT_MODE` 与这 6 个归一化函数合并进文件顶部那一条 import（它们的实现在本任务才出现，所以任务 1 那一步的 import 里没有它们）：
 
 ```js
 // ── 归一化与解析 ─────────────────────────────────────────────────────────────
@@ -551,14 +549,17 @@ git commit -m 'test(theme): 五套皮肤的 WCAG 对比度断言'
 
 // 断言消息里的输入标签：用 String() 而不是 JSON.stringify()——后者把 NaN 与 Infinity 都印成
 // "null"，跟真正的 null 撞成同一句话，失败时分不清是哪一个输入漏了。typeof 一并带上：
-// '' 与 [] 的 String() 都是空串，只有靠类型才分得开。
-const junkLabel = v => `${String(v)}(${typeof v})`;
+// '' 与 [] 的 String() 都是空串，只有靠类型才分得开。数组再单列一支：String([]) 是空串，
+// 不特判的话标签会退化成「(object)」，跑日志时读不出是哪一个。
+const junkLabel = v => (Array.isArray(v) ? '[](array)' : `${String(v)}(${typeof v})`);
 
 test('normalizePreset：认识的留下，其余一律回默认', () => {
-  // 常量本身合法是这一节的前置条件，不是兜底逻辑的功劳：DEFAULT_PRESET 一旦被改成拼错的 'defualt'，
-  // 先红的会是下面的 junk 循环（报「输入 undefined 没被兜住」），读的人会去查兜底实现，而真正被改坏
-  // 的是常量。（normalizePreset('default') 那条查不出这件事——'default' 只要还在 THEME_IDS 里就直接
-  // 返回自己。）
+  // 常量本身合法是这一节的前置条件，不是兜底逻辑的功劳。两种漂移看到的报错不一样，别弄混：
+  //   · 改成拼错的 'defualt' → 紧下面这条断言当场抓住，只红这一条、消息直指常量，junk 循环根本不会
+  //     执行；
+  //   · 改成另一套合法皮肤 'paper' → 这条放行，轮到 junk 循环报「输入 undefined(undefined) 没被兜住」，
+  //     那时读者才会误以为坏的是兜底实现。
+  // （normalizePreset('default') 那条查不出这件事——'default' 只要还在 THEME_IDS 里就直接返回自己。）
   assert.ok(
     THEME_IDS.includes(DEFAULT_PRESET),
     `DEFAULT_PRESET 应当是可选皮肤之一，实际 ${DEFAULT_PRESET}`
@@ -579,8 +580,8 @@ test('normalizePreset：认识的留下，其余一律回默认', () => {
 });
 
 test('normalizeMode：认识的留下，其余一律回 auto', () => {
-  // 与 DEFAULT_PRESET 同一个前置条件：DEFAULT_MODE 被改成 'light' 时先红的是 junk 循环，
-  // 而原因在常量本身。
+  // 与 DEFAULT_PRESET 同一个前置条件，两种漂移同样分岔：改成另一套合法值 'light' 时这条放行、先红的
+  // 是 junk 循环（原因在常量本身）；改成非法的 'DARK' 时则由紧下面这条当场抓住。
   assert.ok(
     MODES.includes(DEFAULT_MODE),
     `DEFAULT_MODE 应当是可选模式之一，实际 ${DEFAULT_MODE}`
