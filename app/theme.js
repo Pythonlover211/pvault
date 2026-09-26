@@ -29,21 +29,28 @@ export const OVERLAY_DEFAULT = 30;
 // 完全不透又白瞎了一张背景图。
 export const PHOTO_SURFACE_ALPHA = 0.9;
 
-// 每套皮肤 × 每种深浅都要给全同一组变量（缺一个都会被任务 1 的测试拦下）。
+// 每套皮肤 × 每种深浅都要给全同一组变量，正典清单写死在 tests/theme.test.js 里。
+// 那份清单不拿 default.light 当基准——自指的基准下「十组一起少一个变量」也是绿的。
+//
+// 这里**没有** --surface-rgb：它与 --surface 是同一个颜色的两种写法，存两份必然漂移，
+// 而漂移只在「开了背景照片」这个状态下才看得出来（卡片半透明用的正是它的通道值），
+// 不开照片的人永远碰不到这种 bug。卡片半透明的 rgba(...) 改由 themeCssVars()
+// 从 --surface 现算，于是物理上不可能跟 --surface 对不上。
+//
 // --scrim-rgb 是背景遮罩的颜色（浅色皮肤用白遮罩压亮、深色皮肤用黑遮罩压暗），
 // 它属于「皮肤 × 深浅」这个维度，所以和其他变量放在一起由 themeCssVars 统一给出。
 export const THEME_TOKENS = {
   default: {
     light: {
       '--bg': '#f2f2f5', '--surface': '#ffffff', '--surface-2': '#e9e9ec',
-      '--surface-rgb': '255,255,255', '--border': '#d5d5da',
+      '--border': '#d5d5da',
       '--text': '#1d1d1f', '--text-2': '#63636a', '--text-3': '#a1a1a6',
       '--accent': '#0a6ef0', '--accent-weak': '#e6f0fe', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#131315', '--surface': '#1e1e21', '--surface-2': '#2b2b30',
-      '--surface-rgb': '30,30,33', '--border': '#3a3a40',
+      '--border': '#3a3a40',
       '--text': '#f2f2f5', '--text-2': '#9a9aa0', '--text-3': '#6e6e73',
       '--accent': '#3b8ef5', '--accent-weak': '#16273d', '--on-accent': '#101216',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -52,14 +59,14 @@ export const THEME_TOKENS = {
   paper: {
     light: {
       '--bg': '#fbf7ee', '--surface': '#ffffff', '--surface-2': '#f3ece0',
-      '--surface-rgb': '255,255,255', '--border': '#e4d9c6',
+      '--border': '#e4d9c6',
       '--text': '#241c12', '--text-2': '#6b5d4a', '--text-3': '#a2917a',
       '--accent': '#b45309', '--accent-weak': '#f7ebdc', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#1c1712', '--surface': '#262019', '--surface-2': '#332a20',
-      '--surface-rgb': '38,32,25', '--border': '#463a2c',
+      '--border': '#463a2c',
       '--text': '#f5efe6', '--text-2': '#b9a78e', '--text-3': '#8a7a62',
       '--accent': '#e0a458', '--accent-weak': '#3a2e1e', '--on-accent': '#1c1712',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -68,14 +75,14 @@ export const THEME_TOKENS = {
   sage: {
     light: {
       '--bg': '#f2f4ef', '--surface': '#ffffff', '--surface-2': '#e8ece3',
-      '--surface-rgb': '255,255,255', '--border': '#d9e0d2',
+      '--border': '#d9e0d2',
       '--text': '#232a22', '--text-2': '#5e6857', '--text-3': '#9aa694',
       '--accent': '#0f766e', '--accent-weak': '#dff2ef', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#141a14', '--surface': '#1e261e', '--surface-2': '#29332a',
-      '--surface-rgb': '30,38,30', '--border': '#3a463a',
+      '--border': '#3a463a',
       '--text': '#edf2ea', '--text-2': '#a9b8a4', '--text-3': '#7c8a78',
       '--accent': '#2dd4bf', '--accent-weak': '#1b3a34', '--on-accent': '#0e1a16',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -84,14 +91,14 @@ export const THEME_TOKENS = {
   wisteria: {
     light: {
       '--bg': '#f7f4fc', '--surface': '#ffffff', '--surface-2': '#efe9f8',
-      '--surface-rgb': '255,255,255', '--border': '#e1d8f0',
+      '--border': '#e1d8f0',
       '--text': '#241a33', '--text-2': '#6b5f80', '--text-3': '#9c90b0',
       '--accent': '#6d28d9', '--accent-weak': '#efe7fd', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#17131f', '--surface': '#211b2c', '--surface-2': '#2c2439',
-      '--surface-rgb': '33,27,44', '--border': '#3d3350',
+      '--border': '#3d3350',
       '--text': '#f0ebf7', '--text-2': '#b0a6c2', '--text-3': '#837a96',
       '--accent': '#a78bfa', '--accent-weak': '#33245c', '--on-accent': '#17131f',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -100,14 +107,14 @@ export const THEME_TOKENS = {
   seaglass: {
     light: {
       '--bg': '#eff7f8', '--surface': '#ffffff', '--surface-2': '#e3f0f2',
-      '--surface-rgb': '255,255,255', '--border': '#cde2e6',
+      '--border': '#cde2e6',
       '--text': '#12303a', '--text-2': '#4e6b74', '--text-3': '#87a3aa',
       '--accent': '#0e7490', '--accent-weak': '#dcf0f4', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#0e1a1d', '--surface': '#16262a', '--surface-2': '#1f3438',
-      '--surface-rgb': '22,38,42', '--border': '#2c474c',
+      '--border': '#2c474c',
       '--text': '#e6f1f3', '--text-2': '#9bb3b8', '--text-3': '#6f8a90',
       '--accent': '#22d3ee', '--accent-weak': '#123a42', '--on-accent': '#0e1a1d',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'

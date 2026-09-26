@@ -63,28 +63,90 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { THEMES, THEME_TOKENS, THEME_IDS } from '../app/theme.js';
 
-test('theme：五套皮肤 × 深浅的变量集合完全一致', () => {
-  const base = Object.keys(THEME_TOKENS.default.light).sort();
-  assert.ok(base.length > 0, 'default.light 一个变量都没有');
+// 色板的正典清单：每套皮肤 × 每种深浅都必须**正好**是这 12 个键。
+//
+// 为什么写死在这里，而不是拿 THEME_TOKENS.default.light 当基准：那个基准是**自指**的，
+// 在它下面「10 个 map 一起少一个变量」永远是绿的。而任务 1 只落数据，消费这些变量的 CSS
+// 要到后面几个任务才写，中间这段时间 --border、--accent-weak 看起来就像没人用的死变量，
+// 「顺手清理死变量」是个完全合理的动作——清理完不会有任何测试响。
+//
+// 为什么这份清单里**没有** --surface-rgb：它与 --surface 是同一个颜色的两种写法，
+// 两份手写真相一旦不同步，卡片颜色就**只在开了背景照片时**变掉——不开照片的人永远看不见，
+// 任何测试也覆盖不到。改为由 themeCssVars() 从 --surface 现算 rgba(...) 之后，
+// 物理上不可能漂移，这个键也就不该再存在于色板里。
+const TOKEN_NAMES = [
+  '--bg', '--surface', '--surface-2', '--border',
+  '--text', '--text-2', '--text-3',
+  '--accent', '--accent-weak', '--on-accent',
+  '--shadow', '--scrim-rgb'
+];
+
+// 应当是 #rrggbb 的那些键。--shadow 是一整条 box-shadow、--scrim-rgb 是三个裸通道数字，
+// 形状与 hex 不同，各自单测。
+const HEX_NAMES = TOKEN_NAMES.filter(n => n !== '--shadow' && n !== '--scrim-rgb');
+
+test('theme：五套皮肤 × 深浅的变量集合与正典清单完全一致', () => {
   for (const id of THEME_IDS) {
     assert.ok(THEME_TOKENS[id], `缺少皮肤 ${id} 的色板`);
     for (const mode of ['light', 'dark']) {
       const tokens = THEME_TOKENS[id][mode];
       assert.ok(tokens, `${id}.${mode} 缺失`);
-      // 判据是「键集合与 default.light 完全一致」而不是「数量够」：
-      // 少一个变量就是界面上某处变成透明/黑块，而多一个说明这套皮肤偷偷开了新维度。
+      // 判据是「键集合与正典清单完全一致」，既不是「数量够」也不是「和 default.light 一样」：
+      // 少一个变量，界面上那块会**静默**退回 base.css 里默认皮肤的颜色——它不会变成黑块或透明，
+      // 只是「这块看着有点不对」，比报错难发现得多；多一个则说明这套皮肤偷偷开了新维度。
       assert.deepEqual(
-        Object.keys(tokens).sort(), base,
-        `${id}.${mode} 的变量集合与 default.light 不一致`
+        Object.keys(tokens).sort(), [...TOKEN_NAMES].sort(),
+        `${id}.${mode} 的变量集合与正典清单不一致`
       );
     }
   }
 });
 
-test('theme：THEME_IDS 与 THEMES 一一对应且含 default', () => {
+test('theme：色值的格式与 --scrim-rgb 的明暗极性', () => {
+  // 只断言键名存在等于没测：值是空串、是 'red'、是别的颜色，测试一样全绿。
+  // 所以这一条逐值断言形状——它是这套测试里唯一能拦住「值写错」的关卡。
+  assert.equal(HEX_NAMES.length, 10, '正典清单里的 hex 变量应恰好 10 个（下面的断言依赖它）');
+  for (const id of THEME_IDS) {
+    for (const mode of ['light', 'dark']) {
+      const t = THEME_TOKENS[id][mode];
+      for (const key of HEX_NAMES) {
+        assert.match(t[key], /^#[0-9a-f]{6}$/, `${id}.${mode}.${key} 不是 #rrggbb：${t[key]}`);
+      }
+      assert.match(t['--shadow'], /rgba\(/, `${id}.${mode}.--shadow 里没有 rgba(：${t['--shadow']}`);
+
+      // --scrim-rgb 必须是 `r,g,b` 三个裸通道数字。
+      // 写成 '#ffffff' 这类 hex 特别危险：rgba(#ffffff, .3) 不是合法的 <color>，CSS 会在
+      // computed-value time 判定整条声明失效 → background-image: none，遮罩整层消失、
+      // 卡片背景全透明。而且它比「漏写变量」更糟——漏写会退回 base.css 的 :root 兜底，
+      // **写错的值会覆盖兜底**，兜底救不回来。
+      assert.match(
+        t['--scrim-rgb'], /^\d{1,3},\d{1,3},\d{1,3}$/,
+        `${id}.${mode}.--scrim-rgb 不是 r,g,b 形状：${t['--scrim-rgb']}`
+      );
+      for (const ch of t['--scrim-rgb'].split(',')) {
+        const n = Number(ch);
+        assert.ok(n >= 0 && n <= 255, `${id}.${mode}.--scrim-rgb 的通道越界：${ch}`);
+      }
+      // 极性写死：浅色皮肤用白遮罩压亮、深色皮肤用黑遮罩压暗。写反了遮罩会朝反方向走，
+      // 而且越调滑块越看不清字——这是「值级」断言，不是「键级」。
+      assert.equal(
+        t['--scrim-rgb'], mode === 'light' ? '255,255,255' : '0,0,0',
+        `${id}.${mode}.--scrim-rgb 的明暗极性写反了`
+      );
+    }
+  }
+});
+
+test('theme：THEME_IDS 与 THEMES、THEME_TOKENS 三者一一对应且含 default', () => {
   assert.deepEqual(THEME_IDS, THEMES.map(t => t.id));
   assert.ok(THEME_IDS.includes('default'));
   assert.equal(new Set(THEME_IDS).size, THEME_IDS.length, '皮肤 id 有重复');
+  // 反向也要校验：只往 THEME_TOKENS 里加一套半成品皮肤（还没住进 THEMES）时，
+  // 上面那条单向断言是绿的，而 THEME_TOKENS 里会多出一个没有名字、界面上也选不到的幽灵皮肤。
+  assert.deepEqual(
+    Object.keys(THEME_TOKENS).sort(), [...THEME_IDS].sort(),
+    'THEME_TOKENS 的键与 THEME_IDS 不一致'
+  );
 });
 
 test('theme：每套皮肤都有非空的中文名', () => {
@@ -135,21 +197,28 @@ export const OVERLAY_DEFAULT = 30;
 // 完全不透又白瞎了一张背景图。
 export const PHOTO_SURFACE_ALPHA = 0.9;
 
-// 每套皮肤 × 每种深浅都要给全同一组变量（缺一个都会被任务 1 的测试拦下）。
+// 每套皮肤 × 每种深浅都要给全同一组变量，正典清单写死在 tests/theme.test.js 里。
+// 那份清单不拿 default.light 当基准——自指的基准下「十组一起少一个变量」也是绿的。
+//
+// 这里**没有** --surface-rgb：它与 --surface 是同一个颜色的两种写法，存两份必然漂移，
+// 而漂移只在「开了背景照片」这个状态下才看得出来（卡片半透明用的正是它的通道值），
+// 不开照片的人永远碰不到这种 bug。卡片半透明的 rgba(...) 改由 themeCssVars()
+// 从 --surface 现算，于是物理上不可能跟 --surface 对不上。
+//
 // --scrim-rgb 是背景遮罩的颜色（浅色皮肤用白遮罩压亮、深色皮肤用黑遮罩压暗），
 // 它属于「皮肤 × 深浅」这个维度，所以和其他变量放在一起由 themeCssVars 统一给出。
 export const THEME_TOKENS = {
   default: {
     light: {
       '--bg': '#f2f2f5', '--surface': '#ffffff', '--surface-2': '#e9e9ec',
-      '--surface-rgb': '255,255,255', '--border': '#d5d5da',
+      '--border': '#d5d5da',
       '--text': '#1d1d1f', '--text-2': '#63636a', '--text-3': '#a1a1a6',
       '--accent': '#0a6ef0', '--accent-weak': '#e6f0fe', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#131315', '--surface': '#1e1e21', '--surface-2': '#2b2b30',
-      '--surface-rgb': '30,30,33', '--border': '#3a3a40',
+      '--border': '#3a3a40',
       '--text': '#f2f2f5', '--text-2': '#9a9aa0', '--text-3': '#6e6e73',
       '--accent': '#3b8ef5', '--accent-weak': '#16273d', '--on-accent': '#101216',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -158,14 +227,14 @@ export const THEME_TOKENS = {
   paper: {
     light: {
       '--bg': '#fbf7ee', '--surface': '#ffffff', '--surface-2': '#f3ece0',
-      '--surface-rgb': '255,255,255', '--border': '#e4d9c6',
+      '--border': '#e4d9c6',
       '--text': '#241c12', '--text-2': '#6b5d4a', '--text-3': '#a2917a',
       '--accent': '#b45309', '--accent-weak': '#f7ebdc', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#1c1712', '--surface': '#262019', '--surface-2': '#332a20',
-      '--surface-rgb': '38,32,25', '--border': '#463a2c',
+      '--border': '#463a2c',
       '--text': '#f5efe6', '--text-2': '#b9a78e', '--text-3': '#8a7a62',
       '--accent': '#e0a458', '--accent-weak': '#3a2e1e', '--on-accent': '#1c1712',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -174,14 +243,14 @@ export const THEME_TOKENS = {
   sage: {
     light: {
       '--bg': '#f2f4ef', '--surface': '#ffffff', '--surface-2': '#e8ece3',
-      '--surface-rgb': '255,255,255', '--border': '#d9e0d2',
+      '--border': '#d9e0d2',
       '--text': '#232a22', '--text-2': '#5e6857', '--text-3': '#9aa694',
       '--accent': '#0f766e', '--accent-weak': '#dff2ef', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#141a14', '--surface': '#1e261e', '--surface-2': '#29332a',
-      '--surface-rgb': '30,38,30', '--border': '#3a463a',
+      '--border': '#3a463a',
       '--text': '#edf2ea', '--text-2': '#a9b8a4', '--text-3': '#7c8a78',
       '--accent': '#2dd4bf', '--accent-weak': '#1b3a34', '--on-accent': '#0e1a16',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -190,14 +259,14 @@ export const THEME_TOKENS = {
   wisteria: {
     light: {
       '--bg': '#f7f4fc', '--surface': '#ffffff', '--surface-2': '#efe9f8',
-      '--surface-rgb': '255,255,255', '--border': '#e1d8f0',
+      '--border': '#e1d8f0',
       '--text': '#241a33', '--text-2': '#6b5f80', '--text-3': '#9c90b0',
       '--accent': '#6d28d9', '--accent-weak': '#efe7fd', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#17131f', '--surface': '#211b2c', '--surface-2': '#2c2439',
-      '--surface-rgb': '33,27,44', '--border': '#3d3350',
+      '--border': '#3d3350',
       '--text': '#f0ebf7', '--text-2': '#b0a6c2', '--text-3': '#837a96',
       '--accent': '#a78bfa', '--accent-weak': '#33245c', '--on-accent': '#17131f',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -206,14 +275,14 @@ export const THEME_TOKENS = {
   seaglass: {
     light: {
       '--bg': '#eff7f8', '--surface': '#ffffff', '--surface-2': '#e3f0f2',
-      '--surface-rgb': '255,255,255', '--border': '#cde2e6',
+      '--border': '#cde2e6',
       '--text': '#12303a', '--text-2': '#4e6b74', '--text-3': '#87a3aa',
       '--accent': '#0e7490', '--accent-weak': '#dcf0f4', '--on-accent': '#ffffff',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .22)', '--scrim-rgb': '255,255,255'
     },
     dark: {
       '--bg': '#0e1a1d', '--surface': '#16262a', '--surface-2': '#1f3438',
-      '--surface-rgb': '22,38,42', '--border': '#2c474c',
+      '--border': '#2c474c',
       '--text': '#e6f1f3', '--text-2': '#9bb3b8', '--text-3': '#6f8a90',
       '--accent': '#22d3ee', '--accent-weak': '#123a42', '--on-accent': '#0e1a1d',
       '--shadow': '0 6px 18px rgba(0, 0, 0, .5)', '--scrim-rgb': '0,0,0'
@@ -226,7 +295,7 @@ export const THEME_TOKENS = {
 
 运行：`D:\node.exe --test --test-isolation=none tests/theme.test.js`
 
-预期：3 个测试全部 PASS
+预期：4 个测试全部 PASS
 
 - [ ] **步骤 5：Commit**
 
@@ -509,11 +578,15 @@ test('themeCssVars：开照片时只有 --surface 变半透明', () => {
   }
 });
 
-test('themeCssVars：深色皮肤的 surface-rgb 与浅色不同', () => {
+test('themeCssVars：半透明的通道值从 --surface 现算（深色与浅色不同）', () => {
   const light = themeCssVars('seaglass', 'light', { photo: true });
   const dark = themeCssVars('seaglass', 'dark', { photo: true });
   assert.equal(light['--surface'], 'rgba(255,255,255, 0.9)');
   assert.equal(dark['--surface'], 'rgba(22,38,42, 0.9)');
+  // 通道值必须与同一套皮肤的 --surface 一致——它是现算的，没有第二份手写真相可以漂移。
+  assert.equal(themeCssVars('default', 'dark', { photo: true })['--surface'], 'rgba(30,30,33, 0.9)');
+  // 色板里不该再有 --surface-rgb 这个键（它就是被删掉的那份副本）。
+  assert.equal('--surface-rgb' in themeCssVars('default', 'dark'), false);
 });
 
 test('themeCssVars：返回值是副本，改它不会污染色板', () => {
@@ -535,6 +608,23 @@ test('themeCssVars：返回值是副本，改它不会污染色板', () => {
 
 ```js
 /**
+ * 把 `#rrggbb` 解成 `r,g,b`。
+ *
+ * 存在的理由：卡片半透明的 `rgba(...)` 必须从 `--surface` **现算**。色板里早先另存过一份
+ * `--surface-rgb`（同一个颜色的两种写法），两份手写真相一旦不同步，卡片颜色就只在
+ * 「开了背景照片」这个状态下变掉——不开照片的人永远看不见这个 bug。现算之后不可能漂移。
+ *
+ * 只认 6 位十六进制：色板是自家常量、全部是这个写法，遇到别的形状宁可当场炸掉
+ * （调用它的测试会立刻发现），也不要猜一个看起来合理的颜色兜过去。
+ */
+function hexToRgb(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+  if (!m) throw new Error(`hexToRgb：不认识的色值 ${hex}`);
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+
+/**
  * 把 (皮肤, 深浅, 有无照片) 翻译成一组要写到 <html> 上的 CSS 变量。
  * 这是**唯一**做这件事的地方——theme-store 只负责把结果 setProperty 出去。
  *
@@ -552,7 +642,8 @@ export function themeCssVars(themeId, mode, { photo = false } = {}) {
   if (photo) {
     // 只动 --surface：卡片本体的半透明。--surface-2 保持不透明，
     // 因为垫在它上面的是输入框、次级按钮这些必须看清文字的控件。
-    vars['--surface'] = `rgba(${base['--surface-rgb']}, ${PHOTO_SURFACE_ALPHA})`;
+    // 通道值从 --surface 现算——色板里没有第二份真相可以跟它对不上。
+    vars['--surface'] = `rgba(${hexToRgb(base['--surface'])}, ${PHOTO_SURFACE_ALPHA})`;
   }
   return vars;
 }

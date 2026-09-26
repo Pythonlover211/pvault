@@ -131,7 +131,7 @@ export function scrimAlpha(overlay)         // 0..60 → 0..0.6（小数）
 export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…', … } 的扁平对象
 ```
 
-`themeCssVars()` 是**唯一**把 (皮肤, 深浅, 有无照片) 翻译成 CSS 变量的地方。开启照片时，它只把 `--surface` 换成 `rgba(var(--surface-rgb), .9)`；`--surface-2` **保持不透明**——垫在它上面的是输入框、次级按钮这些必须看清文字的控件（见 §6.3）。
+`themeCssVars()` 是**唯一**把 (皮肤, 深浅, 有无照片) 翻译成 CSS 变量的地方。开启照片时，它只把 `--surface` 换成 `rgba(r,g,b, .9)`——那三个通道由 `--surface` 自己解出来（色板里**不存** `--surface-rgb`，见 §5.2）；`--surface-2` **保持不透明**——垫在它上面的是输入框、次级按钮这些必须看清文字的控件（见 §6.3）。
 
 `app/theme.js` 必须是**纯模块**：不 import `db.js`、不碰 `document`、不碰 `window`，否则 Node 测试跑不起来（与 `file-info.js` 同一纪律）。
 
@@ -139,7 +139,11 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 
 每套皮肤 × 每种深浅都必须给全下面这一组，一个都不能少：
 
-`--bg`、`--surface`、`--surface-2`、`--surface-rgb`、`--border`、`--text`、`--text-2`、`--text-3`、`--accent`、`--accent-weak`、`--on-accent`、`--shadow`、`--scrim-rgb`
+`--bg`、`--surface`、`--surface-2`、`--border`、`--text`、`--text-2`、`--text-3`、`--accent`、`--accent-weak`、`--on-accent`、`--shadow`、`--scrim-rgb`
+
+一共 12 个。**没有 `--surface-rgb`**：它与 `--surface` 是同一个颜色的两种写法，存两份必然漂移，而漂移只在「开了背景照片」这个状态下才看得出来（卡片半透明用的正是它的通道值）——不开照片的人永远碰不到。卡片半透明的 `rgba(...)` 由 `themeCssVars()` 从 `--surface` 现算（`#rrggbb` → `r,g,b`），于是物理上不可能跟 `--surface` 对不上；它也因此**不是**一个写到页面上的变量，CSS 里不会出现 `var(--surface-rgb)`。
+
+这份清单在 `tests/theme.test.js` 里**写死**（正典清单），基准不拿 `default.light` 自指——自指的基准下「十组一起少一个变量」也是绿的。
 
 （`--scrim-rgb` 只有两个取值：浅色皮肤 `255,255,255`、深色皮肤 `0,0,0`，但它属于「皮肤 × 深浅」这个维度，所以放在同一张表里由 `themeCssVars()` 一起给。）
 
@@ -158,6 +162,8 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 ### 5.3 五套皮肤的色值
 
 > 下表是设计稿。实现时以 `tests/theme.test.js` 的对比度断言为准——**任何一对不达标的色值当场调整**，不迁就下表。
+>
+> 表里没有 `--surface-rgb` 这一行：它是 `--surface` 的派生值（`r,g,b` 三个通道），由 `themeCssVars()` 现算，既不进色板也不写到页面上。
 
 #### 默认 default（浅色即现状）
 
@@ -166,7 +172,6 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | `--bg` | `#f2f2f5` | `#131315` |
 | `--surface` | `#ffffff` | `#1e1e21` |
 | `--surface-2` | `#e9e9ec` | `#2b2b30` |
-| `--surface-rgb` | `255,255,255` | `30,30,33` |
 | `--border` | `#d5d5da` | `#3a3a40` |
 | `--text` | `#1d1d1f` | `#f2f2f5` |
 | `--text-2` | `#63636a` | `#9a9aa0` |
@@ -186,7 +191,6 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | `--bg` | `#fbf7ee` | `#1c1712` |
 | `--surface` | `#ffffff` | `#262019` |
 | `--surface-2` | `#f3ece0` | `#332a20` |
-| `--surface-rgb` | `255,255,255` | `38,32,25` |
 | `--border` | `#e4d9c6` | `#463a2c` |
 | `--text` | `#241c12` | `#f5efe6` |
 | `--text-2` | `#6b5d4a` | `#b9a78e` |
@@ -202,7 +206,6 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | `--bg` | `#f2f4ef` | `#141a14` |
 | `--surface` | `#ffffff` | `#1e261e` |
 | `--surface-2` | `#e8ece3` | `#29332a` |
-| `--surface-rgb` | `255,255,255` | `30,38,30` |
 | `--border` | `#d9e0d2` | `#3a463a` |
 | `--text` | `#232a22` | `#edf2ea` |
 | `--text-2` | `#5e6857` | `#a9b8a4` |
@@ -218,7 +221,6 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | `--bg` | `#f7f4fc` | `#17131f` |
 | `--surface` | `#ffffff` | `#211b2c` |
 | `--surface-2` | `#efe9f8` | `#2c2439` |
-| `--surface-rgb` | `255,255,255` | `33,27,44` |
 | `--border` | `#e1d8f0` | `#3d3350` |
 | `--text` | `#241a33` | `#f0ebf7` |
 | `--text-2` | `#6b5f80` | `#b0a6c2` |
@@ -234,7 +236,6 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 | `--bg` | `#eff7f8` | `#0e1a1d` |
 | `--surface` | `#ffffff` | `#16262a` |
 | `--surface-2` | `#e3f0f2` | `#1f3438` |
-| `--surface-rgb` | `255,255,255` | `22,38,42` |
 | `--border` | `#cde2e6` | `#2c474c` |
 | `--text` | `#12303a` | `#e6f1f3` |
 | `--text-2` | `#4e6b74` | `#9bb3b8` |
@@ -318,7 +319,7 @@ body::before {
 
 ### 6.3 可读性（这才是照片背景的真正难点）
 
-- **卡片半透明**：开启照片时 `--surface` 变为 `rgba(var(--surface-rgb), .9)`。0.9 是刻意的：太透会让文字与照片纹理打架，不透就看不出背景。`--surface-2` **不参与**——见下一条。
+- **卡片半透明**：开启照片时 `--surface` 变为从它自己现算的 `rgba(r,g,b, .9)`（通道由该皮肤的 `--surface` 解出，色板里没有 `--surface-rgb` 这份副本）。0.9 是刻意的：太透会让文字与照片纹理打架，不透就看不出背景。`--surface-2` **不参与**——见下一条。
 - **输入框、密码箱正文、数字大屏保持不透明**：这些元素垫在 `--surface-2` 上，而 `--surface-2` 在照片模式下**刻意不改**——这正是它不参与半透明化的原因。会用 `--surface` 变透的只有卡片本体与 sheet 面板。实现时仍要逐个确认（**看不清数字的记账 app 是废的**）：若发现某个关键读数垫在 `--surface` 上，就地给它一条不依赖 `--surface` 的不透明规则。
 - **遮罩默认 30%**：这是「照片还看得出来」与「卡片文字达标」之间的折中点，用户可以在 0–60% 之间自己挪。
 - **表格与小字**：`ui-ux-pro-max` 的 Glassmorphism 条目自己标注了 `requires: contrast-text-4.5`，这正是照片背景最大的坑；对比度测试只能保证「色板本身达标」，照片之下的实际对比度只能靠遮罩 + 半透明度的组合来兜。**这是本次唯一无法用自动化测试完全覆盖的风险**，所以它进手动验证清单。
@@ -356,7 +357,7 @@ body::before {
 
 ### 9.1 新增 `tests/theme.test.js`（纯逻辑，Node 可跑）
 
-1. **变量齐全**：五套皮肤 × 深浅，每组的 key 集合与 `default.light` 完全一致（多一个少一个都失败）。防的是「新加一套皮肤时漏了一个变量 → 那块界面变透明/变黑」。
+1. **变量齐全 + 色值格式**：五套皮肤 × 深浅，每组的 key 集合与**写死的正典清单**完全一致（多一个少一个都失败；基准不拿 `default.light` 自指——自指的基准下「十组一起少一个变量」也是绿的）；并且逐值断言形状——10 个 hex 键匹配 `#rrggbb`、`--shadow` 含 `rgba(`、`--scrim-rgb` 是 `r,g,b` 三个 ≤255 的通道且浅色为 `255,255,255`、深色为 `0,0,0`。防的是「新加一套皮肤时漏了一个变量 → 那块界面**静默**退回 `base.css` 的默认皮肤色」（比变透明/变黑难发现），以及值写错——只断言键名的写法拦不住值写错（同一条标准见 `tests/schema.test.js`）。
 2. **对比度**：对每组配色断言
    - `--text` vs `--bg` / `--surface` / `--surface-2` ≥ 4.5
    - `--text-2` vs `--bg` / `--surface` / `--surface-2` ≥ 4.5
@@ -365,7 +366,7 @@ body::before {
 3. **归一化**：`normalizePreset` / `normalizeMode` / `normalizeOverlay` / `normalizeBackground` 对 `undefined`、`null`、`''`、`42`、`'paper'`、`{ overlay: 999 }`、`{ assetId: '' }` 等输入的行为。
 4. **`resolveMode`**：`auto` × {系统深、系统浅}、`light` × {系统深}、`dark` × {系统浅}。
 5. **`scrimAlpha`**：0 → 0，60 → 0.6，越界输入被 clamp，`NaN` → 默认 30 对应的值。
-6. **`themeCssVars(..., { photo: true })`**：只有 `--surface` 变成 `rgba(var(--surface-rgb), .9)`，**其余变量（含 `--surface-2`）一个都不许变**；`{ photo: false }` 时 `--surface` 就是该皮肤的不透明值。
+6. **`themeCssVars(..., { photo: true })`**：只有 `--surface` 变成 `rgba(r,g,b, .9)`（通道从该皮肤的 `--surface` 现算，例如 `default.dark` → `rgba(30,30,33, 0.9)`），**其余变量（含 `--surface-2`）一个都不许变**；`{ photo: false }` 时 `--surface` 就是该皮肤的不透明值。色板里也不该再有 `--surface-rgb` 这个键。
 
 ### 9.2 不新增测试但必须回归的
 
