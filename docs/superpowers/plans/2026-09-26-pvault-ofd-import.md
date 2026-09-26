@@ -23,7 +23,7 @@
 | `app/ui/backup-view.js` | 改用共用的 `downloadBlob()` | 修改 |
 | `app/ui/invoice-editor.js` | 选择器 accept 与按钮文案、20 MB 拦截、预览占位、导出按钮 | 修改 |
 | `app/ui/invoice-view.js` | 列表占位块补无障碍文案 | 修改 |
-| `sw.js` | `CACHE` 提到 v14，白名单加两个新文件 | 修改 |
+| `sw.js` | 任务 3：`CACHE` 提到 v14、白名单加 `file-info.js`；任务 9：提到 v15、白名单加 `ui/download.js` | 修改 |
 | `docs/手动验证清单.md` | 补 OFD 一节 | 修改 |
 
 **为什么把纯函数单独建文件**：`app/image-store.js` 顶部第一行注释写着「依赖 Canvas / Blob / indexedDB，**不能在 Node 里 import**」。判定表放在那里就等于放弃单测——而「mime 与扩展名哪个优先」恰恰是这次最容易写错、也最该有测试钉死的地方。
@@ -582,7 +582,7 @@ export async function saveFile(prepared) {
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，**246 通过 / 0 失败**（原 221 + 任务 1 新增 12 个 + 任务 2 新增 13 个）。
+预期：PASS，**247 通过 / 0 失败**（原 221 + 任务 1 的 12 + 任务 2 的 13 + 本任务为 `replaceExt` 新增的 1）。
 
 - [ ] **步骤 6：Commit**
 
@@ -647,7 +647,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，246 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
+预期：PASS，247 通过 / 0 失败。（`backup-view.js` 是视图，没有单测；这里只确认没有别的文件被带崩。）
 
 - [ ] **步骤 4：人工核对搬运是否等价**
 
@@ -712,7 +712,7 @@ import { downloadBlob } from './download.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，246 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
+预期：PASS，247 通过 / 0 失败。（视图层没有单测，这里确认没有连带损坏。）
 
 - [ ] **步骤 5：Commit**
 
@@ -786,7 +786,7 @@ git commit -m "feat(ofd): 编辑器接受 OFD 文件，并在 20 MB 处拦下误
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，246 通过 / 0 失败。
+预期：PASS，247 通过 / 0 失败。
 
 - [ ] **步骤 4：Commit**
 
@@ -886,7 +886,7 @@ git commit -m "feat(ofd): 预览区按类型给占位，有文件名就显示文
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，246 通过 / 0 失败。
+预期：PASS，247 通过 / 0 失败。
 
 - [ ] **步骤 6：Commit**
 
@@ -927,7 +927,7 @@ git commit -m "feat(ofd): 发票编辑器加「导出这份文件」"
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：PASS，246 通过 / 0 失败。
+预期：PASS，247 通过 / 0 失败。
 
 - [ ] **步骤 3：Commit**
 
@@ -951,7 +951,7 @@ git commit -m "feat(ofd): 列表占位块补 title 与 aria-label"
 const CACHE = 'pvault-v15';
 ```
 
-- [ ] **步骤 2：加 v14 的说明注释**
+- [ ] **步骤 2：加 v15 的说明注释**
 
 紧接 v13 那条注释之后加：
 
@@ -989,7 +989,7 @@ if ($missing) { "缺失: $missing" } else { "白名单 $($listed.Count) 条，�
 
 ```bash
 git add sw.js
-git commit -m "chore(sw): 缓存版本提到 v14，白名单加 file-info 与 download"
+git commit -m "chore(sw): 缓存版本提到 v15，白名单加 ui/download"
 ```
 
 ---
@@ -1061,6 +1061,6 @@ D:\node.exe --test --test-isolation=none
 cd E:\codex-project\pvault; git status --porcelain
 ```
 
-预期：246 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
+预期：247 通过 / 0 失败，工作区干净，`main` 上多出 10 个提交。
 
 **这次不做的事**（写在这里是为了防止实现过程中范围蔓延）：解析 OFD 内容、渲染票面、支持 XML 原件、动 `DB_VERSION`、给列表加文件名。
