@@ -126,7 +126,12 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   }
 
   async function paintPreview() {
-    const seq = ++previewSeq;
+    // 这里**不能**自增 previewSeq。paintPreview 基本总是被 pickFile 在结尾调用，它自增之后
+    // pickFile 的 finally 里那句 `seq === previewSeq` 就永远不成立，state.busy 再也清不掉——
+    // 表现为图片早就显示出来了，用户每次点「保存」都只得到「图片还在处理，稍等一下再保存」，
+    // 这张发票永远存不下去（真机上实测踩到过）。序号只由「发起一次新操作」的地方推进：
+    // pickFile 与关闭面板。这里只读它，回答「我这次要画的是不是已经过期了」。
+    const seq = previewSeq;
     // 把这次要画的 fileId 固定下来：await 期间它可能被下一次选图换掉，
     // 而那时该由那一次自己来画。
     const fileId = state.fileId;
