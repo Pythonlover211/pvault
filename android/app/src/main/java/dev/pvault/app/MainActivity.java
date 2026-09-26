@@ -285,7 +285,10 @@ public class MainActivity extends Activity {
         private String exportMimeOf(String name, String mime) {
             // application/octet-stream 等于「不知道」——选择器给 OFD / PDF 常常就是这个值，
             // 直接采用它，下面那套按扩展名兜底的逻辑就白写了。
-            if (mime != null && !mime.isEmpty() && !"application/octet-stream".equals(mime)) {
+            // 比较前先剥掉 `;` 之后的参数：JS 侧的 normalizeMime 早就剥过一次，
+            // 这里不剥就成了两套口径。返回的仍是调用方给的原串。
+            String bare = (mime == null ? "" : mime.split(";", 2)[0].trim());
+            if (!bare.isEmpty() && !"application/octet-stream".equals(bare)) {
                 return mime;
             }
             String lower = (name == null ? "" : name).toLowerCase();
