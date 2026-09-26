@@ -283,7 +283,11 @@ public class MainActivity extends Activity {
          * 优先信页面给的 blob.type（它就是这份字节的真实类型），拿不到再按扩展名兜。
          */
         private String exportMimeOf(String name, String mime) {
-            if (mime != null && !mime.isEmpty()) return mime;
+            // application/octet-stream 等于「不知道」——选择器给 OFD / PDF 常常就是这个值，
+            // 直接采用它，下面那套按扩展名兜底的逻辑就白写了。
+            if (mime != null && !mime.isEmpty() && !"application/octet-stream".equals(mime)) {
+                return mime;
+            }
             String lower = (name == null ? "" : name).toLowerCase();
             if (lower.endsWith(".ofd")) return "application/ofd";
             if (lower.endsWith(".pdf")) return "application/pdf";
