@@ -46,8 +46,8 @@
 // 从此静态依赖它。白名单不跟着那一次提交一起加的话，已装旧缓存的设备离线启动会断在
 // main → invoice-view → invoice-editor → image-store → canvas-image 这一环：那一个 module 404、
 // import 链一断是整个 app 白屏（不只是发票面板）——与上面 v14 那次同一个坑，所以不等任务 14。
-// 外观功能其余的文件（theme / theme-store / ui/appearance-sheet / appearance.css）此刻还不存在，
-// 等它们出现时再按同一条纪律进清单。
+// 外观功能其余的文件：theme.js 已经建好（任务 1-4），但此刻没有任何模块 import 它——不请求就不会 404；
+// theme-store / ui/appearance-sheet / appearance.css 则还没建。它们被消费方接上时，按同一条纪律进清单。
 const CACHE = 'pvault-v16';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
