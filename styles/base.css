@@ -27,37 +27,41 @@
   --tab-h: 56px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --bottom-inset: calc(var(--tab-h) + var(--safe-b));
-  /* 背景照片相关（最终都落在下面 body::before 那一层）。这四条只在对应的变量**从未被写过
-     inline** 时生效——JS 还没跑完的那一帧，或 initTheme 失败时（那种情况下 <html> 上是
-     0 个变量，页面照常渲染、只是外观走 CSS 默认）。兜底值必须让那一层等于不存在：
-     这里若写成一个真遮罩或真色块，那一帧就会看到一整块遮罩盖住整个 app。
-     两个 none 与「两个都没写过」画出来是一样的——var() 不带回退值，谁缺一个都会让整条
-     background-image 在 computed-value 求值时失效、两层一起没。所以这份兜底不改变默认
-     状态的渲染结果：applyPhoto 在写变量之前就抛错时（库里那张图读不出来），DOM 上同样
-     既没有 --bg-image、也没有 --bg-scrim，走的就是「两个都没写过」这一路。
-     --scrim-rgb 与 --scrim-a 是另一回事：消费它们的只有 JS 写进 inline style 的那条
-     表达式（theme-store.js 的 setPhotoVars）；styles/ 与 app/ 里没有第二处
-     var(--scrim-rgb) / var(--scrim-a)（规格与计划文档里有同名文本，那些不是消费者）。
-     --bg-scrim 的兜底是字面量 none，不引用它们。所以兜底这两个属于防御性动作，在当前
-     代码里几乎不产生可见效果：有那条表达式就说明 setPhotoVars 跑过，它自己就写 --scrim-a；
-     --scrim-rgb 则由 paint() 写，而 paint() 在 initTheme 里跑在 applyPhoto 之前。
-     两条各自的情况：
-       · --scrim-rgb 只在「这个键从头到尾没被 inline 写过、而 --bg-scrim 那条表达式已经写进
-         DOM 了」时才有可见效果（paint() 的循环把它漏掉，或本次会话里 paint() 一次都没成功
-         跑完、用户仍然选了照片）。那时没有兜底就是整条 background-image 失效（照片与遮罩
-         一起没），有兜底至少留下一层浅色遮罩。
-       · --scrim-a 连这条路径都没有：要写下那条表达式，setPhotoVars 里两行 setProperty 就会
-         一起跑完（自定义属性的值不做校验，这两行之间不会抛）。它在这里的作用只是把
-         OVERLAY_DEFAULT 这个默认值在 CSS 里留一份。
-     两条都救不了「写过之后再漏写」的残留：inline 值优先于样式表里的 :root，真漏写时 DOM
-     上留着的是上一次写进去的旧值（--scrim-rgb 就是深色那套的 '0,0,0'）——这正是 paint()
-     注释里那句合同的原意，与这里给不给兜底无关。
+  /* 背景照片相关（最终都落在下面 body::before 那一层）。四条一组，性质一样：**只在对应的
+     变量从未被写过 inline 时生效**，作用是让这一层的默认状态在 CSS 里自文档化、并给将来的
+     改动上保险，当前都不产生可见的渲染差异。逐条：
+       · --bg-image / --bg-scrim 的值是两个 none。它俩与「两个都没写过」画出来一样——var()
+         不带回退值，谁缺一个都会让整条 background-image 在 computed-value 求值时失效、两层
+         一起没。所以「JS 还没跑完那一帧」「applyPhoto 在写变量之前就抛错（库里那张图读不
+         出来）」「JS 主动写 none」这三种状态渲染完全相同。兜底值必须让这一层等于不存在：
+         这里若写成一个真遮罩或真色块，那一帧就会看到一整块遮罩盖住整个 app。
+       · --scrim-rgb / --scrim-a 在 CSS 里**没有第二个消费点**（消费它们的是 JS 写进 inline
+         style 的那条表达式，theme-store.js 的 setPhotoVars；styles/ 与 app/ 里再无第二处
+         var(--scrim-rgb) / var(--scrim-a)，规格与计划文档里的同名文本不是消费点）。
+         --bg-scrim 的兜底是字面量 none，不引用它们，所以它们在这一帧同样没有可见效果。
+         它们唯一可能生效的情形是「这个键从头到尾没被 inline 写过、而 --bg-scrim 那条表达式
+         已经写进 DOM 了」：--scrim-a 连这条都没有——要写下那条表达式，setPhotoVars 里两行
+         setProperty 就会一起跑完（自定义属性的值不做校验，这两行之间不会抛），它留在这里的
+         作用只是把 OVERLAY_DEFAULT 这个默认值在 CSS 里有一份。--scrim-rgb 要走这条，前提是
+         这个键从头到尾没被写过，而 paint() 那条路本来一定会写它（initTheme 里那次是
+         photo=false，themeCssVars 连 hexToRgb 都不会调用），所以只剩两种可能：paint() 的
+         循环漏掉它（那份「整条写出去」的合同被改坏了），或者 initTheme 在 paint() 之前就
+         失败、此后那次 paint() 抛错——它唯一的 throw 是 theme.js 的 hexToRgb，要色板违反
+         HEX6 才触发（规格 §5.4 把这个记成已知项）。真走到那里时：没有兜底是整条
+         background-image 失效（照片与遮罩一起没），有兜底至少留下一层浅色遮罩。
+     四条都救不了「写过之后再漏写」的残留：inline 值优先于样式表里的 :root，真漏写时 DOM 上
+     留着的是上一次写进去的旧值（--scrim-rgb 就是深色那套的 '0,0,0'）——这正是 paint() 注释
+     里那句合同的原意，与这里给不给兜底无关。
+     显式写出 none 而不是干脆不写，还挡住一种将来的半套写法：只写 --bg-scrim（不写
+     --bg-image）时，没有兜底是整层失效、有兜底则会在空背景上单独冒出一层遮罩。
      写法与 JS 对齐，免得同一份真相在仓库里出现两种写法：--scrim-rgb 不带空格（JS 色板里
      就是 '255,255,255'，tests/theme.test.js 的 SHAPES 把它钉成 /^\d{1,3},\d{1,3},\d{1,3}$/）、
      --scrim-a 带前导 0（scrimAlpha(OVERLAY_DEFAULT) 的结果是 '0.3'，JS 那边 String() 不会
-     写出 '.3'）。这里给的是浅色那份，与 --bg 的兜底同一个道理：@media 的深色块里不补
-     --scrim-rgb（JS 没跑完那一帧它没有作用对象——--bg-scrim 也是 none，遮罩层根本不存在），
-     真正的极性由 JS 按 resolved 的深浅写。 */
+     写出 '.3'）。
+     --scrim-rgb 这里给的是**浅色**那份，与 --bg **不同**：--bg 在下面的 @media 深色块里补了
+     深色档（`--bg: #131315` 就在那儿），--scrim-rgb 没有补。不补的理由是它在「JS 没跑完那一
+     帧」本来就没有作用对象（--bg-scrim 也是 none，遮罩层不存在）；但代价要写明白——一旦这条
+     兜底真的生效（就是上面那条 paint() 漏写它的路），深色档下拿到的是**白色**遮罩，极性是错的。 */
   --bg-image: none;
   --bg-scrim: none;
   --scrim-rgb: 255,255,255;
@@ -108,7 +112,11 @@ body::before {
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  /* 这一层盖住整屏，不关掉命中测试就会把所有的点击都吃掉。 */
+  /* 纯装饰层，不参与命中测试。按上面的层叠关系它位于所有真实内容之下，正常情况下命中测试
+     轮不到它——当前 `html, body` 是 `height: 100%`、`.app` 是 `min-height: 100%`，视口内处处
+     有内容层覆盖。但这一条不该依赖那个布局前提：哪个容器的高度规则一变，或者某处内容被
+     `pointer-events: none` 穿透，那个位置的命中测试就会轮到这一层。显式写死它不参与，
+     既是给将来的改动上保险，也让「这层不接收交互」在样式里自明。 */
   pointer-events: none;
 }
 .app {
