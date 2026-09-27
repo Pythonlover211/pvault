@@ -280,7 +280,7 @@ async function render(id) {
 }
 ```
 
-放在 `render()` 里面而不是 `main.js` 顶部，是因为 `onChange(render)` 是同步注册、可能同步触发第一次渲染；把它挂在渲染路径上，两条路（首次渲染、以及切 Tab / 保存后的重渲染）谁先到，都保证**这一次 `render()` 的 `mount`** 在主题之后。**它不覆盖一切挂载**：主屏快捷方式那条路（`openFromShortcut()` → `openEntryPanel()`）直接开录入面板、不经过 `render()`，它自己 `await` 一次 IndexedDB 读之后挂载，与 `initTheme()` 是并发的，谁先完成没有保证——任务 15 的清单里有一条「带 `new=1` 的冷启动顺带看一眼面板首帧」。`.catch` 兜底保证主题出错不拖垮整页（照常渲染，只是外观是默认的）；兜住之后**不再重试**（promise 缓存在 `themeReady` 里，失败同样是 settled），一次主题失败＝本次页面生命周期停在默认外观、刷新才恢复。
+放在 `render()` 里面而不是 `main.js` 顶部，是因为 `onChange(render)` 是同步注册、可能同步触发第一次渲染；把它挂在渲染路径上，两条路（首次渲染、以及切 Tab / 保存后的重渲染）谁先到，都保证**这一次 `render()` 的 `mount`** 在主题之后。**它不覆盖一切挂载**：主屏快捷方式那条路（`openFromShortcut()` → `openEntryPanel()`）直接开录入面板、不经过 `render()`，它自己 `await` 一次 IndexedDB 读之后挂载，与 `initTheme()` 是并发的，谁先完成没有保证——任务 15 的清单里有一条「带 `new=1` 的冷启动顺带看一眼面板首帧」。`.catch` 兜底保证主题出错不拖垮整页（照常渲染，只是外观是默认的）；兜住之后**不再重试**（promise 缓存在 `themeReady` 里，失败同样是 settled），一次主题失败＝本次页面生命周期不再重走 `initTheme`、要刷新才恢复；而「停在默认外观」只在**那之后没有人点过皮肤 / 深浅**时成立——设置面板的「外观与背景」入口（任务 12）接上之后，用户点一次皮肤或深浅就会 `paint()`、把整条变量写出去，那时停在的是他刚点的那套（只是本页启动时没从库里读出来）。
 
 **这条保证的边界（验收时按这个判据）**：它管的是「**内容挂载之前**主题已应用」，不是「第一帧就是皮肤色」。JS 起跑之前的那几帧，浏览器画的是 `base.css` 的 `:root` 兜底（默认皮肤的浅 / 深，见下面那段），而 `index.html` 的 `<body>` 里只有空的 `<div id="app">`——那几帧看到的是「一片默认底色、什么都还没有」。把 §11 的「先看到的就是已选皮肤」读成「连那一片底色也得是皮肤色」，是个**永远不可能通过**的判据；要消掉它只能把用户皮肤内联进 `index.html`，那不在本设计里（§11 那一条已按这个判据改写）。
 
@@ -435,7 +435,7 @@ body::before {
 
 | 接缝 | 具体动作 | 漏掉的后果 |
 |---|---|---|
-| `sw.js` 的 `ASSETS` | `./app/canvas-image.js`（任务 5，v16）、`./app/theme-store.js` 与 `./app/theme.js`（任务 10，v17，两个一起加——它们在同一条首屏依赖链上）、`./styles/appearance.css`（**任务 11**：`index.html` 挂上它的 `<link>` 之后它就是首屏依赖，所以不等任务 14）都已经加完；只剩 `./app/ui/appearance-sheet.js` 在任务 14——那要等任务 12 把 `settings-sheet.js` 的 `import` 接上，它才真的进首屏依赖链。`CACHE` 到任务 14 再升（任务 11 加 `appearance.css` 时 `pvault-v17` 还没发布，按 `sw.js` 开头那条例外不必 +1） | 漏加一个模块：离线启动时它的请求缓存未命中 → 回退 `index.html` → 模块脚本被 MIME 检查拒绝，app 起不来。**这不是 404**——404 属于「清单里写了一条不存在的路径」，那时 `addAll` 会整批 reject、install 失败 |
+| `sw.js` 的 `ASSETS` | `./app/canvas-image.js`（任务 5，v16）、`./app/theme-store.js` 与 `./app/theme.js`（任务 10，v17，两个一起加——它们在同一条首屏依赖链上）、`./styles/appearance.css`（**任务 11**：`index.html` 挂上它的 `<link>` 之后它就是首屏依赖，所以不等任务 14）、`./app/ui/appearance-sheet.js`（**任务 12**：那一步让 `settings-sheet.js` 静态 `import` 它，它由此进首屏依赖链——白名单跟产生依赖的那次提交一起走，所以也比原计划的收尾步骤早）都加完了。`CACHE` 到任务 14 再升（任务 11 与任务 12 两次加条目时 `pvault-v17` 都还没发布，按 `sw.js` 开头那条例外都不必 +1） | 漏加一个模块：离线启动时它的请求缓存未命中 → 回退 `index.html` → 模块脚本被 MIME 检查拒绝，app 起不来。**这不是 404**——404 属于「清单里写了一条不存在的路径」，那时 `addAll` 会整批 reject、install 失败 |
 | `backup-store.js` 的导出与导入 | `data.background` 两处成对写 | 换机后背景静默消失（与 `name` 字段同一个坑） |
 | `DB_VERSION` 2 → 3 | `schema.js` 加 `assets` + 升版本号 | 新表建不出来，存图直接抛错 |
 | `main.js` 的 `render()` | 在 `render()` 这条路径上、内容挂载前 `await themeReady`（边界见 §5.4） | 内容先挂载、再上色：**默认皮肤 + 默认深浅之外的档**冷启动会闪一下默认色 |
