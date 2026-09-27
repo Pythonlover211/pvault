@@ -1725,6 +1725,13 @@ export async function setOverlay(value) {
 
 （`normalizeOverlay` 已并进 `./theme.js` 那条 import 的清单里，见本节开头。）
 
+**任务 13 之后这个文件的现状**：上面那份是**任务 8 的 HEAD**（计划里的代码块镜的是各任务自己的 HEAD，
+不是最终 HEAD）。任务 13 只动了其中一处——`applyPhoto` 的 JSDoc 里「这种记录有两个真实来源：
+① 导入一份『设置里有 backgroundImage、备份包里却没有 assets』的备份」那一句：导入侧改成成对处理
+之后，**导入不再能造出那种记录**，剩下的两个来源是「`removePhoto` 删库成功、清设置那一步失败」
+与「用户在库里手改」（历史那一段在源码里改成了过去时，留在注释里是为了说明这段兜底当初在挡什么）。
+现状见 `app/theme-store.js`。
+
 **还要把 `applyPhoto()` 的调用补回 `initTheme()`。** 任务 7 交付时那里**故意**留空：当时
 `applyPhoto` 还不存在，调它会立刻让 `initTheme` reject，而那时变量已经写进页面、监听却还没挂上
 ——一个「半套主题」的中间态。现在实现有了，在 `initTheme()` 的 `attachSystemListener();` **之前**插入：
@@ -2204,8 +2211,10 @@ let themeReady = null;
 | `ASSETS` 里一条少了 `./` 前缀（`'app/db.js'`） | 核验脚本 **exit=1**：「⑬ ASSETS 里这些条目没有对应的 ./ 同形写法」；**HEAD 版脚本 exit=0（绿）**——单向判据的盲区，已复现并修好 |
 | `ASSETS` 里一条指向磁盘上不存在的路径（`'./app/nowhere.js'`） | ⑬ **绿**（它不管磁盘存在性，如实写清）；任务 14 那支存在性脚本报「缺失：app/nowhere.js」 |
 
-核验脚本这一侧的 ⑬ 另有 **M18**（注释里塞一条清单外的带引号路径）与 **M19**（清单条目少 `./` 前缀），
-`--self-test` 里 **19/19 全被抓**（实测）。
+核验脚本这一侧的 ⑬ 另有 **M18**（注释里塞一条清单外的带引号路径）与 **M19**（清单条目少 `./` 前缀）。
+本行原来的「19/19」是任务 10 当时的快照，**在任务 11 就过期了**（那一步给 ⑭ 补了 M20–M23）。
+任务 12 收尾与任务 13 返工的实测都是 **23/23 全被抓**；变异条数会随任务增长，
+**别把它当基线**，以脚本当次打印的那两行为准。
 
 - [ ] **步骤 4：`theme-store.js` 与 `theme.js` 进预缓存白名单（顺带把新的 `schema.js` 铺到设备上）**
 
@@ -2804,6 +2813,11 @@ git commit -m 'docs(appearance): 同步任务 11 返工（镜像、行号锚点�
    `buildBackup` 的 `data` 键里根本没有背景（那正是任务 13；规格 §4.3 / §7 也把它列在任务 13）。
    改成「会压到长边 1600 像素后存在这台手机上」，不再承诺任何与备份有关的事。**面板上其余文案逐句核过**
    （按钮、字段标签、四条 alert、两条说明）：都是当下为真的话。
+   **⚠ 任务 13 把这一条的结论推翻了，读到别照它改回去**（这是历史记载，不是现行纪律）：任务 13 让
+   备份真的带上了背景，于是「不再承诺任何与备份有关的事」这个结论随之过期——面板文案现在是
+   「……然后存在这台手机上，导出备份时会一起带走」，并注明了边界（读图失败的那一次导出不带背景，
+   而备份面板会当场告知）。**「面板不该承诺备份」的前提是「备份不带背景」，那个前提已经不存在了。**
+   现状见任务 13 开头第 4 点。
 2. **两个类名全仓零定义**（`field-label` / `btn-ghost`）：实测 `styles/*.css` 里一条规则都没有。后果不只是
    「标签没有层级」——破坏性的「移除」与「换一张」长得一模一样，而仓库本来就有 `.field` + `<label>`
   （`ledger.css`，账户 / 分类 / 预算 / 备份四个面板都在用）与 `.btn-danger`（仓库全部 6 处删除类操作都用它）。
@@ -3068,37 +3082,64 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
 **这个任务是本次最容易漏的接缝。** `invoiceFiles` 那次就是因为在设计里写了「备份是整表导出、不用改」而漏掉 `name` 字段，直到换机才暴露。所以导出与导入两段代码必须**成对**写，评审时逐行对照。
 
 **文件：**
-- 修改：`app/backup.js`
-- 修改：`app/backup-store.js`
+- 修改：`app/backup.js`（`buildBackup` 带 `background`；`summarizeBackup` 加 `hasBackground`）
+- 修改：`app/backup-store.js`（导出侧编码、导入侧成对处理）
+- 修改：`app/db.js`（`replaceAll` 加 `deletes` 通道，见下第 2 条）
+- 修改：`app/theme-store.js`、`app/ui/appearance-sheet.js`（注释与用户文案的同步）
+- 修改：`app/ui/backup-view.js`（导出结果里的背景通道 + 摘要页那两处文案）
 - 新增：`tests/helpers/fake-browser.js`（内存版 IndexedDB + FileReader 桩，本步为了能自动测）
 - 新增：`tests/backup-store.test.js`（导出与导入成对跑的守卫）
 - 修改：`tests/backup.test.js`（`data` 的键集断言 + 两条新的 background 断言）
 
-**本步相对计划原文的四处改动**（原文的判断经不起下面给出的事实，逐条列在这里；理由同时写进了代码注释）：
+**本步相对计划原文的五处改动**（原文的判断经不起下面给出的事实，逐条列在这里；理由同时写进了代码注释）：
 
 1. **`overlay` 的判据**。原文是 `Number(meta?.overlay) >= 0 ? Number(meta.overlay) : null`。
    `Number(null)` / `Number('')` / `Number(false)` 都是 `0`，而 `0` 在这里是**合法**的遮罩强度
    （`theme.js` 的 `OVERLAY_MIN` 就是 0，滑块能拖到那一格），于是「设置里根本没有这一项」会被写成
    「用户选了 0% 遮罩」——一个从没发生过的值，而备份包是换机时唯一的数据面。改用 `overlayOrNull()`：
-   **一个判据只回答一个问题**（0 是「无遮罩」，`null` 才是「没有」）。
-2. **`clears` 里加 `assets`（仅当备份没带背景时）**。原文的「不要加」给的理由是「没有替补的东西一律不删」。
-   那条纪律的前提在本例里不成立：**`settings` 是整表覆盖的**，导入一份不含背景的备份时，本机那条
-   `backgroundImage` 必然被这次覆盖清掉——本机那张图**已经失去引用、画面上也不再显示它**，把字节留在
-   库里只会让它在下一次导出里复活（`encodeBackground` 只认 `assets` 那条记录、不看设置里有没有引用）
-   并跟着备份跑到第三台设备上去。规格 §7 的「否则清掉这两处」与规格 §13 那条「恢复的是一台机器上的图
-   （不是当前这台残留的）」的验收项指向同一个做法；**只留一半**（留图丢设置、或留设置丢图）才是要禁止的。
-   （真要在这种情况下保住本机背景，得把设置行也一起保留、两处都不动——像 `vault` 那样，那是另一个决定。）
-3. **失败降级的可见性**。`encodeBackground` 失败仍按原文降级成「这次不带背景」（账目比背景重要），
-   但注释里如实写明**这条降级是静默的**：`exportBackup` 的返回值里没有对应通道，用户唯一的线索是
-   控制台那条 `warn`。原文没写这一层，后来者容易读成「用户会知道」。
+   **一个判据只回答一个问题**（0 是「无遮罩」，`null` 才是「没有」）。它同时**夹紧取整**——
+   值域交给 `theme.js` 的 `normalizeOverlay`（`Math.round` + 夹到 0..60），不在这里另写一套：
+   同一个数字会在「设置 → 备份包 → 设置」这条路上走一圈，两套判据差一点就会让用户调过的值变样
+   （第一轮只判类型不夹紧，`-5 / 9999 / 30.7` 会原样进包）。
+2. **`assets` 的处置：按主键删（不是整表清），而且「图有设置无」要补设置行**。原文的「不要加
+   `clears`」只说了一半，另一半（有图时保证 `settings` 里有一行指向它）没说，于是第一轮实现留下
+   一个**真实的成对缺口**：源状态「`assets` 有图、`settings` 里没有那一行」被导出（`encodeBackground`
+   只认 assets、不看设置）再导入之后，仍然是「图在库里、没人引用、背景不显示」——而那个源状态
+   会被这份代码**自我复制**下去（`setPhoto` 写 assets 成功、写设置失败就会造出它）。
+   现在三件事各有机制：
+   · 备份带图 → `put('assets', {id:'bg'})` 覆盖同一条，**不碰**表里别的资源记录；
+   · 备份带图、而备份的 `settings` 里没有 `backgroundImage` 那一行 → 用背景包里的
+     `overlay`/`createdAt` **现造一行补上**（这也正是 `data.background.overlay` 存在的意义：
+    在此之前它没有任何消费方，是空转的）；
+   · 备份不带图 → 把本机那条**按主键删掉**，并跳过备份 `settings` 里那一行。
+   为此给 `app/db.js` 的 `replaceAll` 加了 `deletes: [{ store, key }]` 通道（与 `clears` 同事务）：
+   第一轮用的是 `clears.push('assets')`＝**整表清空**，在 `assets` 真多出第二条资源记录时会把它
+   一起端掉，而代码注释、规格、本计划三处都写着「清单不该靠『现在只有一条』活着」——说一套做一套。
+   （真要在「备份不带背景」时保住本机背景，得把设置行也一起保留、两处都不动——像 `vault` 那样；
+   规格 §13 里那条「恢复的是一台机器上的图（不是当前这台残留的）」的验收项与它冲突。）
+3. **失败降级要有通道，不能只写进 Console**。`encodeBackground` 失败仍按原文降级成「这次不带背景」
+   （账目比背景重要），但**不能是静默的**：`exportBackup` 现在返回 `backgroundSkipped`（布尔，
+   与 `skipped` 那个张数分开——背景只有一张，文案与后果都不同），`app/ui/backup-view.js` 在导出
+   结果里落一行警示。理由与 `encodeFiles` 那边写着的一样：「备份少了一张图却显示成功，
+   等用户换手机那天才发现，那就太晚了」。同时 `encodeBackground` 的返回值从「对象或 null」变成
+   `{ background, skipped }`：**「库里没有背景」与「有背景但没读出来」必须能分开**——前者不是降级、
+   不该报警，后者必须报警，而两者的 `background` 都是 `null`。
 4. **面板上那句被删掉的备份承诺加回来了**。`app/ui/appearance-sheet.js`（任务 11 的产物）里原本写着
    「**不写「跟着备份一起走」**：导出包现在还不带背景（…那是任务 13 的事）」，用户可见的文案里因此
    没有备份这回事。本步把这个前提消掉了（导出、导入两侧都有测试钉住），所以：文案改成
    「……然后存在这台手机上，导出备份时会一起带走」，注释同步改准**并写明边界**——`encodeBackground`
-   失败的那一次导出不带背景，而那条降级是静默的，所以这句是「会」不是「永远会」。
+   失败的那一次导出不带背景，而界面会当场告知（见第 3 条），所以这句是「会」不是「永远会」。
    判断依据：一句真话且对用户有用的话，不该因为「上一版做不到」而永久留在删除状态；用户最担心的正是
    「换手机后背景没了」，而备份是他唯一能主动保住它的手段。`theme-store.js` 里那句「当前的备份包就没有
    assets（规格 §7 的任务 13 接缝）」也是同一件事的另一种说法，一并对齐。
+5. **摘要页必须有一行「背景照片」**。背景的处置方向与发票图片**相反**（备份不带背景 → 本机那张被
+   删掉），而那一屏是用户点「确认覆盖并恢复」之前唯一一次知情机会——`backup-view.js` 自己在那段
+   注释里立了纪律：「图片这一行的判据必须与 `backup-store` 的 `clears` 严丝合缝地一致」。
+   所以 `summarizeBackup` 加 `hasBackground`，摘要页加一行（不包含时写明「本机那张背景会被一起
+   清掉」），底部那句「上面写着『不包含』的那几项，本机现有的数据会保留」也补上背景这个**例外**——
+   用户会拿那句话去推，推错一次就是本机唯一一份照片。判据取的是导入侧那两条必要条件
+   （`image` 是非空字符串、长度是 4 的倍数），边界（长度合法但字符非法的 base64 两边不一致）
+   如实写在 `app/backup.js` 的注释里。
 
 - [ ] **步骤 1：`buildBackup` 带上 background**
 
@@ -3135,7 +3176,8 @@ const BACKGROUND_ASSET_ID = 'bg';
   // （用户自己选的那张照片可能早就删了、设备上只剩这一份，与图片那条路同源）。
   // 上面那道几十 MB 的体量闸门（MAX_INLINE_FILES_BYTES）只盯着 invoiceFiles，不会把这一张挡在外面：
   // 它是 KB 量级，而拦下它的代价是用户换机后背景再也找不回来，收益接近零。
-  const background = await encodeBackground(settings);
+  // skipped 与 backgroundSkipped 是两件事，界面必须分开说（前者是张数、后者只有一张）。
+  const { background, skipped: backgroundSkipped } = await encodeBackground(settings);
 ```
 
 并把 `buildBackup` 那一行改成：
@@ -3147,56 +3189,68 @@ const BACKGROUND_ASSET_ID = 'bg';
 在 `encodeFiles` 的定义之后加（`overlayOrNull` 挨着它一起加）：
 
 ```js
-// 遮罩强度：只认数字与非空的可解析数字字符串（与 theme.js 的 normalizeOverlay 同一套判据），
-// 其余（字段缺失、null、空串、false、NaN）一律 null = 「备份里没有这个值」。
+// 遮罩强度：先回答「有没有这个值」，有才把它交给 theme.js 的 normalizeOverlay 去夹紧取整。
 //
+// **两件事必须分开做，判据必须与 normalizeOverlay 同源**：
+// · 「有没有」不能靠 normalizeOverlay——它对坏值一律回默认 30，表达不了「没有」；
+// · 「归一化成什么」也不能在这里另写一遍——normalizeOverlay 会 Math.round 并夹到
+//   OVERLAY_MIN..OVERLAY_MAX（0..60），而 0 是**合法**值（「完全不加遮罩」，滑块能拖到那一格）。
+//   自己写一个只判范围的版本，会让 -5 / 9999 / 30.7 这种值原样进备份包，再被导入侧写回设置：
+//   同一个数字在「设置 → 备份包 → 设置」这条路上走一圈就变了样。
 // **为什么不能图省事写 `Number(x) >= 0 ? Number(x) : null`**：Number(null) / Number('') /
-// Number(false) 都是 0，而 0 在这里是一个**合法的遮罩强度**（theme.js 的 OVERLAY_MIN 就是 0，
-// 意思是「完全不加遮罩」，滑块能拖到那一格）。那句写法会把「设置里根本没有这一项」写成
-// 「用户选了 0% 遮罩」——一个从没发生过的值。备份包是换机时唯一的数据面，写进去的假值
-// 会一直被当真：theme.js 的 normalizeOverlay 早就为同一件事写过一段注释
-// （Number(null) 那几种转换会把「这个设置没有」静默变成 0% 或 1%），这里是同一个坑的第二次出现。
+// Number(false) 都是 0，那句写法会把「设置里根本没有这一项」写成「用户选了 0% 遮罩」——
+// 一个从没发生过的值。备份包是换机时唯一的数据面，写进去的假值会一直被当真
+// （theme.js 的 normalizeOverlay 早已为同一件事写过一段注释，这里是同一个坑的第二次出现）。
 function overlayOrNull(value) {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? normalizeOverlay(value) : null;
   if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
+    return Number.isFinite(Number(value)) ? normalizeOverlay(value) : null;
   }
   return null;
 }
 
 /**
- * 把背景照片编码进备份包（data.background）。任何一步失败都返回 null 而不是抛错：
- * 一张背景图不该把整次导出打回去——导出是用户保住账目的唯一手段，而账目比背景重要得多
- * （与 encodeFiles 里「跳过脏记录」同一条纪律）。
- * **这条降级是静默的**：exportBackup 的返回值里没有「这次没带背景」的通道（skipped 是发票图片的
- * 张数，混进背景会污染那个数），用户唯一的线索是控制台那条 warn。要让他知道得再开一条通道，
- * 本步没做——因此别在这里的注释或界面文案里写「用户会看到」。
+ * 把背景照片编码进备份包（data.background）。
+ * 返回值是 `{ background, skipped }`——**两个都为 null / true 时含义完全不同**，调用方要分开说：
+ *   · `{ background: null, skipped: false }`：库里压根没有背景（没设过，或用户已经「移除」过）。
+ *     这是正常结果，不是降级，什么都不用提示。
+ *   · `{ background: null, skipped: true }`：库里有那张图，但这次没能读出来／编进包。
+ *     **这是降级**，必须让用户知道（见 exportBackup 的 backgroundSkipped）。
  *
- * settings 传进来是为了在背景包里一并记下遮罩强度（data.background.overlay）。注意**恢复遮罩
- * 并不走这个字段**：settings 是整表覆盖的，导入后遮罩来自备份 settings 里那一行（背景包里的
- * overlay 与它同源，都是 theme-store 写下的那份 meta，不会打架）。这份字段是「照片自己的记录」，
- * 也留给将来任何要读它的地方（比如摘要里显示「这份备份带背景」），眼下没有消费方。
+ * 任何失败都返回 null 而不是抛错：一张背景图不该把整次导出打回去——导出是用户保住账目的唯一手段，
+ * 而账目比背景重要得多（与 encodeFiles 里「跳过脏记录」同一条纪律）。
+ * **catch 里分不清「读失败时库里到底有没有那张图」**（读库那一步本身就失败了），那边一律按
+ * `skipped: true` 报——宁可多提示一次，也不要让一次真的丢图混在「正常导出」里过去。
+ *
+ * settings 传进来是为了在背景包里一并记下遮罩强度（data.background.overlay）。导入侧会用它补写
+ * settings 那一行（备份的 settings 里没有 backgroundImage 时，见 importBackup），这是它**目前唯一
+ * 的消费方**；备份 settings 里正常有那一行时，遮罩随 settings 表整体覆盖走，与这个字段同源、
+ * 不会打架。
  */
 async function encodeBackground(settings) {
   try {
     const row = await db.get('assets', BACKGROUND_ASSET_ID);
     const blob = row?.blob ?? null;
-    if (!blob) return null;
+    // 没有图 = 没有背景，不是降级。
+    if (!blob) return { background: null, skipped: false };
     const image = await blobToBase64(blob);
-    if (!image) return null;
+    // 这个不一样：图在库里、只是这一次没能读出来——**是**降级。
+    if (!image) return { background: null, skipped: true };
     const meta = settings.find(r => r?.key === BACKGROUND_KEY)?.value ?? null;
     return {
-      overlay: overlayOrNull(meta?.overlay),
-      // 只认有值的数字：0 是 1970-01-01，一个像真实时间的哨兵值，宁可写成 null 也不让它混进去
-      // （theme.js 的 normalizeBackground 给 createdAt 判过同一件事，那边连字符串都不认）。
-      createdAt: Number(row.createdAt) || null,
-      mime: row.mime || 'image/jpeg',
-      image
+      background: {
+        overlay: overlayOrNull(meta?.overlay),
+        // 只认有值的数字：0 是 1970-01-01，一个像真实时间的哨兵值，宁可写成 null 也不让它混进去
+        // （theme.js 的 normalizeBackground 给 createdAt 判过同一件事，那边连字符串都不认）。
+        createdAt: Number(row.createdAt) || null,
+        mime: row.mime || 'image/jpeg',
+        image
+      },
+      skipped: false
     };
   } catch (err) {
     console.warn('背景照片读不出来，这次备份不带它', err);
-    return null;
+    return { background: null, skipped: true };
   }
 }
 ```
@@ -3207,11 +3261,12 @@ async function encodeBackground(settings) {
 
 ```js
   // 背景照片：与 invoiceFiles 同一条路（Blob 进不了 JSON，只能单独反解），但处置**正好相反**，
-  // 而且两处必须成对，见文件头第 7 条。这里只做前半段（写），后半段（清）在下面 clears 那一段——
-  // 那里才拿得到 clears 数组。两段合起来是一条规则：
-  //   备份里**带**了可恢复的背景 → assets 里那条 'bg' 写回去（id 固定，put 即覆盖）；
+  // 而且两处必须成对，见文件头第 7 条。这里只做前半段（写），后半段（清）在下面 clears/deletes
+  // 那一段——那里才拿得到那个数组。两段合起来是一条规则：
+  //   备份里**带**了可恢复的背景 → assets 里那条 'bg' 写回去（id 固定，put 即覆盖），
+  //      **并且保证 settings 里有一行指向它**（备份自己的 settings 里没有就现造一行，见下）；
   //   备份里**没有**（老备份根本没有这个键、那次导出时读图失败、或这段 base64 解不开）
-  //     → 本机那条一并清掉，并且不让设置里留下指向它的 backgroundImage 行（见下面 settings 循环）。
+  //     → 本机那条一并**按主键删掉**，并且不让设置里留下指向它的 backgroundImage 行。
   // 为什么「没有」时要清、而 invoiceFiles 却保留：settings 是整表覆盖的，本机那条 backgroundImage
   // 必然被这次导入清掉——本机那张图**已经失去引用**，画面上也不再显示它。此时把字节留在库里不等于
   // 「保住用户的东西」，只会让它在下一次导出里复活（encodeBackground 只认 assets 那条记录、
@@ -3223,6 +3278,8 @@ async function encodeBackground(settings) {
   // 判据只看「能不能解出一张图」：形状不对（字符串、数组、null、老备份的 undefined）与 base64 坏了
   // 走同一条路——都没有可恢复的背景。base64ToBlob 自己会挡住空串/非 4 倍数/解不开的串。
   const bgBlob = (bg && typeof bg === 'object') ? base64ToBlob(bg.image, bg.mime) : null;
+  // 备份的 settings 里有没有那一行——下面补行与跳过行两处都要用，所以在这里先问一次。
+  const bgSettingInBackup = data.settings.some(row => row?.key === BACKGROUND_KEY);
   if (bgBlob) {
     puts.push({
       store: 'assets',
@@ -3236,6 +3293,29 @@ async function encodeBackground(settings) {
         createdAt: Number(bg.createdAt) || Date.now()
       }
     });
+    // 备份带了图，但它的 settings 里**没有** backgroundImage 那一行——源机器上就是「图在库里、
+    // 没人引用」的状态（`setPhoto` 写 assets 成功、写设置那一步失败就会留下它；而 `encodeBackground`
+    // 只认 assets 那条记录，会把这种状态原样导出来，于是它会**自我复制**下去）。
+    // 不补这一行的话，导入端复制出来的还是「图写进去了、没有引用」：背景不显示，而且下一次导出
+    // 又把它带给第三台设备。所以这里用背景包里的 overlay / createdAt 现造一行补上——
+    // **这正是 data.background.overlay 存在的意义**：在此之前它没有任何消费方，
+    // 那份「照片自己的记录」是空转的，而补这一行正好需要它（也正因如此，那个值必须先夹紧取整，
+    // 见 overlayOrNull：它现在会直接进 settings）。
+    if (!bgSettingInBackup) {
+      puts.push({
+        store: 'settings',
+        value: {
+          key: BACKGROUND_KEY,
+          value: {
+            assetId: BACKGROUND_ASSET_ID,
+            // normalizeOverlay 兜住 null / 脏值（回 OVERLAY_DEFAULT）并夹紧取整——与 theme-store
+            // 的应用侧用的是同一个函数，所以补出来的这一行和用户自己在面板上设过的行长得一样。
+            overlay: normalizeOverlay(bg.overlay),
+            createdAt: Number(bg.createdAt) || Date.now()
+          }
+        }
+      });
+    }
   }
 ```
 
@@ -3246,33 +3326,77 @@ async function encodeBackground(settings) {
     if (row.key === VAULT_KEY) continue; // 密码箱只认 data.vault，避免文件里两份互相打架
     // 备份里没有可恢复的背景时不写回这一行：写了就是一条指向不存在记录的**悬空设置**
     // （theme-store 的 applyPhoto 会按「没有背景」兜住它并顺手把设置清掉，但那要等到下一次启动，
-    // 中间这段时间里库里的状态是自相矛盾的）。它与上面「清 assets」是同一件事的两半。
+    // 中间这段时间里库里的状态是自相矛盾的）。它与上面「按主键删掉 assets 那条记录」是同一件事的两半。
     if (!bgBlob && row.key === BACKGROUND_KEY) continue;
     puts.push({ store: 'settings', value: row });
   }
 ```
 
-`clears` 那一段加**另一半**（成对的第二半）：
+`clears` 那一段加**另一半**（成对的第二半）——注意它走的是 `deletes`，**不是 `clears`**：
 
 ```js
+  // 清空哪些仓库，与「这份备份到底带没带这张表」严格对齐，一个都不能多：
+  //   · ARRAY_STORES 里的表：备份里真有这个数组才清；
+  //   · invoiceFiles：它不在 ARRAY_STORES 里，所以必须**显式**写在这个清单里（不能靠派生），
+  //     但它同样只在备份里真的带了图片时才清——清空的目的就是「覆盖恢复之后不留下上一份数据的
+  //     图片残留」，备份里没有图片时就没有可覆盖的东西，此时清空只会删掉本机唯一一份原图，
+  //     而备份文件里并没有它们的替补。这与文件头第 4 条「备份里没有密码箱就保留现有密码箱」
+  //     是同一条纪律：**没有替补的东西，一律不删**。
+  // 无条件清 clears 的代价（也就是「问 a」的答案）：老备份根本没有 invoices 键，
+  // 而它很可能被导入到一台**已经有发票和图片**的设备上（用户在用的就是这个新版本）。
+  // 那时无条件清会把本机发票和图片一起抹掉，而备份文件里没有它们的替补——
+  // 「恢复备份」这条唯一的救命通道就变成了毁数据的开关。
+  // 反过来，备份里带了图（正常含图导出）时**必须**清：不清就会留下上一份数据的图片残留。
+  // 背景那一条走的是 deletes，**不是 clears**（成对处理的另一半，写在那一段在发票图片循环的后面）：
+  //   · 只有备份里**没有**可恢复的背景时才删，与上面那条对图片的处置正好相反——因为「没有背景」时
+  //     本机那条记录的引用已经被 settings 的整体覆盖拿走了（settings 整表覆盖，备份里没有
+  //     backgroundImage 行），留着它只是不合规的残留；而图片那边本机的原图仍然挂在发票上、
+  //     仍然看得到，删了才是真丢。
+  //   · **为什么必须是 deletes 而不是 clears**：assets 是通用资源表，这一层要删的只有 'bg' 一条。
+  //     clear('assets') 会把整张表端掉——那正是这条注释上一段说的「多余的删除」，也正是在
+  //     「清单不该靠『现在只有一条』活着」那句里承诺过不做的事（说一套做一套是最容易被下一轮
+  //     评审抓住的形态）。备份真的带了背景时更不需要清：那个 id 固定是 'bg'，上面那条 put 已经
+  //     把同一条记录覆盖掉了。
   const clears = ARRAY_STORES.filter(name => Array.isArray(data[name]));
   if (arrayOrEmpty(data.invoiceFiles).length > 0) clears.push('invoiceFiles');
-  if (!bgBlob) clears.push('assets');
   clears.push('settings');
+
+  const deletes = [];
+  if (!bgBlob) deletes.push({ store: 'assets', key: BACKGROUND_ASSET_ID });
+
+  // 清空、删除与写入必须在同一个事务里，否则中途失败会留下一个空库（或半截状态）。
+  await db.replaceAll({ clears, puts, deletes });
 ```
 
-**注意**：`clears` 里的 `assets` 是**有条件的**（只在备份没带背景时可恢复时清），不是无条件加。
-无条件清会在「备份真的带了背景」时做一次多余的删除（那时上面那条 `put` 已经把同一个 id 覆盖掉了，
-`assets` 现在也只有这一条记录，但清单不该靠「现在只有一条」活着）。理由与那句 `if (arrayOrEmpty(...))`
-完全同构：**清空要么是为覆盖、要么是为不留下上一份数据的残留，两件事都得先有「可覆盖的东西」。**
+**注意**：`assets` 那条 delete 是**有条件的**（只在备份没带背景时可恢复时删），而且**按主键删**，
+不是整表清。无条件清会在「备份真的带了背景」时做一次多余的删除（那时上面那条 `put` 已经把同一个
+id 覆盖掉了）；整表清在 `assets` 里多出第二条资源记录时会把那条也删掉——后者是复审实测出来的真事故。
+理由与 `invoiceFiles` 那句 `if (arrayOrEmpty(...))` 同构：**清空要么是为覆盖、要么是为不留下上一份
+数据的残留，两件事都得先有「可覆盖的东西」。**
+
+**另外**：这个代码块里那个 `deletes` 通道是任务 13 给 `app/db.js` 的 `replaceAll` 新加的
+（`{ clears = [], puts = [], deletes = [] }`，执行顺序 clear → delete → put，与 `clears` 同事务）。
+那里有一句注释解释为什么不能拿 `clears` 顶替它，改这一层时要两边一起看。
 
 - [ ] **步骤 4：跑测试**
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-**实测（本步落地时）：284 pass / 0 fail，exit=0，duration ≈ 11.5s**（基线 273 pass / 0 fail、≈0.8s；
-新增的 11 条 = `tests/backup-store.test.js` 的 9 条 + `tests/backup.test.js` 的 2 条。
-耗时涨在 PBKDF2 上：`exportBackup` 与 `importBackup` 都按 600000 轮跑，这是真机口径，不为了测试快而调低）。
+**实测（两个时点各测一次，口径写在一起）：**
+
+- **返工后（当前状态）：296 pass / 0 fail，exit=0，duration ≈ 17.0s**；
+- 第一轮落地时：285 pass / 0 fail，≈11.1s；基线（任务 12 收尾）是 273 pass / 0 fail、≈0.8s。
+- 新增 **23** 条 = `tests/backup-store.test.js` 的 **21** 条 + `tests/backup.test.js` 的 2 条
+  （第一轮那两份分别是 10 与 2；返工把 backup-store 那一份从 10 加到 21，见下面的补充）。
+  口径：`273 + 21 + 2 = 296`，与总数对得上。
+- 耗时涨在 PBKDF2 上：`exportBackup` 与 `importBackup` 都按 600000 轮跑，这是真机口径，
+  不为了测试快而调低；返工新增的导出侧用例（遮罩夹紧三例、`backgroundSkipped` 等）又跑了几次 600000 轮。
+
+**返工新增的那 11 条逐条对着评审发现的一处缺口或一个变异**：成对缺口（「图在库里、设置那条丢了」
+→ 补设置行）、按主键删（`assets` 里的第二条记录必须留着）、遮罩夹紧取整、两侧的 `mime` 兜底、
+`createdAt` 兜底、摘要与实删行为同向、静默降级有了通道（`backgroundSkipped`）、桩的索引筛选
+（`getAllByIndex` 曾经一条都不过滤）。**其中 7 个变异第一轮「改了也不红」**，现在都能红——
+逐条的对照记录写在返工提交的说明里。
 
 **`data` 字段形状那条断言确实被打红了**（`buildBackup 带上格式标识、版本与时间戳`）——它写的是
 「键集**完全相等**」。判断：**把 `background` 加进那份清单，保持「完全相等」不改宽成「包含」**。
@@ -3290,7 +3414,7 @@ async function encodeBackground(settings) {
 「备份导出携带背景，导入后背景还在」那一条。
 
 1. 起本地服务，设置一张背景照片（遮罩调成非默认值，比如 45%）
-2. 备份 → 导出（记下文件大小；顺手对一下它与规格 §8 那条「约 +100~400KB」的预期）
+2. 备份 → 导出（记下文件大小；顺手对一下它与规格 §13 那条「约 +100~400KB」的预期）
 3. 在站点的 IndexedDB 里清空 `assets` 表（DevTools → Application → IndexedDB → pvault → assets → 右键 Clear），刷新页面确认背景消失
 4. 备份 → 导入刚才那个文件，输入密码
 5. 确认：背景回来了，且遮罩是 45% 而不是默认的 30%
@@ -3537,6 +3661,16 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
 - [ ] 清掉 assets 表后导入该备份，确认背景回来了、**且遮罩强度与导出前一致**；「清掉再导入」这一步
       同时证明**恢复的是备份里那张图**，不是这台设备上的残留（换一台设备恢复时同理）
 - [ ] 导入一份**没有背景**的老备份，确认 app 不报错、背景按「没有」处理
+- [ ] 导出时勾「不含图片」→ 导出的备份里**仍然带背景**（外观设置不受那个开关影响）；导入后背景还在
+- [ ] **导入一份没有背景的备份到一台有背景的手机上**：背景**与它的设置行**一起消失（`assets` 里不再有
+      `bg`），不留悬空设置；若在 DevTools 里往 `assets` 加过第二条记录，那条**必须还在**
+      （导入侧按主键删，不是整表清空）
+- [ ] 导出结果里若出现「本机那张背景照片没能写进这份备份」一行，说明那次导出没带上背景
+      （`backgroundSkipped` 通道；正常情况下不该出现）
+- [ ] **注**：上面「不含图片仍带背景」「导入没有背景的备份到有背景的手机」「导出结果里的
+      `backgroundSkipped` 警示」这三条，**任务 13 已经落进 `docs/手动验证清单.md` 的
+      「## 备份与恢复」小节末尾**（连同「加表 / 加字段相关的回归」那一节的反方向条目）。
+      这一步落地时**择一保留、别在清单里写两遍**。
 ```
 
 **上面的清单与设计规格 §13 的 7 条要逐条对齐**（规格那 7 条是「跑不了自动化的部分」的完整清单，
