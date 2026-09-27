@@ -23,11 +23,14 @@
 //      或引用了一个没进缓存的文件），清单里的条目也一律该有 './' 的同形写法（否则会躲过全文比对）。
 //      **它抓不住「清单里少一条」**（少一条时两边同时少，照样绿）——那件事归
 //      tests/boot-order.test.js 的首屏闭包断言与任务 14 步骤 2 的存在性脚本。
-//   ⑭ app 里 `el(…, { class: '…' })` 用到的类名，`styles/*.css` 里必须真有对应规则（或有白名单里的
-//      理由）。这条是任务 11 返工补的：面板当时用了 `field-label` / `btn-ghost` 两个**全仓零定义**的
-//      类名（破坏性的「移除」与「换一张」因此长得一样），而那时 64 项核验全绿——`tests/` 里没有一条
-//      碰 DOM 的断言。**它管不到**：拼接出来的类名、JS 里不在 `class:` 值位置上的类名、以及
-//      「这个类视觉上合不合适」（后者归任务 15 真机验收）。
+//   ⑭ app 里写的类名（三种**字面量**写法：`el(…, { class: '…' })`、`element.className = '…'`、
+//      `classList.add/remove/toggle('…')`），`styles/*.css` 里必须真有对应规则。白名单条目也有两条
+//      钉子：它现在还得有人用、它当初免检所依赖的规则必须还在（否则白名单会永久掩盖样式丢失）。
+//      这条是任务 11 返工补的：面板当时用了 `field-label` / `btn-ghost` 两个**全仓零定义**的类名
+//      （破坏性的「移除」与「换一张」因此长得一样），而那时 64 项核验全绿——`tests/` 里没有一条
+//      碰 DOM 的断言。**它管不到**：模板串与变量里的类名（`class: \`zz-${x}\``、`class: clsVar`；
+//      前者在仓库里实测 0 处）、拼接类名（只抽到前半截，因此会**误报**）、「少 3 处」这种局部丢失
+//      （下限只挡整体塌掉）、以及「这个类视觉上合不合适」（后者归任务 15 真机验收）。
 //
 // 用法：
 //   node scripts/check-theme-css.mjs                 核验（**只读仓库**）
@@ -35,6 +38,8 @@
 // 参数（都有默认值，默认按脚本自身位置推导，不写死任何绝对路径）：
 //   --root <dir> --css <file> --store <file> --theme <file> --plan <file> --spec <file>
 //   --sw <file> --styles <dir> --app <dir> --tmp <dir>
+//   --app-file <file>   把 app/ 里的某一个模块换成变异副本（**只给 --self-test 用**：⑭ 扫的是整个
+//                       app/ 目录，它的变异必须能覆盖到目录里的一个文件）
 //
 // 落盘纪律（精确版——早先这里写的是「核验模式一个字节都不写」，那是错的：它一直都往 tmp 落探针）：
 //   · **不写仓库**：核验模式不碰 root 下的任何文件；只会往 tmp 里落两个 git blob 探针
@@ -69,6 +74,9 @@ const SPEC_PATH = path.resolve(opt('spec', path.join(ROOT, 'docs/superpowers/spe
 const SW_PATH = path.resolve(opt('sw', path.join(ROOT, 'sw.js')));
 const STYLES_DIR = path.resolve(opt('styles', path.join(ROOT, 'styles')));
 const APP_DIR = path.resolve(opt('app', path.join(ROOT, 'app')));
+// `--app-file`：只给自检用——⑭ 遍历的是整个 app/ 目录，所以「某一个 app 模块被写坏」这种变异必须能
+// 覆盖到目录里的某一个文件（与 --css / --store 走同一条 basename 覆盖逻辑）。
+const APP_FILE_OVERRIDE = opt('app-file', null) ? path.resolve(opt('app-file', null)) : null;
 const MANUAL_PATH = path.resolve(opt('manual', path.join(ROOT, 'docs/手动验证清单.md')));
 // TMP_ROOT 惰性求值：`opt('tmp', <fallback>)` 的 fallback **总会被求值**，写成一个 mkdtemp 调用
 // 就等于「即使传了 --tmp，也先泄漏一个空目录」（实测踩到过）。所以先看有没有传。
@@ -217,6 +225,7 @@ const OVERRIDE = new Map([
   [CSS_PATH, readOrDie(CSS_PATH, 'styles/base.css')],
   [STORE_PATH, readOrDie(STORE_PATH, 'app/theme-store.js')]
 ]);
+if (APP_FILE_OVERRIDE) OVERRIDE.set(APP_FILE_OVERRIDE, readOrDie(APP_FILE_OVERRIDE, '--app-file 指定的文件'));
 // 按 basename 兜一层：自检时变异副本在临时目录里（路径对不上、文件名同名）。
 const load = p => {
   const exact = OVERRIDE.get(path.resolve(p));
@@ -509,44 +518,104 @@ check(notPrefixed.length === 0,
   '⑬ ASSETS 里这些条目没有对应的 ./ 同形写法（清单约定一律写 \'./…\'，写成别的形态会躲过全文比对）：' + notPrefixed.join(' '));
 say(`⑬ sw.js：ASSETS ${listed.size} 条、全文带引号路径 ${quotedPaths.size} 个；清单外 ${outsideAssets.length} 个、非 ./ 形态 ${notPrefixed.length} 个（都应为 0）`);
 
-// ── ⑭ app 里 el(...) 的类名 ⇄ styles/ 里真有这条规则 ─────────
+// ── ⑭ app 里的类名 ⇄ styles/ 里真有这条规则 ─────────────────
 // 为什么加：视图/面板写的 class 名是**字符串**，写错了（或指向一个只活在计划里、从没被写进任何
 // 样式表的类）在 Node 里一行都不会红——`tests/` 里没有任何东西碰 DOM。实测踩到过：任务 11 的面板
 // 用了 `field-label` 与 `btn-ghost`，而 `styles/*.css` 里一条定义都没有（全仓 0 命中），于是
 // 「移除」这个破坏性按钮与「换一张」长得一模一样，而当时 64 项核验全绿。
-// 边界（如实写）：只认**字面量**形态的 class（`class: 'a b'`，含三元里那两个分支的写法）；
-// `class: 'x' + suffix` 这种拼接只抽得到前半截，抽不到的那部分属于漏检、不是误报；
-// 它也不判断「这个类该不该长这样」，只管「有没有人给它写过规则」——视觉是否合适仍归任务 15 的真机验收。
-// 白名单：没有对应规则、但**已经核实过不影响渲染**的类名。加一条要写明理由（它为什么不需要规则）。
-// 下面两条是 ⑭ 上线时实测抓出来的**既有**类名（不属于任务 11 的改动），核实后都不补规则：
-//   keypad      ——纯容器（app/ui/keypad.js:53），盒子由子元素撑开，样式全在 .keypad-display / .keypad-grid 上。
-//   stats-nav   ——按钮的样式来自祖先选择器 `.stats-month button`（styles/ledger.css:80），类名只是钩子。
-const CLASS_WHITELIST = ['keypad', 'stats-nav'];
+//
+// 它查三种**字面量**写法：`el(…, { class: '…' })`（含 `cond ? 'a on' : 'a'` 这种三元）、
+// `element.className = '…'`、`classList.add/remove/toggle('…')`。
+// **边界（如实写，前两条是实测过的）**：
+//   · **拼接是误报，不是漏检**：`class: 'pre-' + x` 只抽得到 `pre-`，随后报「没有规则」而红
+//     （实测：`class: 'zz-concat-' + x` → 175 个类名、1 个缺失、exit=1）。漏掉的是后半截，但报出来的
+//     假红更显眼——下一个看到红的人会去追一个不存在的类名，所以这里标成误报。
+//   · **模板串与变量抽不到**：`class: \`zz-${x}\`` 与 `class: clsVar` 完全看不见。前者在仓库里实测
+//     **0 处**（纯理论），后者也只在动态拼接里出现；要正确解析得引入一个 JS 解析器，收益不成比例。
+//   · `dataset: { class: 'x' }` 里的那个 class **不参与**（抽取前先挖掉）：`dom.js` 把它写成
+//     `data-class`、不产生 `.x`，不挖掉就是假红（构造出来实测过：报「zz-dataset 没有规则」而红；
+//     仓库里这种写法现在 **0 处**，挖掉纯属防线）。
+//   · `setAttribute('class', 'x')` **不抽**：仓库里实测 **0 处**。真用到时再补，别提前写一条没有实例
+//     的正则——那种正则本身也不会被任何变异守住。
+//   · **下限挡不住局部丢失**：把 3 处 `class:` 写成 `class :`（实测 174→171）仍然绿——下限只挡
+//     「整类写法失效 / 整体塌掉」。要抓这种局部丢失得有基线文件，本脚本没有状态，如实记在这里。
+//   · 它不判断「这个类该不该长这样」，只管「有没有人给它写过规则」——视觉是否合适仍归任务 15 真机验收。
+//
+// 白名单：没有对应规则、但**已经核实过不影响渲染**的类名。每条都要写清理由，而理由会被下面两条断言
+// 钉住：它现在还得有人用（否则是免检牌），而且它当初免检所依赖的规则必须还在——实测过那两个缺口：
+// 把白名单塞一条再删掉对应的 CSS 规则、以及删掉用法让条目变成孤儿，两种情况下 ⑭ 都会照旧全绿。
+const CLASS_WHITELIST = [
+  {
+    name: 'keypad',
+    why: '纯容器（app/ui/keypad.js），盒子由子元素撑开，样式全在 .keypad-display / .keypad-grid 上',
+    needs: [/\.keypad-display(?![\w-])/, /\.keypad-grid(?![\w-])/]
+  },
+  {
+    name: 'stats-nav',
+    why: '按钮的样式来自祖先选择器（styles/ledger.css 的 .stats-month button），类名只是钩子',
+    // 要求「button 后面直接跟 {」：ledger.css 里还有一条 `.stats-month button:disabled {`，松一点的正则
+    // 会被它骗过去——实测过：把基规则改名之后，只靠 `.stats-month button` 这个串仍然命中 :disabled 那条，
+    // 白名单照样绿（M22 第一版没抓住，就是这条正则太松）。
+    needs: [/\.stats-month\s+button\s*\{/]
+  }
+];
 const cssRuleRe = name => new RegExp('\\.' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])');
 const classNames = new Map();
+const formHits = { attr: 0, className: 0, classList: 0 };
 for (const f of appFiles) {
-  const src = stripJsComments(load(f));
   const rel = path.relative(ROOT, f).split(path.sep).join('/');
-  for (const m of src.matchAll(/\bclass:\s*([^,\n}]+)/g)) {
-    for (const s of m[1].matchAll(/['"]([^'"]*)['"]/g)) {
-      for (const name of s[1].split(/\s+/).filter(Boolean)) {
-        if (!classNames.has(name)) classNames.set(name, new Set());
-        classNames.get(name).add(rel);
-      }
+  // 先挖掉 `dataset: { … }`：里面的 `class:` 是 data-class，不是 CSS 类名（见上面的边界）。
+  const src = stripJsComments(load(f)).replace(/dataset\s*:\s*\{[^}]*\}/g, 'dataset: {}');
+  const add = text => {
+    for (const name of text.split(/\s+/).filter(Boolean)) {
+      if (!classNames.has(name)) classNames.set(name, new Set());
+      classNames.get(name).add(rel);
     }
+  };
+  for (const m of src.matchAll(/\bclass:\s*([^,\n}]+)/g)) {
+    formHits.attr++;
+    for (const s of m[1].matchAll(/['"]([^'"]*)['"]/g)) add(s[1]);
+  }
+  for (const m of src.matchAll(/\.className\s*=\s*([^\n;]+)/g)) {
+    formHits.className++;
+    for (const s of m[1].matchAll(/['"]([^'"]*)['"]/g)) add(s[1]);
+  }
+  for (const m of src.matchAll(/classList\.(?:add|remove|toggle)\(\s*['"]([^'"]*)['"]/g)) {
+    formHits.classList++;
+    add(m[1]);
   }
 }
-// 抽取失效自检：一个类名都没抽到、或数量塌了，下面的断言就是空转（守卫静默失明比没有守卫更危险）。
-// 下限取 150：任务 11 返工时的实测基线是 174（`app/` 下 30 个 .js 模块），塌到 150 以下就该来查。
-check(classNames.size >= 150,
-  `⑭ 只从 app/ 里抽到 ${classNames.size} 个 el(...) 类名（实测基线 174，下限取 150）——抽取多半失效了，这条别当成通过`);
+// 抽取失效自检：类名一个都没抽到、或数量塌了，下面的断言就是空转（守卫静默失明比没有守卫更危险）。
+// 两条下限都贴着实测基线留余量：类名总数 178（下限 170）、三种写法的命中数 558 / 11 / 11（下限 500 / 8 / 8）。
+check(classNames.size >= 170,
+  `⑭ 只从 app/ 里抽到 ${classNames.size} 个类名（实测基线 178，下限取 170）——抽取多半失效了，这条别当成通过`);
+check(formHits.attr >= 500 && formHits.className >= 8 && formHits.classList >= 8,
+  `⑭ 三种写法的命中数异常（class: ${formHits.attr} 处 / className=: ${formHits.className} 处 / classList: ${formHits.classList} 处）`
+  + '——实测基线是 558 / 11 / 11 这个量级，某一类塌到个位数说明那条抽取失效了');
+const whitelisted = new Set(CLASS_WHITELIST.map(w => w.name));
 const missingClasses = [...classNames.keys()]
-  .filter(n => !CLASS_WHITELIST.includes(n) && !cssRuleRe(n).test(cssText))
+  .filter(n => !whitelisted.has(n) && !cssRuleRe(n).test(cssText))
   .sort();
 check(missingClasses.length === 0,
-  '⑭ app 里 el(...) 用到的这些类名在 styles/ 里没有任何规则（类名写错，或这个类只活在计划里）：'
+  '⑭ app 里用到的这些类名在 styles/ 里没有任何规则（类名写错，或这个类只活在计划里）：'
   + missingClasses.map(n => `${n}（${[...classNames.get(n)].join('、')}）`).join('、'));
-say(`⑭ app 里 el(...) 的类名 ${classNames.size} 个；styles/ 里没有规则的 ${missingClasses.length} 个（应为 0）；白名单 ${CLASS_WHITELIST.length} 条`);
+// ① 白名单条目必须是活的：它现在还得有人用。死条目不报错只会变成一张免检牌。
+const staleWhitelist = [...whitelisted].filter(n => !classNames.has(n)).sort();
+check(staleWhitelist.length === 0,
+  '⑭ 白名单里的这些类名已经没人用了（白名单条目要删掉，别留着当免检牌）：' + staleWhitelist.join(' '));
+// ② 而且它当初免检的**理由**必须还成立——理由通常挂在别的规则上（子元素的样式、祖先选择器），
+// 那些规则一旦改名或删掉，白名单就会永久掩盖一个真实的样式丢失。
+const brokenWhy = [];
+for (const w of CLASS_WHITELIST) {
+  const miss = w.needs.filter(re => !re.test(cssText));
+  if (miss.length) brokenWhy.push(`${w.name}（理由：${w.why}）—— 在 styles/ 里找不到 ${miss.map(String).join('、')}`);
+}
+check(brokenWhy.length === 0,
+  '⑭ 白名单条目的理由不成立了（它依赖的规则没了——要么把规则补回来，要么这个类该有自己的规则）：\n     '
+  + brokenWhy.join('\n     '));
+say(`⑭ app 里的类名 ${classNames.size} 个（class: ${formHits.attr} 处 / className=: ${formHits.className} 处 / classList: ${formHits.classList} 处）；`
+  + `styles/ 里没有规则的 ${missingClasses.length} 个（应为 0）；白名单 ${CLASS_WHITELIST.length} 条`
+  + `（孤儿 ${staleWhitelist.length}、理由失效 ${brokenWhy.length}，都应为 0）`);
 
 // ── 输出 ────────────────────────────────────────────────────
 if (!SELF_TEST) {
@@ -605,7 +674,15 @@ if (SELF_TEST) {
     { name: 'M19 ASSETS 里一条条目少了 ./ 前缀（⑬ 双向的那一半）', file: SW_PATH, flag: '--sw', find: "  './app/db.js',", repl: "  'app/db.js',", expect: ['⑬ ASSETS 里这些条目没有对应的 ./ 同形写法'] },
     // ⑭ 的变异：往一个被扫描的 app 模块里塞一个 styles/ 里没有定义的类名。任务 11 的面板真实踩过
     // 这个坑（`field-label` / `btn-ghost` 全仓零定义），当时没有任何断言看得见。
-    { name: 'M20 app 里用了 styles/ 没有定义的类名（⑭ 的覆盖）', file: STORE_PATH, flag: '--store', find: 'export function currentTheme() {', repl: "const _probeEl = el('div', { class: 'zz-no-such-class' });\nexport function currentTheme() {", expect: ['⑭ app 里 el(...) 用到的这些类名在 styles/ 里没有任何规则', 'zz-no-such-class'] }
+    { name: 'M20 app 里用了 styles/ 没有定义的类名（⑭ 的覆盖）', file: STORE_PATH, flag: '--store', find: 'export function currentTheme() {', repl: "const _probeEl = el('div', { class: 'zz-no-such-class' });\nexport function currentTheme() {", expect: ['⑭ app 里用到的这些类名在 styles/ 里没有任何规则', 'zz-no-such-class'] },
+    // ⑭ 的第二条边界：白名单条目必须是活的（没人用了就删掉）。实测过这个缺口——删掉用法之后，
+    // 白名单条目变成一张免检牌，而 ⑭ 照旧全绿。
+    { name: 'M21 删掉 stats-nav 的用法（⑭ 白名单条目变孤儿）', file: path.join(APP_DIR, 'ui/stats-view.js'), flag: '--app-file', find: "class: 'stats-nav',", repl: "class: 'stats-month-label',", all: true, expect: ['⑭ 白名单里的这些类名已经没人用了'] },
+    // ⑭ 的第三条边界：白名单条目「为什么可以免检」所依赖的规则必须还在。这条走 fakeRoot——ledger.css
+    // 走不了 --css 的覆盖（那会把 ③④⑤⑦ 依赖的 base.css 换掉，整批断言崩成噪声）。
+    { name: 'M22 删掉 .stats-month button 规则（⑭ 白名单的理由失效）', fakeRoot: true, change: { file: 'styles/ledger.css', find: '.stats-month button {', repl: '.stats-month-btn {' }, expect: ['⑭ 白名单条目的理由不成立了'] },
+    // ⑭ 的抽取扩展：`classList.add('…')` 这种写法以前看不见（实测仓库里 22 处、11 个类名全在检查之外）。
+    { name: 'M23 classList.add 一个 styles/ 里没有的类名（⑭ 抽取扩展的覆盖）', file: STORE_PATH, flag: '--store', find: 'export function currentTheme() {', repl: "const _probe = document.createElement('div');\n_probe.classList.add('zz-classlist-missing');\nexport function currentTheme() {", expect: ['⑭ app 里用到的这些类名在 styles/ 里没有任何规则', 'zz-classlist-missing'] }
   ];
 
   const variantDir = path.join(TMP_ROOT, 'variants');
@@ -668,11 +745,21 @@ if (SELF_TEST) {
       safeMkdir(FR);
       for (const d of ['styles', 'docs', 'app']) safeCpDir(path.join(ROOT, d), path.join(FR, d));
       safeCpDir(path.join(ROOT, 'sw.js'), path.join(FR, 'sw.js'));
-      const bp = path.join(FR, 'styles/base.css');
-      const before = readFileSync(bp, 'utf8');
-      const after = before.replace(/\r\n/g, '\n');
-      if (after === before) { console.error(`✗ ${c.name}：base.css 本来就没有 CRLF，变异没落地`); process.exit(2); }
-      write(bp, after);
+      // 两种用法：`change` 指定改副本里的哪个文件（给「styles/ 里某条规则被删掉」这类变异用——那些
+      // 文件走不了 --css / --store 的覆盖）；不写 change 就是老用法，把 base.css 的行尾统一成 LF。
+      if (c.change) {
+        const cp = path.join(FR, c.change.file);
+        const before = readFileSync(cp, 'utf8');
+        const after = before.replace(c.change.find, c.change.repl);
+        if (after === before) { console.error(`✗ ${c.name}：副本里 ${c.change.file} 的锚点没匹配上，变异没落地`); process.exit(2); }
+        write(cp, after);
+      } else {
+        const bp = path.join(FR, 'styles/base.css');
+        const before = readFileSync(bp, 'utf8');
+        const after = before.replace(/\r\n/g, '\n');
+        if (after === before) { console.error(`✗ ${c.name}：base.css 本来就没有 CRLF，变异没落地`); process.exit(2); }
+        write(bp, after);
+      }
       args = ['--root', FR];
     } else {
       const out = mutate(c.name, c.file, c.find, c.repl, c.all === true);
