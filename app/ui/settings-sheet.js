@@ -19,6 +19,7 @@ import { openCategoriesSheet } from './categories-view.js';
 import { openBudgetSheet } from './budget-view.js';
 import { openBackupSheet } from './backup-view.js';
 import { openImportSheet } from './import-view.js';
+import { openAppearanceSheet } from './appearance-sheet.js';
 
 // 与 sheet.js 内部摘除节点的延时保持一致，再加一点余量：早于它开下一层，
 // 就是两层同时挂在 DOM 上。
@@ -52,12 +53,18 @@ export const SETTINGS_ENTRIES = [
   { id: 'accounts', label: '账户管理', open: openAccountsSheet },
   { id: 'categories', label: '分类管理', open: openCategoriesSheet },
   { id: 'budget', label: '预算设置', open: openBudgetSheet },
+  // 外观排在记账配置之后、数据进出之前：它既不是每天要改的记账配置，
+  // 也不是「把数据搬进搬出」那种一次性动作，但它是用户会想反复调的那一类。
+  // 它是这里**唯一**不收 { onChanged } 的入口（openAppearanceSheet 声明的是无参）——不影响 swapTo：
+  // 多传一个对象 JS 本来就允许，函数忽略它即可；而它也确实不需要父面板刷新（改的是 CSS 变量，
+  // 不是设置面板的内容）。
+  { id: 'appearance', label: '外观与背景', open: openAppearanceSheet },
   // 备份与导入放最后两行：它们不属于「记账配置」，而是整个 app 的数据进出；
-  // 放前面会挤掉每天都要用的账户/分类入口。open 的签名与其它三个一致（都收 { onChanged }），
+  // 放前面会挤掉每天都要用的账户/分类入口。open 的签名与账户/分类/预算三个一致（都收 { onChanged }），
   // 所以 swapTo 一行都不用改。
   { id: 'backup', label: '备份与恢复', open: openBackupSheet },
-  // 账单导入排在最后：它是「把外面的账搬进来」的一次性动作，而上面四行都是每天要用的
-  // 记账配置与数据保险。open 的签名同样收 { onChanged }，swapTo 一行都不用改。
+  // 账单导入排在最后：它是「把外面的账搬进来」的一次性动作，而上面五行都是每天要用的
+  // 记账配置、外观与数据保险。open 的签名同样收 { onChanged }，swapTo 一行都不用改。
   { id: 'import', label: '账单导入', open: openImportSheet }
 ];
 
