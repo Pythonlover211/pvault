@@ -10,17 +10,19 @@
 //   ④ body::before 的声明集合与必需属性（含 z-index: -1、pointer-events: none，不含
 //      background-attachment）
 //   ⑤ 规格 §6.2 的 CSS 骨架 ⇄ 实现的逐声明一致
+//   ⑥ body::before 在 styles/ 里只有一条规则
 //   ⑦ 计划任务 9 的两个代码块 ⇄ styles/base.css 的对应段逐字符一致
 //   ⑧ 计划顶部那条镜像纪律里的两个事实（工作区行尾混杂、git blob 是 LF）
+//   ⑨ **空号**（历史上没有这一条；打印用的 order 数组里留着它，不影响计数）
 //   ⑩ 规格 §13 的 7 条手动项 ⇄ 任务 15 清单的关键词（粗筛，不是语义对齐的证明）
 //   ⑪ 被否掉的旧说法不许回流（注释里的因果只留更正后的版本）
 //   ⑫ Markdown 围栏完整性：内容行不许粘反引号串、块内不许出现非法的结束围栏
 //      （这条是补的：一个把代码块同步进计划的脚本丢过结尾换行，制造出两处粘连围栏，
 //       而 ①②③…那些检查全都看不见它——围栏坏了，块内容却仍然"看起来"是对的）
-//   ⑬ sw.js 的 ASSETS 清单集合 ⇄ 它全文里带引号相对路径的集合（两者必须相等）
-//      （任务 10 返工补的：计划任务 14 那支「从 sw.js 里数路径」的校验脚本按**全文**匹配、不看上下文，
-//       注释里举例写一句带引号的路径就会被算成一条清单条目——实测踩到过：条数 57 → 58，
-//       而那支脚本的 Test-Path 全通过，只有数字悄悄变了）
+//   ⑬ sw.js 的清单集合 ⇄ 它带引号路径的集合（**双向**）：清单外不该出现带引号的相对路径（笔误，
+//      或引用了一个没进缓存的文件），清单里的条目也一律该有 './' 的同形写法（否则会躲过全文比对）。
+//      **它抓不住「清单里少一条」**（少一条时两边同时少，照样绿）——那件事归
+//      tests/boot-order.test.js 的首屏闭包断言与任务 14 步骤 2 的存在性脚本。
 //
 // 用法：
 //   node scripts/check-theme-css.mjs                 核验（**只读仓库**）
@@ -476,22 +478,31 @@ for (const p of [PLAN_PATH, SPEC_PATH, MANUAL_PATH]) {
   say(`⑫ ${path.basename(p)}：合法围栏对 ${r.pairs}、畸形 ${r.problems.length}`);
 }
 
-// ── ⑬ sw.js 的清单与「全文带引号路径」的集合一致 ──────────────
-// 为什么需要：计划任务 14 步骤 2 那支「把 sw.js 里的 './…' 逐条 Test-Path」的校验脚本按**全文**匹配、
-// 不看上下文——注释里（或别处代码里）多一句带引号的路径就被算成一条清单条目。实测踩到过：注释里举例
-// 写了一条路径，那支脚本报出来的条数直接 +1（57 → 58），而 Test-Path 全通过、只有数字变了。
-// 那支脚本守的是「清单里的路径都存在」，这条守的是反方向：**全文里的带引号路径不许有清单外的**。
-// 两边合起来，那个条数才是可信的（它同时是测试 tests/boot-order.test.js 里的一条断言的两个入口）。
+// ── ⑬ sw.js 的清单集合 ⇄ 它带引号路径的集合（**双向**）────────
+// 定位（返工第二轮改准过一次，这一版是准的）：这条管的是「`sw.js` 里带引号的相对路径与 `ASSETS` 清单
+// 两边对得上」——注释里举例写的路径、代码里的回退路径（`caches.match('./x')`）都算在内。
+// 两个方向各有各的用处：
+//   · 清单外的带引号路径：要么是笔误，要么是引用了一个没进缓存的文件（那它离线永远拿不到）；
+//   · 清单里没有 `./` 同形写法的条目：清单约定是一律写 `'./…'`，写成别的形态会躲过全文比对。
+// **它不管「清单里少了一条」**——⑬ 只比对集合关系，少一条时两边同时少，照样绿。那件事归
+// tests/boot-order.test.js 的「首屏资源闭包 ⊆ ASSETS」，以及计划任务 14 步骤 2 那支存在性脚本
+// （它管「清单里的路径在磁盘上都不存在吗」，⑬ 不管磁盘存在性）。别在这条上写超出它能力的话。
+// 也**不再**声称它保护那支脚本的计数：任务 10 返工已把那支脚本收紧到 `ASSETS` 数组切片内，
+// 数组外的注释不会再被它数进来（对照实测：注释里塞一条带引号路径时，旧版报 59、收紧版报 58）。
 const swSrc = read(SW_PATH);
 const assetsBlock = /const ASSETS = \[([\s\S]*?)\];/.exec(swSrc)?.[1];
 check(!!assetsBlock, '⑬ 没在 sw.js 里找到 ASSETS 数组（锚点失效）');
-const listed = new Set([...(assetsBlock ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]));
-const quotedPaths = new Set([...swSrc.matchAll(/'(\.[^']*)'/g)].map(m => m[1]));
+const listed = new Set([...(assetsBlock ?? '').matchAll(/'([^']+)'|"([^"]+)"/g)].map(m => m[1] ?? m[2]));
+const quotedPaths = new Set([...swSrc.matchAll(/'(\.\/[^']*)'|"(\.\/[^"]*)"/g)].map(m => m[1] ?? m[2]));
 check(listed.size > 0, '⑬ ASSETS 里一条路径都没解析出来（锚点失效）');
+check(quotedPaths.size > 0, '⑬ sw.js 全文里一条带引号的相对路径都没解析出来（锚点失效）');
 const outsideAssets = [...quotedPaths].filter(p => !listed.has(p)).sort();
+const notPrefixed = [...listed].filter(p => !quotedPaths.has(p)).sort();
 check(outsideAssets.length === 0,
-  '⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径（数路径的校验脚本会把它当成清单条目）：' + outsideAssets.join(' '));
-say(`⑬ sw.js：ASSETS ${listed.size} 条、全文带引号路径 ${quotedPaths.size} 个，清单外的 ${outsideAssets.length} 个（应为 0）`);
+  '⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径（笔误，或是引用了一个没进缓存的文件）：' + outsideAssets.join(' '));
+check(notPrefixed.length === 0,
+  '⑬ ASSETS 里这些条目没有对应的 ./ 同形写法（清单约定一律写 \'./…\'，写成别的形态会躲过全文比对）：' + notPrefixed.join(' '));
+say(`⑬ sw.js：ASSETS ${listed.size} 条、全文带引号路径 ${quotedPaths.size} 个；清单外 ${outsideAssets.length} 个、非 ./ 形态 ${notPrefixed.length} 个（都应为 0）`);
 
 // ── 输出 ────────────────────────────────────────────────────
 if (!SELF_TEST) {
@@ -541,9 +552,13 @@ if (SELF_TEST) {
     // 波浪号围栏：早先 ⑫ 只认反引号，而描述写的是「Markdown 围栏完整性」——实测追加未闭合的
     // `~~~` 是全绿的。这条变异守住那个覆盖。
     { name: 'M17 计划开头追加一段未闭合的 ~~~ 围栏（⑫ 的波浪号覆盖）', file: PLAN_PATH, flag: '--plan', find: '# pvault · 自定义背景 实现计划', repl: '# pvault · 自定义背景 实现计划\n\n~~~js\nconst x = 1;\n', expect: ['⑫', '未闭合的围栏'] },
-    // ⑬ 的变异：往 sw.js 的注释里塞一条清单外的带引号路径——任务 14 那支数路径的脚本会把它的
-    // 条数数多，而 Test-Path 全都通过（这正是实测踩到的那个盲区）。
-    { name: 'M18 sw.js 注释里出现一条清单外的带引号路径（⑬ 的覆盖）', file: SW_PATH, flag: '--sw', find: '// 只列应用真正运行需要的资源。', repl: "// 只列应用真正运行需要的资源（例如 './app/nowhere.js' 这种写错路径的）。", expect: ['⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径'] }
+    // ⑬ 的变异：往 sw.js 的注释里塞一条清单外的带引号路径。⑬ 抓的是「清单外不该有带引号的相对路径」
+    // 本身（笔误、或引用了一个没进缓存的文件）——**不再**声称是为了保护那支数路径的脚本：
+    // 任务 10 返工已把它收紧到数组切片内，注释里的路径不影响它了。
+    { name: 'M18 sw.js 注释里出现一条清单外的带引号路径（⑬ 的覆盖）', file: SW_PATH, flag: '--sw', find: '// 只列应用真正运行需要的资源。', repl: "// 只列应用真正运行需要的资源（例如 './app/nowhere.js' 这种写错路径的）。", expect: ['⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径'] },
+    // ⑬ 双向的另一半：清单条目少了 './' 前缀时，全文比对会漏掉它。第一版 ⑬ 只查单向，这条变异
+    // 当时是绿的（实测过）——现在必须红。
+    { name: 'M19 ASSETS 里一条条目少了 ./ 前缀（⑬ 双向的那一半）', file: SW_PATH, flag: '--sw', find: "  './app/db.js',", repl: "  'app/db.js',", expect: ['⑬ ASSETS 里这些条目没有对应的 ./ 同形写法'] }
   ];
 
   const variantDir = path.join(TMP_ROOT, 'variants');
