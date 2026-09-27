@@ -6,6 +6,7 @@ import { renderStats } from './ui/stats-view.js';
 import { renderVault } from './ui/vault-view.js';
 import { openEntryPanel, dueRecurringsToday } from './ui/entry-panel.js';
 import * as store from './store.js';
+import { initTheme } from './theme-store.js';
 
 const app = document.getElementById('app');
 const view = el('main', { class: 'screen' });
@@ -20,6 +21,12 @@ function renderTabBar(active) {
   ));
 }
 
+// 主题必须在任何 mount 之前应用，否则每次冷启动都会「先闪一下默认色、再变成选中的皮肤」。
+// 为什么不放在文件末尾直接 await：onChange(render) 是同步注册、可能同步触发第一次渲染，
+// 把它挂在渲染路径上，无论谁先触发都保证「主题先行」。
+// .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。
+let themeReady = null;
+
 // 快速连点两个 Tab 会起两个并发渲染，先发起的那个未必先完成（统计页要查 6~12 个月数据，
 // 比首页慢）。没有这个序号就是「后完成者决定界面」——界面与 Tab 高亮会停在统计页，
 // 而 hash 已经是 #/ledger，且此后不会再有 hashchange，这个不一致不会自愈。
@@ -27,6 +34,9 @@ let renderSeq = 0;
 
 async function render(id) {
   const seq = ++renderSeq;
+  await (themeReady ??= initTheme().catch(err => {
+    console.error('主题初始化失败，用默认外观', err);
+  }));
   const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: renderStats, vault: renderVault };
   // 未注册的 Tab id 落到记账页，而不是抛 undefined is not a function。
   // （原来的 PLACEHOLDER 占位表在密码箱接上真实视图后就空了，已删掉。）
