@@ -17,13 +17,17 @@
 //   ⑫ Markdown 围栏完整性：内容行不许粘反引号串、块内不许出现非法的结束围栏
 //      （这条是补的：一个把代码块同步进计划的脚本丢过结尾换行，制造出两处粘连围栏，
 //       而 ①②③…那些检查全都看不见它——围栏坏了，块内容却仍然"看起来"是对的）
+//   ⑬ sw.js 的 ASSETS 清单集合 ⇄ 它全文里带引号相对路径的集合（两者必须相等）
+//      （任务 10 返工补的：计划任务 14 那支「从 sw.js 里数路径」的校验脚本按**全文**匹配、不看上下文，
+//       注释里举例写一句带引号的路径就会被算成一条清单条目——实测踩到过：条数 57 → 58，
+//       而那支脚本的 Test-Path 全通过，只有数字悄悄变了）
 //
 // 用法：
 //   node scripts/check-theme-css.mjs                 核验（**只读仓库**）
 //   node scripts/check-theme-css.mjs --self-test     变异自检（**只写系统临时目录**）
 // 参数（都有默认值，默认按脚本自身位置推导，不写死任何绝对路径）：
 //   --root <dir> --css <file> --store <file> --theme <file> --plan <file> --spec <file>
-//   --styles <dir> --app <dir> --tmp <dir>
+//   --sw <file> --styles <dir> --app <dir> --tmp <dir>
 //
 // 落盘纪律（精确版——早先这里写的是「核验模式一个字节都不写」，那是错的：它一直都往 tmp 落探针）：
 //   · **不写仓库**：核验模式不碰 root 下的任何文件；只会往 tmp 里落两个 git blob 探针
@@ -55,6 +59,7 @@ const STORE_PATH = path.resolve(opt('store', path.join(ROOT, 'app/theme-store.js
 const THEME_PATH = path.resolve(opt('theme', path.join(ROOT, 'app/theme.js')));
 const PLAN_PATH = path.resolve(opt('plan', path.join(ROOT, 'docs/superpowers/plans/2026-09-26-pvault-custom-background.md')));
 const SPEC_PATH = path.resolve(opt('spec', path.join(ROOT, 'docs/superpowers/specs/2026-09-26-pvault-custom-background-design.md')));
+const SW_PATH = path.resolve(opt('sw', path.join(ROOT, 'sw.js')));
 const STYLES_DIR = path.resolve(opt('styles', path.join(ROOT, 'styles')));
 const APP_DIR = path.resolve(opt('app', path.join(ROOT, 'app')));
 const MANUAL_PATH = path.resolve(opt('manual', path.join(ROOT, 'docs/手动验证清单.md')));
@@ -182,7 +187,7 @@ const groupCounts = new Map();
 let total = 0;
 const groupOf = msg => {
   if (msg.startsWith('自检：')) return '自检';
-  const m = /^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫])/.exec(msg);
+  const m = /^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬])/.exec(msg);
   return m ? m[1] : '其他';
 };
 function check(ok, msg) {
@@ -471,11 +476,28 @@ for (const p of [PLAN_PATH, SPEC_PATH, MANUAL_PATH]) {
   say(`⑫ ${path.basename(p)}：合法围栏对 ${r.pairs}、畸形 ${r.problems.length}`);
 }
 
+// ── ⑬ sw.js 的清单与「全文带引号路径」的集合一致 ──────────────
+// 为什么需要：计划任务 14 步骤 2 那支「把 sw.js 里的 './…' 逐条 Test-Path」的校验脚本按**全文**匹配、
+// 不看上下文——注释里（或别处代码里）多一句带引号的路径就被算成一条清单条目。实测踩到过：注释里举例
+// 写了一条路径，那支脚本报出来的条数直接 +1（57 → 58），而 Test-Path 全通过、只有数字变了。
+// 那支脚本守的是「清单里的路径都存在」，这条守的是反方向：**全文里的带引号路径不许有清单外的**。
+// 两边合起来，那个条数才是可信的（它同时是测试 tests/boot-order.test.js 里的一条断言的两个入口）。
+const swSrc = read(SW_PATH);
+const assetsBlock = /const ASSETS = \[([\s\S]*?)\];/.exec(swSrc)?.[1];
+check(!!assetsBlock, '⑬ 没在 sw.js 里找到 ASSETS 数组（锚点失效）');
+const listed = new Set([...(assetsBlock ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]));
+const quotedPaths = new Set([...swSrc.matchAll(/'(\.[^']*)'/g)].map(m => m[1]));
+check(listed.size > 0, '⑬ ASSETS 里一条路径都没解析出来（锚点失效）');
+const outsideAssets = [...quotedPaths].filter(p => !listed.has(p)).sort();
+check(outsideAssets.length === 0,
+  '⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径（数路径的校验脚本会把它当成清单条目）：' + outsideAssets.join(' '));
+say(`⑬ sw.js：ASSETS ${listed.size} 条、全文带引号路径 ${quotedPaths.size} 个，清单外的 ${outsideAssets.length} 个（应为 0）`);
+
 // ── 输出 ────────────────────────────────────────────────────
 if (!SELF_TEST) {
   console.log('任务 9 静态核验（文本层；渲染层结论不在这里，见计划任务 15）');
   console.log(report.join('\n'));
-  const order = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '自检', '其他'];
+  const order = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '自检', '其他'];
   console.log('\n分组计数（可复现的口径：脚本每次运行都会打印这张表）：');
   console.log('  ' + order.filter(g => groupCounts.has(g)).map(g => `${g} ${groupCounts.get(g)} 条`).join('、')
     + `　合计 ${total} 条`);
@@ -518,7 +540,10 @@ if (SELF_TEST) {
     { name: 'M16 计划里制造一处粘连围栏（548c06e 那类畸形）', file: PLAN_PATH, flag: '--plan', find: '  --scrim-a: 0.3;\n```', repl: '  --scrim-a: 0.3;```', expect: ['⑫', '内容行粘了反引号/波浪线串'] },
     // 波浪号围栏：早先 ⑫ 只认反引号，而描述写的是「Markdown 围栏完整性」——实测追加未闭合的
     // `~~~` 是全绿的。这条变异守住那个覆盖。
-    { name: 'M17 计划开头追加一段未闭合的 ~~~ 围栏（⑫ 的波浪号覆盖）', file: PLAN_PATH, flag: '--plan', find: '# pvault · 自定义背景 实现计划', repl: '# pvault · 自定义背景 实现计划\n\n~~~js\nconst x = 1;\n', expect: ['⑫', '未闭合的围栏'] }
+    { name: 'M17 计划开头追加一段未闭合的 ~~~ 围栏（⑫ 的波浪号覆盖）', file: PLAN_PATH, flag: '--plan', find: '# pvault · 自定义背景 实现计划', repl: '# pvault · 自定义背景 实现计划\n\n~~~js\nconst x = 1;\n', expect: ['⑫', '未闭合的围栏'] },
+    // ⑬ 的变异：往 sw.js 的注释里塞一条清单外的带引号路径——任务 14 那支数路径的脚本会把它的
+    // 条数数多，而 Test-Path 全都通过（这正是实测踩到的那个盲区）。
+    { name: 'M18 sw.js 注释里出现一条清单外的带引号路径（⑬ 的覆盖）', file: SW_PATH, flag: '--sw', find: '// 只列应用真正运行需要的资源。', repl: "// 只列应用真正运行需要的资源（例如 './app/nowhere.js' 这种写错路径的）。", expect: ['⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径'] }
   ];
 
   const variantDir = path.join(TMP_ROOT, 'variants');
