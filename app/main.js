@@ -22,13 +22,16 @@ function renderTabBar(active) {
 }
 
 // 主题必须在 render() 这条路径上先于它的 mount 应用，否则冷启动会「先闪一下默认色、再变成选中的皮肤」。
-// 不写成「任何 mount」「每次冷启动」：默认皮肤下闪的就是它自己（看不出差别，任务 15 的清单要求拿它当
-// 对照组）；而 openFromShortcut() 直接开录入面板的那次 mount 不走 render()，与 initTheme() 并发。
+// 不写成「任何 mount」「每次冷启动」：默认皮肤 + 默认深浅档下闪的就是它自己（看不出差别），但**不是
+// 所有默认皮肤的组合都看不出**——手动选深色而系统是浅色时，兜底帧走 base.css 的 :root（浅色），应用后
+// 是深色，这一档照样会闪；而 openFromShortcut() 直接开录入面板的那次 mount 不走 render()，与 initTheme() 并发。
 // 为什么不放在文件末尾直接 await：onChange(render) 是同步注册、可能同步触发第一次渲染，
 // 把它挂在渲染路径上，两条路谁先到都保证「这一次 render 的 mount 在主题之后」。
 // .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。兜住之后**不再重试**：
-// themeReady 从此 settled，本次页面生命周期里主题就停在默认值、要刷新才恢复（典型触发是 db.js 的
-// onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，主题不会）。代价见 theme-store.js 的 initTheme。
+// themeReady 从此 settled，本次页面生命周期里主题就停在「DOM 上 0 个变量、外观走 CSS 兜底」的状态、
+// 要刷新才恢复（典型触发是 db.js 的 onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，
+// 主题不会。任务 11 接上「外观与背景」面板之后这条会变窄：用户点一次皮肤或深浅就会 paint() 把整条写出去）。
+// 代价见 theme-store.js 的 initTheme。
 let themeReady = null;
 
 // 快速连点两个 Tab 会起两个并发渲染，先发起的那个未必先完成（统计页要查 6~12 个月数据，
