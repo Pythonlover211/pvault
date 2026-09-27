@@ -6,7 +6,7 @@
 //   { format: 'pvault-backup-encrypted', version: 1, createdAt,
 //     kdf: { name: 'PBKDF2-SHA256', iterations, salt }, iv, ct }
 //
-// 六条不能破的约定：
+// 七条不能破的约定：
 // 1. 每次导出都用**新生成的随机 salt**。复用 salt 会让同一个备份密码在任何时间导出的文件
 //    用同一把密钥，那就等于把「一次泄露 = 全部历史文件可解」写死进格式里。
 // 2. 导出的加密与导入的解密都以文件里 kdf.salt / kdf.iterations 为准：迭代次数会随版本涨，
@@ -23,9 +23,23 @@
 //    图片残留」，而备份里没有图片时压根没有可覆盖的东西，清空只会删掉本机唯一的一份原图——
 //    而备份文件里没有它们的替补。别为了跟 ARRAY_STORES 那些表「统一」把它改成有键就清：
 //    那等于把「恢复备份」这条唯一的救命通道变成一把毁数据的开关。
+// 7. 背景照片是**一对**东西：`assets` 里 id 为 'bg' 的那条记录，与 `settings` 里那条
+//    `backgroundImage`（它指向 'bg'）。导入侧必须成对处理：备份里带了背景就两处一起写回，
+//    没带就两处一起清掉。这条与第 4、6 条方向相反，因为它面对的是另一件事：**settings 是整表
+//    覆盖的**，备份里没有 `backgroundImage` 那一行时，本机那一行必然在这次导入里被清掉——
+//    第 4 条的 vault 之所以保得住，是因为那里显式写了一行回去（本机背景没有这条待遇）。
+//    也就是说，导入一份不含背景的备份之后，本机那张背景图**已经失去引用、画面上也没有它了**，
+//    此时把字节留在库里不是「保住用户的东西」，只是让它在下一次导出里复活并跟着备份跑到第三台
+//    设备上去（encodeBackground 只认 assets 那条记录，根本不看设置里有没有引用）。
+//    要真保住本机背景，正确的做法是像 vault 那样把设置行也一并保留、两处都不动；**只留一半**
+//    （留图丢设置、或留设置丢图）正是这一条要禁止的，见 importBackup 里的处理。
 //
-// 本模块依赖 db.js（IndexedDB）与 crypto.js（WebCrypto 全局），因此不能在 Node 里 import，
-// 也不写单测；验证方式见 docs/手动验证清单.md 的「备份与恢复」小节与临时探针。
+// 本模块依赖 db.js（IndexedDB）与 crypto.js（WebCrypto 全局）：**模块体能 import**（那两处都只在
+// 函数体里碰全局），但导出函数一调用就需要一个 IndexedDB 环境，所以它**不能**像 backup.js / theme.js
+// 那样只靠纯函数单测。能盖住它的那条路是「造桩」——tests/backup-store.test.js 装了一个内存版
+// 浏览器环境（tests/helpers/fake-browser.js）再调本模块的导出函数；**真机上的真实 IndexedDB 与文件下载
+// 仍然只能人工验**，见 docs/手动验证清单.md 的「备份与恢复」小节。桩测不了什么、为什么不能用它
+// 替代真机，写在 fake-browser.js 的头注释里，别把那里的绿读成「浏览器里也就这样」。
 
 import * as db from './db.js';
 import * as vaultStore from './vault-store.js';
@@ -67,6 +81,17 @@ const MAX_INLINE_FILES_BYTES = 45 * 1024 * 1024;   // 原图字节，约合 base
 // 直接进下面那个循环只会往备份里塞一堆空壳，恢复出来就是「有记录、没图片」。
 // 它由 encodeFiles() 单独转成 base64 再打包，导入时由 base64ToBlob() 单独反解。
 const ARRAY_STORES = ['txns', 'accounts', 'categories', 'receivables', 'invoices'];
+
+// 背景照片那一对名字。图片本身存在 assets 表里（见 schema.js），设置里那一行只存引用与遮罩强度
+// （`{ assetId, overlay, createdAt }`，见 theme-store.js 的 setPhoto）。
+// `'bg'` 与 theme-store.js 导出的 BACKGROUND_ASSET_ID **是同一把钥匙**，这里刻意再定义一次而不从
+// 那边 import：theme-store 会牵进 DOM 与 Canvas 一整串模块，这一层不需要它们（image-scale.js 那次
+// 也是同一个理由）。两个常量同名同值，改一处就得改另一处。
+// 导出与导入两侧都要用到它们，而且必须成对——只改一处就会留下「设置指向一张不存在的图」
+// （theme-store 的 applyPhoto 会按「没有背景」兜住并顺手清掉设置）或「图在库里、没人引用」
+// （界面看不出来，但下一次导出会把它带走）。文件头第 7 条讲的就是这件事。
+const BACKGROUND_KEY = 'backgroundImage';
+const BACKGROUND_ASSET_ID = 'bg';
 
 // 错误带上 code，UI 才区分得开「密码错」与「文件坏了」——两者的处置方式完全不同：
 // 前者让用户重输密码，后者只能换个文件。只用 message 做判断太脆。
@@ -203,6 +228,59 @@ async function encodeFiles() {
   return { files: out, skipped };
 }
 
+// 遮罩强度：只认数字与非空的可解析数字字符串（与 theme.js 的 normalizeOverlay 同一套判据），
+// 其余（字段缺失、null、空串、false、NaN）一律 null = 「备份里没有这个值」。
+//
+// **为什么不能图省事写 `Number(x) >= 0 ? Number(x) : null`**：Number(null) / Number('') /
+// Number(false) 都是 0，而 0 在这里是一个**合法的遮罩强度**（theme.js 的 OVERLAY_MIN 就是 0，
+// 意思是「完全不加遮罩」，滑块能拖到那一格）。那句写法会把「设置里根本没有这一项」写成
+// 「用户选了 0% 遮罩」——一个从没发生过的值。备份包是换机时唯一的数据面，写进去的假值
+// 会一直被当真：theme.js 的 normalizeOverlay 早就为同一件事写过一段注释
+// （Number(null) 那几种转换会把「这个设置没有」静默变成 0% 或 1%），这里是同一个坑的第二次出现。
+function overlayOrNull(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * 把背景照片编码进备份包（data.background）。任何一步失败都返回 null 而不是抛错：
+ * 一张背景图不该把整次导出打回去——导出是用户保住账目的唯一手段，而账目比背景重要得多
+ * （与 encodeFiles 里「跳过脏记录」同一条纪律）。
+ * **这条降级是静默的**：exportBackup 的返回值里没有「这次没带背景」的通道（skipped 是发票图片的
+ * 张数，混进背景会污染那个数），用户唯一的线索是控制台那条 warn。要让他知道得再开一条通道，
+ * 本步没做——因此别在这里的注释或界面文案里写「用户会看到」。
+ *
+ * settings 传进来是为了在背景包里一并记下遮罩强度（data.background.overlay）。注意**恢复遮罩
+ * 并不走这个字段**：settings 是整表覆盖的，导入后遮罩来自备份 settings 里那一行（背景包里的
+ * overlay 与它同源，都是 theme-store 写下的那份 meta，不会打架）。这份字段是「照片自己的记录」，
+ * 也留给将来任何要读它的地方（比如摘要里显示「这份备份带背景」），眼下没有消费方。
+ */
+async function encodeBackground(settings) {
+  try {
+    const row = await db.get('assets', BACKGROUND_ASSET_ID);
+    const blob = row?.blob ?? null;
+    if (!blob) return null;
+    const image = await blobToBase64(blob);
+    if (!image) return null;
+    const meta = settings.find(r => r?.key === BACKGROUND_KEY)?.value ?? null;
+    return {
+      overlay: overlayOrNull(meta?.overlay),
+      // 只认有值的数字：0 是 1970-01-01，一个像真实时间的哨兵值，宁可写成 null 也不让它混进去
+      // （theme.js 的 normalizeBackground 给 createdAt 判过同一件事，那边连字符串都不认）。
+      createdAt: Number(row.createdAt) || null,
+      mime: row.mime || 'image/jpeg',
+      image
+    };
+  } catch (err) {
+    console.warn('背景照片读不出来，这次备份不带它', err);
+    return null;
+  }
+}
+
 // 含图导出之前的体量闸门：只看 invoiceFiles 的 size 元数据，不做任何编码。
 // 必须在任何编码动作之前调用（见 exportBackup 里的位置）。
 //
@@ -273,7 +351,14 @@ export async function exportBackup(password, now = Date.now(), { includeFiles = 
   // 连读都不读，省掉把几十 MB 的 Blob 取出来转一遍的时间。
   const { files: invoiceFiles, skipped } = includeFiles ? await encodeFiles() : { files: [], skipped: 0 };
 
-  const pkg = buildBackup({ ...arrays, settings, vault, invoiceFiles }, now);
+  // 背景照片单独打包成 data.background。它与「不含图片」开关**无关**：
+  // 它是外观设置的一部分，压缩后的照片只有一两百 KB，而「换机后背景丢了、找不回来」是没法补救的
+  // （用户自己选的那张照片可能早就删了、设备上只剩这一份，与图片那条路同源）。
+  // 上面那道几十 MB 的体量闸门（MAX_INLINE_FILES_BYTES）只盯着 invoiceFiles，不会把这一张挡在外面：
+  // 它是 KB 量级，而拦下它的代价是用户换机后背景再也找不回来，收益接近零。
+  const background = await encodeBackground(settings);
+
+  const pkg = buildBackup({ ...arrays, settings, vault, invoiceFiles, background }, now);
 
   // 每次导出都现取盐：同一个密码两次导出得到的密钥不同，一个文件被解开不会连累其他文件。
   const salt = randomBytes(SALT_BYTES);
@@ -408,6 +493,38 @@ export async function importBackup(text, password) {
     });
   }
 
+  // 背景照片：与 invoiceFiles 同一条路（Blob 进不了 JSON，只能单独反解），但处置**正好相反**，
+  // 而且两处必须成对，见文件头第 7 条。这里只做前半段（写），后半段（清）在下面 clears 那一段——
+  // 那里才拿得到 clears 数组。两段合起来是一条规则：
+  //   备份里**带**了可恢复的背景 → assets 里那条 'bg' 写回去（id 固定，put 即覆盖）；
+  //   备份里**没有**（老备份根本没有这个键、那次导出时读图失败、或这段 base64 解不开）
+  //     → 本机那条一并清掉，并且不让设置里留下指向它的 backgroundImage 行（见下面 settings 循环）。
+  // 为什么「没有」时要清、而 invoiceFiles 却保留：settings 是整表覆盖的，本机那条 backgroundImage
+  // 必然被这次导入清掉——本机那张图**已经失去引用**，画面上也不再显示它。此时把字节留在库里不等于
+  // 「保住用户的东西」，只会让它在下一次导出里复活（encodeBackground 只认 assets 那条记录、
+  // 不看设置里有没有引用）并跟着备份跑到第三台设备上去。真要在这种情况下保住本机背景，得把设置行
+  // 也一起保留（像 vault 那样两处都不动），那是另一个决定：规格 §13 里那条「恢复的是一台机器上的图
+  // （不是当前这台残留的）」的验收项与它冲突——「留图 + 备份的设置行」恰恰会做出「图上来了、
+  // 但不是备份里那张」的混合状态，比干脆没有更难解释。
+  const bg = data.background;
+  // 判据只看「能不能解出一张图」：形状不对（字符串、数组、null、老备份的 undefined）与 base64 坏了
+  // 走同一条路——都没有可恢复的背景。base64ToBlob 自己会挡住空串/非 4 倍数/解不开的串。
+  const bgBlob = (bg && typeof bg === 'object') ? base64ToBlob(bg.image, bg.mime) : null;
+  if (bgBlob) {
+    puts.push({
+      store: 'assets',
+      value: {
+        id: BACKGROUND_ASSET_ID,
+        blob: bgBlob,
+        mime: bg.mime || 'image/jpeg',
+        size: Number(bgBlob.size) || 0,
+        // 与 theme-store 的 setPhoto 同一个字段含义（这条记录是什么时候写下的）。
+        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻。
+        createdAt: Number(bg.createdAt) || Date.now()
+      }
+    });
+  }
+
   // settings 是 { key, value } 形状、以 keyPath 为主键，所以 key 不是字符串时 put() 会**同步**
   // 抛 DataError。这种异常不会自动中止事务（见 db.replaceAll），因此必须在入队之前就拦下来：
   // 文件里有一行坏设置，不该换来一个清了一半的库。
@@ -418,6 +535,10 @@ export async function importBackup(text, password) {
   }
   for (const row of data.settings) {
     if (row.key === VAULT_KEY) continue; // 密码箱只认 data.vault，避免文件里两份互相打架
+    // 备份里没有可恢复的背景时不写回这一行：写了就是一条指向不存在记录的**悬空设置**
+    // （theme-store 的 applyPhoto 会按「没有背景」兜住它并顺手把设置清掉，但那要等到下一次启动，
+    // 中间这段时间里库里的状态是自相矛盾的）。它与上面「清 assets」是同一件事的两半。
+    if (!bgBlob && row.key === BACKGROUND_KEY) continue;
     puts.push({ store: 'settings', value: row });
   }
   puts.push({ store: 'settings', value: { key: LAST_BACKUP_KEY, value: lastBackupRow?.value ?? Date.now() } });
@@ -442,8 +563,14 @@ export async function importBackup(text, password) {
   // 那时无条件清会把本机发票和图片一起抹掉，而备份文件里没有它们的替补——
   // 「恢复备份」这条唯一的救命通道就变成了毁数据的开关。
   // 反过来，备份里带了图（正常含图导出）时**必须**清：不清就会留下上一份数据的图片残留。
+  //   · assets：**成对处理的另一半**（那一段在发票图片循环的后面）。它只有在备份里**没有**可恢复的
+  //     背景时才清，与上面那条对图片的处置正好相反——因为「没有背景」时本机那条记录的引用已经
+  //     被 settings 的整体覆盖拿走了（settings 整表覆盖，备份里没有 backgroundImage 行），
+  //     留着它只是不合规的残留；而图片那边本机的原图仍然挂在发票上、仍然看得到，删了才是真丢。
+  //     备份真的带了背景时不清：那个 id 固定是 'bg'，上面那条 put 已经把同一条记录覆盖掉了。
   const clears = ARRAY_STORES.filter(name => Array.isArray(data[name]));
   if (arrayOrEmpty(data.invoiceFiles).length > 0) clears.push('invoiceFiles');
+  if (!bgBlob) clears.push('assets');
   clears.push('settings');
 
   // 清空与写入必须在同一个事务里，否则中途失败会留下一个空库。

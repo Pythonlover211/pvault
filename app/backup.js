@@ -36,6 +36,9 @@ export function buildBackup(payload, now = Date.now()) {
       // structuredClone 会把它整份复制一遍，手机上这一下就够触发内存告警。
       // 数组由调用方现造现交（exportBackup 里的 encodeFiles），没有第二个人持有它的引用。
       invoiceFiles: payload.invoiceFiles ?? [],
+      // 背景照片（base64）与它的遮罩强度。与 invoiceFiles 同理**刻意不深拷贝**：
+      // 它是一个几百 KB 的 base64 串，structuredClone 会白复制一份，而对象由调用方现造现交。
+      background: payload.background ?? null,
       vault: payload.vault ? deepClone(payload.vault) : null
     }
   };

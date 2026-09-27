@@ -260,9 +260,12 @@ function setPhotoVars(url) {
  * 「设置指向一张库里已经没有的图」按「没有背景」处理：走到这一步本来就没有照片可画，抛错
  * 对调用方没有意义。同时把设置清掉——留着它只会让每次启动都多读一次 assets：
  * 清了之后传进来的 bgRaw 就是 null，下面 `db.get('assets', …)` 那一步被跳过。
- * 这种记录有两个真实来源：① 导入一份「设置里有 backgroundImage、备份包里却没有 assets」的
- * 备份——当前的备份包就没有 assets（规格 §7 的任务 13 接缝）；② removePhoto 删库成功、
- * 清设置那一步失败。
+ * 这种记录的真实来源：① `removePhoto` 删库成功、清设置那一步失败；② 用户在库里手改。
+ * **导入备份不再能造出它**（任务 13）：那一步现在把 `assets` 与 `settings.backgroundImage` 成对处理
+ * ——备份里带了可恢复的背景就两处一起写回，没带就两处一起清掉，连「备份的设置里有那一行、但图
+ * 解不开」这种情况也会跳过那一行（见 backup-store.js 的 importBackup 与那里的文件头第 7 条）。
+ * 任务 13 之前它是最常见的来源：那时的备份包整个不带 `assets`，A 机开过背景的用户把备份导进 B 机，
+ * 就会留下一条指向不存在记录的设置，靠的就是下面这段兜底。
  */
 async function applyPhoto(bgRaw) {
   const bg = normalizeBackground(bgRaw);

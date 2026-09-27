@@ -16,8 +16,26 @@ test('buildBackup 带上格式标识、版本与时间戳', () => {
   assert.equal(b.format, 'pvault-backup');
   assert.equal(b.version, BACKUP_VERSION);
   assert.equal(b.createdAt, 1700000000000);
+  // 键集用**完全相等**，不是「包含」：data 里有哪些键本身是有意义的决定——导入侧靠「键在不在」
+  // 判断要不要清本机的表，靠「值是什么」判断要不要清本机那条背景。所以加一个键就该在这里显式
+  // 改一次，顺手想清楚「导入端认不认它、老备份里没有它怎么办」。改宽成「包含」等于让新键悄悄
+  // 溜进备份包（`invoiceFiles` 那次漏掉 name 字段是同一种病的另一面）。
   assert.deepEqual(Object.keys(b.data).sort(),
-    ['accounts', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'settings', 'txns', 'vault']);
+    ['accounts', 'background', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'settings', 'txns', 'vault']);
+});
+
+// background 与 invoiceFiles 有一处关键差别：它是**对象或 null**，不是数组。
+// 键必须始终在（导入侧按它判「这份备份带没带背景」），值为 null 就是「没有背景」。
+test('buildBackup：payload 里没有背景时写 null，键始终在', () => {
+  const b = buildBackup(payload, 1);
+  assert.equal(b.data.background, null);
+  assert.equal('background' in b.data, true);
+});
+
+test('buildBackup：背景照片（base64）与遮罩原样进备份', () => {
+  const bg = { overlay: 45, createdAt: 1700000000000, mime: 'image/jpeg', image: 'AAAA' };
+  const b = buildBackup({ ...payload, background: bg }, 1);
+  assert.deepEqual(b.data.background, bg);
 });
 
 // 加发票功能之后新增的两个键。它们**必须**始终出现在备份包里（哪怕是空数组）：
