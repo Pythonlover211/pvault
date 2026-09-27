@@ -13,6 +13,14 @@
 // 忘了同步），整个 addAll 就 reject，install 失败，SW 根本不激活，离线能力直接是 0，
 // 而且控制台只看得到一条 addAll 的报错。所以 ASSETS 必须与磁盘上的真实文件逐条对齐
 // （这份清单是扫描 styles/、icons/、app/、app/ui/ 生成的，不是凭记忆手写的）。
+//
+// 与「某条路径写错」相对的是**漏掉一个文件**（清单里少一行），机制完全不同，别写成 404：它不影响
+// install（addAll 里没有它，自然没有 404），离线能力看起来也正常，直到真的去请求那个模块——那时
+// 缓存未命中 → 走网络（在线就自愈：拿到的响应会被顺手补进缓存，见文件末尾的 fetch 处理器）→ 离线
+// 则回退到 index.html。回给模块脚本的是一个 200 的 text/html，浏览器按严格 MIME 检查拒绝执行，
+// import 链一断，app 起不来（页面只剩 body 的底色）。404 只出现在上面那条路上：在线、且服务器上
+// 真的没有这个文件。下面各版注释里提到漏加时，说的都是前一条路。
+//
 // v7：密码箱列表页多了「重新生成恢复码」入口（vault-store / vault-view / vault.css），
 // 备份面板里「忘了密码就打不开」那句从说明段上移到密码输入框下方（backup-view）。
 // v8：账单导入（csv / import-parse / import-schema / import-store / ui/import-view）
@@ -32,7 +40,7 @@
 // Java 桥调系统 ClipboardManager，其次 navigator.clipboard，最后退回 execCommand。
 // v13：发票功能的 7 个新文件（invoice-model / image-scale / image-store / invoice-store /
 // ui/invoice-view / ui/invoice-editor / invoice.css）进了预缓存清单。漏掉它们的后果和上面
-// v3 那次一样：离线时这几个 ES module 404，import 链一断，发票 Tab 直接打不开。
+// v3 那次一样：离线时这几个 ES module 加载不了（机制见开头那一段），import 链一断，发票 Tab 直接打不开。
 // v14：发票支持导入 OFD。新增的 app/file-info.js 进了预缓存清单 —— 它从任务 3 起就是
 // 首屏静态依赖（main → invoice-view → invoice-editor/invoice-store → image-store → file-info），
 // 而 SW 是 cache-first：白名单里没有它，已装旧缓存的设备离线启动会回退到 index.html、
@@ -40,24 +48,17 @@
 // v15：下载触发从 backup-view 抽到 app/ui/download.js 共用，它要进预缓存清单。
 // （file-info.js 在任务 3 就随 v14 进过清单了 —— 它从那时起是首屏静态依赖，
 //  必须在消费方 import 它之前就位；晚一步的后果是整个 app 白屏，不只是发票面板。）
-// 漏掉 download.js 的后果与上面各次相同：离线时这个 module 404，import 链断。
+// 漏掉 download.js 的后果与上面各次相同：离线时这个 module 加载不了，import 链断。
 // v16：canvas-image.js 提前进预缓存清单 —— 任务 5 把图片编解码工具（loadViaImg / decode /
 // releaseSource / drawTo）从 image-store.js 搬到了新模块 app/canvas-image.js，image-store
 // 从此静态依赖它。白名单不跟着那一次提交一起加的话，已装旧缓存的设备离线启动会断在
-// main → invoice-view → invoice-editor → image-store → canvas-image 这一环：那一个 module 404、
+// main → invoice-view → invoice-editor → image-store → canvas-image 这一环：那一个模块加载不了、
 // import 链一断是整个 app 白屏（不只是发票面板）——与上面 v14 那次同一个坑，所以不等任务 14。
-// v17：theme-store.js 提前进预缓存清单 —— 任务 10 让 app/main.js 静态依赖它（main → theme-store），
-// 白名单不跟产生依赖的那次提交一起加，已装旧缓存的设备离线启动就断在这一环：那一个 module 404、
-// import 链一断，app 完全起不来（页面只剩 body 的底色）——与 v14 / v16 同一个坑，所以也不等任务 14。
-// 外观功能剩下的文件：ui/appearance-sheet.js 与 appearance.css 还没建；theme.js 已经建好（任务 1-4），
-// 而且从任务 10 起被 theme-store.js 静态 import 了（这一条链是 main → theme-store → theme），
-// **但它此刻还不在下面这份清单里**——计划把它的落点排在任务 14，也就是要等到那一步才补。这与
-// v14 / v16 反复写的那条纪律（白名单跟产生依赖的提交一起走）不一致，如实记在这里：
-// 咬人的条件很窄——设备装好这份缓存之后**从没在线打开过 app**、直接就离线启动：那次 theme.js 请求
-// 会失败并回退到 index.html，module 解析不了、整页起不来。之后在线打开过一次 app 就补上了：fetch
-// 那条路会把网络拿到的资源顺手补进缓存（见文件末尾；那次 put 失败本身是被 catch 掉的，配额满时会这样，
-// 缺口便留到下一次成功加载）。要现在堵上，就把 ./app/theme.js 一并挪进来（下面这份清单里照着上下文
-// 的写法加行；本行不写成带引号的路径，是免得被任务 14 那支「从 sw.js 里数路径」的校验脚本数进来）。
+// v17：theme-store.js 与 theme.js 一起进预缓存清单 —— 任务 10 让 app/main.js 静态依赖 theme-store
+// （main → theme-store），而 theme-store 又静态依赖 theme（theme-store → theme），两个都在首屏依赖链上，
+// 于是两个一起进，不等任务 14 —— 与 v14（file-info.js，同样是间接依赖）同一个形状、同一份理由：
+// 白名单不跟产生依赖的那次提交一起走，已装旧缓存的设备离线启动就会断在这一环（机制见开头那一段）。
+// 外观功能剩下的文件：ui/appearance-sheet.js 与 appearance.css 还没建，它们进清单是任务 14 的事。
 const CACHE = 'pvault-v17';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
@@ -65,7 +66,7 @@ const CACHE = 'pvault-v17';
 //
 // v3 一并补齐了此前几个任务新增却忘了进清单的文件（crypto / recovery-code / vault-model /
 // vault-store / backup / backup-store）：漏掉的后果不是「少一份缓存」，而是离线时这些
-// ES module 请求 404、import 链断掉，密码箱与备份功能在离线状态下整个打不开。
+// ES module 请求加载不了、import 链断掉，密码箱与备份功能在离线状态下整个打不开。
 const ASSETS = [
   './',
   './index.html',
@@ -104,6 +105,7 @@ const ASSETS = [
   './app/store.js',
   './app/summary.js',
   './app/theme-store.js',
+  './app/theme.js',
   './app/vault-model.js',
   './app/vault-store.js',
   './app/ui/accounts-view.js',
