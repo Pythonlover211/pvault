@@ -1371,8 +1371,12 @@ export function currentTheme() {
 /**
  * 当前背景图在用的那个 blob URL（没有照片时是 null）。给「外观与背景」面板的缩略图用。
  * **调用方不要 revoke 它**：背景层正拿它当 --bg-image，释放掉背景就没了；它的生命周期归本模块
- * （setPhotoVars 在换图 / 移除时释放上一个）。让面板自己再 createObjectURL 一份，等于同一张图
- * 两份 URL、两份 revoke 责任——多一个泄漏点，而不是少一个。
+ * （setPhotoVars 在换图 / 移除时释放上一个）。
+ * 为什么让调用方共享这一个、而不是自己 createObjectURL 一份：面板的缩略图**每次重绘都要一个新 src**，
+ * 自建就得在每次重绘前 revoke 上一个——漏一次多一个 URL 条目，而这里重绘很频繁（每点一次皮肤 / 深浅
+ * 都会重建面板）。共享这一份的 revoke 责任只有一处。
+ * **这条「不要 revoke」是注释约定，没有运行时机制拦着**：真要防住得每次现建一个副本、由调用方负责
+ * 还回来，代价大于收益，所以只写在这里。
  */
 export function currentPhotoUrl() {
   return photoUrl;
@@ -2332,8 +2336,9 @@ export function openAppearanceSheet() {
   // 与发票图片那条路同一条口径。**但这句口径里只有前半是硬承诺**：err.message 通常是可读的中文
   //（db.js 的 onblocked 就写好了「请关掉其它 pvault 页面后重试」），实测也有英文的
   //（比如 `Image is not defined`）——那句话别读成「永远是中文」。
-  // tail 由调用方给：几种操作失败时界面到底变没变并不一样（见下面两处各自的注释），
-  // 一句万能的「界面已经变了」对其中一条就是假话。
+  // tail 由调用方给，而且**它必须在这个操作的所有失败点上都为真**：「界面已经变了」这种话只在
+  // 「先画后写库」那条路上成立，对「先删库、成功后改内存」以及有两个失败点的 setOverlay 就是假话
+  // （这两种各自都判过一次，见下面两处注释）。
   function reportWriteFailure(title, err, tail) {
     console.error(title, err);
     alert(`${title}：${err?.message || err}\n${tail}`);
@@ -2351,7 +2356,9 @@ export function openAppearanceSheet() {
     }
   }
 
-  // 点皮肤 / 点深浅：这两个函数是「先画后写库」（见 theme-store.js），写库失败时内存与 DOM 已经改了。
+  // 点皮肤 / 点深浅：这两个函数是「先画后写库」（见 theme-store.js），而它们**只有一个 await**（写设置），
+  // 并且排在 paint() 之后——所以写库失败时内存与 DOM 一定已经改了，「界面已经按你点的换了」这句话
+  // 在这里是真的。（别把它照抄到失败点更多的路上去。）写库失败只影响「下次启动记不记得住」。
   async function applyThemeChange(fn, title) {
     try {
       await fn();
@@ -2403,11 +2410,18 @@ export function openAppearanceSheet() {
       //（实测过这条：首帧写失败、50ms 后恢复 → 尾部补写被跳过、put 次数 0、库里还是 30。）
       if (overlaySent === value) overlaySent = null;
       console.error('背景遮罩没能记住', err);
-      // 与上面那条路同一条口径，但**只提示一次**：拖动时每次失败都 alert 会连弹，而 alert 会阻塞
-      // 主线程——正在拖的那只手会被卡住，一个提示反而把「跟手」这件事搞坏。
+      // 这条尾句**不能照抄上面那两条**：`setOverlay` 的失败点有两个，而它们之间隔着「改内存 / 写 DOM」——
+      //   · `await getSetting(...)` 失败：内存与 DOM 都还没改，**画面上一点变化都没有**；
+      //   · `await setSetting(...)` 失败：内存与 DOM 已经改了，画面是新值、库里是旧值。
+      // 所以说「画面上已经变了」在第一种情况下就是假话。这个坑在皮肤 / 深浅那条路上判过一次
+      //（那两条只有一个 await、且排在 paint() 之后），滑块这里是同一件事，别只修一处。
+      // 下面这句在两种失败下都为真：来自 getSetting 时 setSetting 根本没跑，来自 setSetting 时写库
+      // 没成功——两种情况下库里留着的都是旧值，所以「没记住」与「重开后会退回旧值」都成立。
+      // 另外**只提示一次**：拖动时每次失败都 alert 会连弹，而 alert 会阻塞主线程——正在拖的那只手
+      // 会被卡住，一个提示反而把「跟手」这件事搞坏。
       if (overlayAlerted) return;
       overlayAlerted = true;
-      alert(`遮罩没能存进手机：${err?.message || err}\n画面上已经变了，但下次打开可能会变回去。`);
+      alert(`遮罩没能存进手机：${err?.message || err}\n这个值没有记住——重开一次 app 会退回上一次存下的那个。`);
     });
   }
 
@@ -2484,7 +2498,9 @@ export function openAppearanceSheet() {
         } catch (err) {
           console.error('背景图设置失败', err);
           // 与发票图片那条路一致：给一句能照着做的话，再把原始错误接上。
-          alert('这张照片没能设成背景：' + (err?.message || err));
+          // 尾句取中性说法：setPhoto 有四个失败点（编码 → 写 assets → 写设置 → 应用），其中「图和设置
+          // 都已经写进去了、只是这一次没画出来」那一种会让重启后背景反而出现——所以不能替它下结论。
+          alert('这张照片没能设成背景：' + (err?.message || err) + '\n重开一次 app 看看背景有没有出现。');
         } finally {
           // picking 先复位、再重绘：重绘失败（safeRerender 兜住）也不该把 picking 卡在 true 上，
           // 否则用户此后每次选图都被 `if (!file || picking) return` 挡掉。
@@ -2504,10 +2520,11 @@ export function openAppearanceSheet() {
       return el('div', { class: 'field' }, [
         el('label', { text: '背景照片' }),
         el('div', { class: 'photo-row' }, [pick, fileInput]),
-        // 只说这一版真做得到的事：照片压到长边 1600 后存在这台手机上。**不写「跟着备份一起走」**
-        // ——导出包现在还不带背景（`buildBackup` 的 data 里没有它，那是任务 13 的事），
-        // 面板不该向用户承诺一件这个版本做不到的事。
-        el('div', { class: 'hint-text', text: '选一张照片铺在卡片下面。照片会压到长边 1600 像素后存在这台手机上。' })
+        // 只说这一版真做得到的事：照片缩到最长边**最大** 1600 后存在这台手机上（`image-scale.js` 对
+        // 最长边已经 ≤1600 的图**不放大**，所以写「压到 1600」是错的——一张 800px 的图进去还是 800px）。
+        // **不写「跟着备份一起走」**：导出包现在还不带背景（`buildBackup` 的 data 里没有它，那是任务 13
+        // 的事），面板不该向用户承诺一件这个版本做不到的事。
+        el('div', { class: 'hint-text', text: '选一张照片铺在卡片下面。照片的最长边最多留 1600 像素，然后存在这台手机上。' })
       ]);
     }
 
@@ -2527,9 +2544,10 @@ export function openAppearanceSheet() {
     const valueLabel = el('span', { class: 'ov-value', text: state.overlay + '%' });
 
     // 缩略图用 theme-store 正在给背景层用的那个 blob URL（规格 §8 第 3 条）。
-    // **面板不 revoke 它**：它不是面板建的、背景层还在用它，revoke 掉背景就没了；它是 theme-store
-    // 自己的状态，换图 / 移除时由 setPhotoVars 负责释放。面板自己再建一个 URL 等于同一张图两份
-    // URL、两份 revoke 责任，多一个泄漏点而不是少一个。
+    // 为什么复用它、而不是面板自己 createObjectURL 一份：renderPhoto **每次重绘都会跑一遍**（每点一次
+    // 皮肤 / 深浅都会重绘），自建就得在每次重绘前先 revoke 上一个，漏一次就多一个 URL 条目；共享这一份
+    // 的 revoke 责任只有一处，由 theme-store 的 setPhotoVars 在换图 / 移除时统一释放。
+    // **注意**：「不要 revoke 它」只是注释约定，没有机制拦着——面板若去 revoke，背景层会当场没掉。
     const thumbUrl = currentPhotoUrl();
 
     // 一条已知的降级，本面板**不**替它兜底，这里只把这层写清：若 settings 里那条 backgroundImage
@@ -2781,8 +2799,39 @@ git commit -m 'docs(appearance): 同步任务 11 返工（镜像、行号锚点�
      一个未处理的拒绝（正是这个面板要消灭的那种「点了没反应」的另一面）。修法：重绘走 `safeRerender()`
      （自带 catch + 一条日志）；`picking` 仍在 `await` 之前复位，不会被重绘失败卡住。
 5. **规格 §8 的两条声明补实现**（原来只是「计划里没记、实现里没有」）：已选图时显示**当前背景的缩略图**
-   （用 `theme-store` 新导出的 `currentPhotoUrl()`——面板**不 revoke** 它，那是背景层正在用的 URL，revoke
-   掉背景就没了），以及面板**顶部一行小字**写明当前皮肤名。两条都补进了任务 15 的真机清单。
+   （用 `theme-store` 新导出的 `currentPhotoUrl()`——面板**不 revoke** 它：它是背景层正在用的那个 URL，
+   而且 `renderPhoto` 每次重绘都跑、自建 URL 就得每次重绘前 revoke 上一个，漏一次多一个条目），
+   以及面板**顶部一行小字**写明当前皮肤名。两条都补进了任务 15 的真机清单。
+
+**第二次返工（质量复审通过之后的一轮打磨，四条）**
+
+1. **滑块那条 alert 的尾句是假话**：原来写「画面上已经变了，但下次打开可能会变回去」——而 `setOverlay`
+   的失败点有两个、中间隔着「改内存 / 写 DOM」：`await getSetting(...)` 失败时内存与 DOM **都还没改**，
+   画面上一点变化都没有（这个判断在皮肤 / 深浅那条路上做过一次，滑块这里是同一件事，别只修一处）。
+   改成在两种失败下都为真的说法：「这个值没有记住——重开一次 app 会退回上一次存下的那个」（来自
+   getSetting 时 setSetting 根本没跑，来自 setSetting 时写库没成功，两种情况下库里留的都是旧值）。
+   **同一轮把其余四条 alert 逐条按「哪一步会失败」重核了一遍**：皮肤 / 深浅那条只有一个 `await` 且排在
+   `paint()` 之后（「界面已经按你点的换了」是真的）；移除背景那条本来就覆盖了两种；设照片那条有四个
+   失败点（编码 → 写 assets → 写设置 → 应用），补了一句中性的「重开一次 app 看看背景有没有出现」——
+   因为「图和设置都写进去了、只是这一次没画出来」那一种会让重启后背景反而出现。
+2. **⑭ 的三处覆盖缺口补上**：① 白名单条目必须是活的（没人用了就该删——实测过：删掉用法之后它变成一张
+   免检牌，而 ⑭ 照旧全绿）；② 白名单免检的**理由**所依赖的规则必须还在（实测过：把 `.stats-month button`
+   改名之后白名单仍绿）；③ 抽取扩到 `className = '…'` 与 `classList.add/remove/toggle('…')`（仓库里实测
+   22 处、11 个类名，此前完全不受检查）。为此给核验脚本加了 `--app-file` 参数（⑭ 扫的是整个 `app/`
+   目录，它的变异必须能覆盖到目录里的某一个文件），并让 self-test 的 fakeRoot 支持指定改哪个文件
+   （`styles/` 里某条规则被删改走不了 `--css` 的覆盖）。**新增变异 M21 / M22 / M23 各抓住一条**；
+   M22 第一版没抓住，原因是白名单理由的正则太松被 `.stats-month button:disabled` 骗过去了——收紧要
+   「button 后面直接跟 `{`」之后才红（这条教训写在 `CLASS_WHITELIST` 的注释里）。
+3. **⑭ 的边界声明与实测对齐**：拼接类名**是误报、不是漏检**（实测 `class: 'zz-concat-' + x` → 报
+   「zz-concat- 没有规则」而红）；`dataset: { class: 'x' }` 会被当成 CSS 类名而**假红**（构造出来实测过，
+   现在抽取前先挖掉；仓库里这种写法 0 处）；模板串里的 `${}` 与变量抽不到（模板串在仓库里实测 0 处）；
+   `setAttribute('class', …)` 也不抽（仓库里实测 0 处）；下限只挡「整体塌掉」——把 3 处 `class:`
+   写成 `class :` 实测 174→171，仍然绿。
+4. **两处措辞**：缩略图「为什么不自建 URL」的理由链收窄——「误 revoke 会让背景层消失」只适用于
+   「面板去 revoke 那个共享 URL」这种写法，真正否定自建方案的是「每次重绘都要 revoke 上一个、漏一次
+   多一个 URL 条目」；并补一句「『不要 revoke』只有注释约束、没有机制」。照片说明里的「压到长边 1600
+   像素」改成「最长边**最多** 1600 像素」（`image-scale.js` 对最长边已经 ≤1600 的图**不放大**，实测那句
+   `if (longest <= edge) return { … scale: 1 }`）。
 
 ---
 
