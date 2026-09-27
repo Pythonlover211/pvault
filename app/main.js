@@ -30,7 +30,7 @@ function renderTabBar(active) {
 // .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。兜住之后**不再重试**：
 // themeReady 从此 settled，本次页面生命周期里主题就停在「DOM 上 0 个变量、外观走 CSS 兜底」的状态、
 // 要刷新才恢复（典型触发是 db.js 的 onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，
-// 主题不会。任务 11 接上「外观与背景」面板之后这条会变窄：用户点一次皮肤或深浅就会 paint() 把整条写出去）。
+// 主题不会。setPreset / setMode 的调用方只有外观面板（app/ui/appearance-sheet.js，任务 11 建、入口任务 12 接）：点一次皮肤或深浅就会 paint()）。
 // 代价见 theme-store.js 的 initTheme。
 let themeReady = null;
 
