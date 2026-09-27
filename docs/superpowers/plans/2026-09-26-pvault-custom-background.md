@@ -1337,8 +1337,12 @@ export function currentTheme() {
  *
  * **改这个函数时要整条守住这份合同**：themeCssVars 返回多少个键就写多少个（不筛、不挑），
  * 三个 dataset 一个不少。少写一个变量的后果不是「没变化」而是「上一套皮肤的值留在 DOM 上」——
- * styles/base.css 的 :root 兜底清单里没有 --scrim-rgb 这类变量，从深色切回浅色时它会留着
- * 深色那套的 '0,0,0'，于是浅色皮肤 + 背景照片时遮罩发黑、字压不住，而界面上零报错。
+ * 从深色切回浅色时 --scrim-rgb 会留着深色那套的 '0,0,0'，于是浅色皮肤 + 背景照片时遮罩发黑、
+ * 字压不住，而界面上零报错。styles/base.css 的 :root 里**有** --scrim-rgb 的兜底（任务 9 加的），
+ * 但它救不了这条路：兜底只在「这个变量从未被写过」时有值，而残留恰恰是「写过之后又漏写」，
+ * inline style 压过样式表（见下面那段）。退一步说，真走到「从未被写过」那条路（比如 paint 的
+ * 循环漏掉它），它给的也是浅色那一份，深色档下遮罩会发白而不是发黑。所以它只是**部分掩盖**
+ * 了这个问题，没有消除它。
  * 这份合同眼下只有注释在守：tests/theme.test.js 钉住的是 themeCssVars 的键集与色板的键集，
  * 没有一条测试看得见 paint 的循环本身；手动清单里那三条 Console 核对是唯一的兜底。
  *
@@ -1690,27 +1694,84 @@ git commit -m 'feat(theme): 背景照片的压缩、存取与遮罩调节'
 
 - [ ] **步骤 1：在 `:root` 里补兜底变量**
 
-在 `styles/base.css` 的 `:root` 块末尾（`color-scheme` 那一行之前）加：
+在 `styles/base.css` 的 `:root` 块末尾（`color-scheme` 那一行之前）加（下面这一段与
+`styles/base.css` **逐字符一致**，任务 9 的静态核对脚本会比对这两处，不要只改一边）：
 
 ```css
-  /* 背景照片相关。JS 没跑完的那一帧、或主题初始化失败时，这几个值必须让整层「等于不存在」，
-     否则会看到一块纯黑或纯白的遮罩盖住整个 app。 */
+  /* 背景照片相关（最终都落在下面 body::before 那一层）。这四条只在对应的变量**从未被写过
+     inline** 时生效——JS 还没跑完的那一帧，或 initTheme 失败时（那种情况下 <html> 上是
+     0 个变量，页面照常渲染、只是外观走 CSS 默认）。兜底值必须让那一层等于不存在：
+     这里若写成一个真遮罩或真色块，那一帧就会看到一整块遮罩盖住整个 app。
+     两个 none 与「两个都没写过」画出来是一样的——var() 不带回退值，谁缺一个都会让整条
+     background-image 在 computed-value 求值时失效、两层一起没。所以这份兜底不改变默认
+     状态的渲染结果：applyPhoto 在写变量之前就抛错时（库里那张图读不出来），DOM 上同样
+     既没有 --bg-image、也没有 --bg-scrim，走的就是「两个都没写过」这一路。
+     --scrim-rgb 与 --scrim-a 是另一回事：消费它们的只有 JS 写进 inline style 的那条
+     表达式（theme-store.js 的 setPhotoVars）；styles/ 与 app/ 里没有第二处
+     var(--scrim-rgb) / var(--scrim-a)（规格与计划文档里有同名文本，那些不是消费者）。
+     --bg-scrim 的兜底是字面量 none，不引用它们。所以兜底这两个属于防御性动作，在当前
+     代码里几乎不产生可见效果：有那条表达式就说明 setPhotoVars 跑过，它自己就写 --scrim-a；
+     --scrim-rgb 则由 paint() 写，而 paint() 在 initTheme 里跑在 applyPhoto 之前。
+     两条各自的情况：
+       · --scrim-rgb 只在「这个键从头到尾没被 inline 写过、而 --bg-scrim 那条表达式已经写进
+         DOM 了」时才有可见效果（paint() 的循环把它漏掉，或本次会话里 paint() 一次都没成功
+         跑完、用户仍然选了照片）。那时没有兜底就是整条 background-image 失效（照片与遮罩
+         一起没），有兜底至少留下一层浅色遮罩。
+       · --scrim-a 连这条路径都没有：要写下那条表达式，setPhotoVars 里两行 setProperty 就会
+         一起跑完（自定义属性的值不做校验，这两行之间不会抛）。它在这里的作用只是把
+         OVERLAY_DEFAULT 这个默认值在 CSS 里留一份。
+     两条都救不了「写过之后再漏写」的残留：inline 值优先于样式表里的 :root，真漏写时 DOM
+     上留着的是上一次写进去的旧值（--scrim-rgb 就是深色那套的 '0,0,0'）——这正是 paint()
+     注释里那句合同的原意，与这里给不给兜底无关。
+     写法与 JS 对齐，免得同一份真相在仓库里出现两种写法：--scrim-rgb 不带空格（JS 色板里
+     就是 '255,255,255'，tests/theme.test.js 的 SHAPES 把它钉成 /^\d{1,3},\d{1,3},\d{1,3}$/）、
+     --scrim-a 带前导 0（scrimAlpha(OVERLAY_DEFAULT) 的结果是 '0.3'，JS 那边 String() 不会
+     写出 '.3'）。这里给的是浅色那份，与 --bg 的兜底同一个道理：@media 的深色块里不补
+     --scrim-rgb（JS 没跑完那一帧它没有作用对象——--bg-scrim 也是 none，遮罩层根本不存在），
+     真正的极性由 JS 按 resolved 的深浅写。 */
   --bg-image: none;
   --bg-scrim: none;
-  --scrim-rgb: 255, 255, 255;
-  --scrim-a: .3;
+  --scrim-rgb: 255,255,255;
+  --scrim-a: 0.3;
 ```
+
+三处与初版计划的写法不同，都是刻意的：
+
+1. **`--scrim-rgb` 不带空格**。`rgba(255, 255, 255, .3)` 与 `rgba(255,255,255,.3)` 等价，所以这不是
+   渲染问题，是「同一份真相的形态」问题：`app/theme.js` 的色板（运行时唯一的真相）写的是无空格
+   那一份，`tests/theme.test.js` 的 `SHAPES` 也用 `/^\d{1,3},\d{1,3},\d{1,3}$/` 把它的形状钉成
+   无空格。CSS 兜底若另写一种，拿兜底与 JS 输出对表的人只能把比对放松成「忽略空格」——那等于
+   把守卫调松。规格 §5.2 与 §6.2 里写的 `255,255,255` 本来就是无空格那一份，这一改是让
+   `base.css` 与它们对齐。
+2. **`--scrim-a` 写 `0.3` 而不是 `.3`**：同上，JS 那边 `String(scrimAlpha(OVERLAY_DEFAULT))`
+   的结果就是 `'0.3'`。
+3. **注释改准了**。初版那句「这几个值必须让整层等于不存在，否则会看到一块纯黑或纯白的遮罩
+   盖住整个 app」的因果不成立：`--bg-image`/`--bg-scrim` 缺失时，`var()` 没有回退值会让整条
+   `background-image` 在 computed-value 求值时失效、两层一起没——**不写兜底也不会**冒出遮罩。
+   这句话真正要防的是「兜底值本身写成真遮罩或真色块」。另外 `--scrim-rgb` 与 `--scrim-a`
+   的消费点在 `theme-store.js` 写进 inline style 的那条表达式里，CSS 里没有
+   `var(--scrim-rgb)` / `var(--scrim-a)`——所以那两条兜底在当前代码里几乎不产生可见效果，
+   只在「这个键从未被 inline 写过、而 `--bg-scrim` 的表达式已经写进 DOM」时才有意义。
+   这两条论证如实写在 `styles/base.css` 的注释里，与上面这段代码块一样逐字符一致。
 
 - [ ] **步骤 2：加背景层**
 
-在 `body { … }` 规则之后追加：
+在 `body { … }` 规则之后追加（同样与 `styles/base.css` 逐字符一致）：
 
 ```css
 /* 背景照片层。
    为什么用伪元素而不是给 body 加 background-image：body 的背景要与 --surface 的卡片、
    遮罩的层叠顺序分开管，伪元素能单独拿到 z-index: -1。
-   为什么 z-index 是负的：装饰层不参与内容层叠，负值让它在 body 背景之上、
-   在所有真实内容之下——比给内容逐个抬 z-index 干净得多。 */
+   为什么 z-index 是负的：装饰层不参与内容层叠，负值让它在 body 背景之上、在所有真实内容
+   之下——比给内容逐个抬 z-index 干净得多。为什么负值不会把它藏到 --bg 底下：body::before
+   的层叠上下文是根元素（body 上没有 position / z-index / transform，不建立自己的层叠
+   上下文），而 html 自己没有背景——body 的 background: var(--bg) 按 HTML 的规则被传播到
+   canvas、画在最底层，body 盒子上反而不再画它。所以这一层落在底色之上、内容之下。
+   两层背景叠在一起：第一层是遮罩（--bg-scrim）、第二层是照片（--bg-image）；运行时由
+   JS 写这两个变量（theme-store.js 的 setPhotoVars），这里一个色值都不写。
+   没有照片时两个都是 none（JS 写 none，或走 :root 的兜底），整层等于不存在。
+   不要加 background-attachment: fixed：移动端 WebView 对它的 cover 处理不一致，
+   而这个伪元素本来就是 position: fixed，不随滚动移动。 */
 body::before {
   content: '';
   position: fixed;
@@ -1727,11 +1788,21 @@ body::before {
 
 **不要**用 `background-attachment: fixed`：移动端 WebView 对它的 `cover` 处理不一致，而这个伪元素本来就是 `position: fixed`，不随滚动移动。
 
-- [ ] **步骤 3：肉眼确认默认状态没变化**
+- [ ] **步骤 3：静态核对默认状态没变化（本机没法渲染，这一步改成静态核对）**
 
-起本地服务：`D:\node.exe scripts/dev-server.js`，打开首页。
+这台机器上**没法在浏览器里看一眼**：`vision_html_screenshot` 报 `puppeteer-core is not installed`，
+系统 Edge 的 headless 又被沙箱的命名管道权限挡住。所以「肉眼确认」挪到任务 15 的真机验收，
+这里做静态核对——**默认状态**（没有照片、JS 还没跑）下逐项确认：
 
-预期：**与改动前完全一样**（没有照片时 `--bg-image` 与 `--bg-scrim` 都是 `none`，两层都是空）。
+1. `:root` 里 `--bg-image` 与 `--bg-scrim` 都是 `none`（改动前是「两个都没写过」，两者画出来
+   都是不画：`var()` 没有回退值，缺一个就让整条 `background-image` 在 computed-value 求值时失效）；
+2. `body::before` 里 `background-image: var(--bg-scrim), var(--bg-image)` 替换后是 `none, none`，
+   合法、两层都不画，整层等于不存在；
+3. `z-index: -1`、`pointer-events: none`、`content: ''`、`position: fixed; inset: 0` 都在；
+4. `styles/` 里没有第二条 `body::before` 规则（不会与别的层打架）。
+
+这四条本身就是可脚本化的：任务 9 的静态核对脚本（`var(--…)` 两个方向的交叉比对 + 规格 §6.2
+与实现的逐属性比对）覆盖了它们，人工只剩「读一遍确认逻辑没问题」。
 
 - [ ] **步骤 4：Commit**
 
