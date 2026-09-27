@@ -57,8 +57,12 @@ export function currentTheme() {
 /**
  * 当前背景图在用的那个 blob URL（没有照片时是 null）。给「外观与背景」面板的缩略图用。
  * **调用方不要 revoke 它**：背景层正拿它当 --bg-image，释放掉背景就没了；它的生命周期归本模块
- * （setPhotoVars 在换图 / 移除时释放上一个）。让面板自己再 createObjectURL 一份，等于同一张图
- * 两份 URL、两份 revoke 责任——多一个泄漏点，而不是少一个。
+ * （setPhotoVars 在换图 / 移除时释放上一个）。
+ * 为什么让调用方共享这一个、而不是自己 createObjectURL 一份：面板的缩略图**每次重绘都要一个新 src**，
+ * 自建就得在每次重绘前 revoke 上一个——漏一次多一个 URL 条目，而这里重绘很频繁（每点一次皮肤 / 深浅
+ * 都会重建面板）。共享这一份的 revoke 责任只有一处。
+ * **这条「不要 revoke」是注释约定，没有运行时机制拦着**：真要防住得每次现建一个副本、由调用方负责
+ * 还回来，代价大于收益，所以只写在这里。
  */
 export function currentPhotoUrl() {
   return photoUrl;
