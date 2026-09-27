@@ -66,7 +66,13 @@
 // （main → theme-store），而 theme-store 又静态依赖 theme（theme-store → theme），两个都在首屏依赖链上，
 // 于是两个一起进，不等任务 14 —— 与 v14（file-info.js，同样是间接依赖）同一个形状、同一份理由：
 // 白名单不跟产生依赖的那次提交一起走，已装旧缓存的设备离线启动就会断在这一环（机制见开头那一段）。
-// 外观功能剩下的文件：ui/appearance-sheet.js 与 appearance.css 还没建，它们进清单是任务 14 的事。
+// 任务 11（外观面板）往清单里加了 appearance.css，**没有**再 +1 版本号：index.html 新挂了它的
+// <link>，它从此是首屏静态依赖（漏了它离线白屏，机制见开头那一段），所以不等任务 14；而 v17 只在
+// 还没发布的分支上、没有任何设备装着它，按上面那条例外的边界（「已经在设备上服役过的版本，改 ASSETS
+// 就得 +1」）还不必升版——`addAll` 写的还不是一份服役中的缓存。
+// 外观功能剩下的 ui/appearance-sheet.js **这次没进**：本步只是把它建出来，还没有任何模块 import 它
+// （设置入口在任务 12 才接上），它此刻不在首屏依赖链上，进清单只是白存一份。它必须在
+// settings-sheet.js import 它的那一次提交里进来——与上面 v14 / v16 / v17 同一条纪律。
 const CACHE = 'pvault-v17';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
@@ -79,6 +85,7 @@ const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
+  './styles/appearance.css',
   './styles/base.css',
   './styles/components.css',
   './styles/invoice.css',
