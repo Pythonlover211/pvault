@@ -1,0 +1,115 @@
+/* 外观与背景面板的样式。变量全部来自主题（--surface / --accent / …），
+   所以这几十行在五套皮肤 × 深浅下都自动成立，不需要任何一套单独的特例。 */
+
+.theme-row {
+  display: flex;
+  gap: 8px;
+}
+
+.theme-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* 选中的皮肤：描边 + 一点点底色。不用阴影：面板本身就是浮层，
+   再叠阴影会让「哪张被选中」变得要靠猜。 */
+.theme-card.on {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.theme-chip {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.theme-name {
+  font-size: var(--font-xs);
+}
+
+.seg-row {
+  display: flex;
+  gap: 8px;
+}
+
+.seg {
+  flex: 1;
+  padding: 9px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-md);
+  cursor: pointer;
+}
+
+.seg.on {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.photo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 真正的 file input 藏起来：它的原生外观在五套皮肤下都没法看，
+   而它必须留在 DOM 里（用按钮的 click() 触发）。 */
+.hide-file {
+  display: none;
+}
+
+.ov-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.ov-label {
+  font-size: var(--font-sm);
+  color: var(--text-2);
+}
+
+.ov-range {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* 数值单独占一列定宽，拖动时右侧数字变化不会把左边滑块挤来挤去。 */
+.ov-value {
+  width: 40px;
+  text-align: right;
+  font-size: var(--font-sm);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.hint-text {
+  font-size: var(--font-xs);
+  color: var(--text-2);
+  line-height: 1.6;
+}
