@@ -70,9 +70,10 @@
 // <link>，它从此是首屏静态依赖（漏了它离线白屏，机制见开头那一段），所以不等任务 14；而 v17 只在
 // 还没发布的分支上、没有任何设备装着它，按上面那条例外的边界（「已经在设备上服役过的版本，改 ASSETS
 // 就得 +1」）还不必升版——`addAll` 写的还不是一份服役中的缓存。
-// 外观功能剩下的 ui/appearance-sheet.js **这次没进**：本步只是把它建出来，还没有任何模块 import 它
-// （设置入口在任务 12 才接上），它此刻不在首屏依赖链上，进清单只是白存一份。它必须在
-// settings-sheet.js import 它的那一次提交里进来——与上面 v14 / v16 / v17 同一条纪律。
+// ui/appearance-sheet.js 是同一个面板的另外半个文件，由任务 12 补上，**同样没有 +1**（边界与它相同：
+// v17 仍未发布）。它与 appearance.css 进清单的路径不同：不是被 index.html 直接引用，而是任务 12 让
+// settings-sheet.js 静态 import 它（main → 设置面板 → 外观面板），它由此成为首屏静态依赖，所以白名单
+// 跟产生依赖的那一次提交一起走，不等任务 14 —— 与上面 v14 / v16 / v17 同一条纪律。
 const CACHE = 'pvault-v17';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
@@ -124,6 +125,7 @@ const ASSETS = [
   './app/vault-model.js',
   './app/vault-store.js',
   './app/ui/accounts-view.js',
+  './app/ui/appearance-sheet.js',
   './app/ui/backup-view.js',
   './app/ui/budget-view.js',
   './app/ui/categories-view.js',
