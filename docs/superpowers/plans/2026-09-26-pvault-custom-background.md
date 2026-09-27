@@ -2070,25 +2070,30 @@ let themeReady = null;
 **这一节里的行号是任务 10 当时的快照，核对时以锚点描述为准。** 任务 11 收尾时逐条实测过：`main.js` 那批
 仍然逐条对得上（那一步只改了它第 33 行那一句注释、行数没变），而 `sw.js` 的两处紧接着就失效了
 （同一步往 `sw.js` 的注释里加了 5 行）——它们已经改成锚点定位、不再写死行号。行号在这种文件上是消耗品：
-**能写锚点就别写行号**。
+**能写锚点就别写行号**。**任务 12 又验证了一次这条规矩**：那一步把 `main.js` 第 33 行那句注释从 1 行补成
+3 行（`setPreset / setMode` 的调用方接上了），于是 `let themeReady` 从第 35 行挪到第 37 行、那次
+`await (themeReady ??= …)` 从第 44 行挪到第 46 行（实测：`sw.js` 的 `const CACHE` 也从第 76 行挪到第 77 行）
+——下面第 1 / 3 / 4 条里写死的行号**当场全部失效**，已改成锚点描述；**核对时不要拿行号去对，拿锚点**。
+（第 5 条那两处本来就是锚点定位，任务 12 之后仍对得上：`'./app/theme-store.js'` 之后紧跟 `'./app/theme.js'`。）
 
-1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：第 44 行的 `await (themeReady ??= …)` 在第 56 行
-   （视图渲染失败时那次 `mount(view, …)`）与第 61 行（`mount(app, view, renderTabBar(id))`）之前；
-   各视图内部的 `mount(root, …)` 都由第 54 行的 `await fn(view)` 间接调用，同样晚于第 44 行。
+1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：`render()` 里那行 `await (themeReady ??= …)`
+   （锚点：`await (themeReady ??= initTheme().catch(`）在 `mount(view, …)`（视图渲染失败那条路）与
+   `mount(app, view, renderTabBar(id))` 之前；各视图内部的 `mount(root, …)` 都由那行 `await fn(view)`
+   间接调用，同样晚于它。
 2. **`.catch` 兜底在**：`render()` 里那次主题初始化整个表达式就是
    `initTheme().catch(err => { console.error('主题初始化失败，用默认外观', err); })`——主题初始化失败
    既不会冒成未处理的拒绝，也不会挡住渲染。
-3. **只初始化一次**：`themeReady` 在 `main.js` 的**代码**里只出现 **2 处**——第 35 行的
-   `let themeReady = null;` 与第 44 行的 `await (themeReady ??= …)`（`??=` 同时是读与写，同一个变量名
-   只写一次，所以第 44 行只算一处）。**口径要说清**：`Select-String -Path app\main.js -Pattern themeReady`
-   返回的是 **3 行**——注释里「themeReady 从此 settled…」那句也含这个词（它现在在第 31 行；**别拿行号
-   去找它**，任务 11 在附近加过一句话，行号就是这么飘的）。文本层的行数与
+3. **只初始化一次**：`themeReady` 在 `main.js` 的**代码**里只出现 **2 处**——`let themeReady = null;` 那行
+   与上面那次 `await (themeReady ??= …)`（`??=` 同时是读与写，同一个变量名只写一次，所以那行只算一处）。
+   **口径要说清**：`Select-String -Path app\main.js -Pattern themeReady`
+   返回的是 **3 行**——注释里「themeReady 从此 settled…」那句也含这个词（**别拿行号
+   去找它**，任务 11 与任务 12 都在附近加过话，行号就是这么飘的）。文本层的行数与
    代码层的处数不是一回事，`tests/boot-order.test.js` 那条断言数的是**剥掉注释之后**的代码行。
    `??=` 是「读-判断-写」的同步整体，并发的第二次 `render()` 只会复用同一个 promise，不会把 `initTheme()`
    跑两遍。
-4. **没有 TDZ 陷阱**：`let themeReady` 在第 35 行，而 `render()` 的第一次调用来自文件末尾的
-   `onChange(render)`（第 168 行——`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
-   所以第 44 行那个 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
+4. **没有 TDZ 陷阱**：`let themeReady = null;` 那行在 `render()` 之前，而 `render()` 的第一次调用来自文件
+   末尾的 `onChange(render)`（`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
+   所以那行 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
    冷启动第一帧会是 `ReferenceError`，而不是「主题先行」。
 5. **`theme-store.js` 与 `theme.js` 都在 `sw.js` 的 `ASSETS` 里、且路径与磁盘一致**：清单里那两条是
    `'./app/theme-store.js'` 与**紧跟其后**的 `'./app/theme.js'`（ASC 里 `'-'`(0x2D) < `'.'`(0x2E)，
@@ -2918,10 +2923,12 @@ git commit -m 'docs(appearance): 同步任务 12（入口、白名单、口径�
 **本步实录（做完之后回填，数字都可复现）**
 
 - **镜像核对**：五处代码块（`settings-sheet.js` 的两段、`main.js` 的那段注释、`theme-store.js` 的 JSDoc、
-  `sw.js` 的 `ASSETS` 条目）都按**工作区的当前内容**（行尾按 `\n` 归一化后）逐字符比过——五处全部一致；
-  比对用的探针是一支临时的 `.mjs`（跑完即删，不留在仓库里）。白名单那条还与任务 14 那段代码块的位置约定
-  比过一次：`appearance-sheet.js` 在 `accounts-view.js` **之后**（`app/ui/` 段内 ASC），**原计划写的「之前」
-  是错的、照抄会破坏段内顺序，实现时按 ASC 改成了「之后」**，任务 14 那一步的文字已同步改准。
+  `sw.js` 的 `ASSETS` 条目）都按 **HEAD 的 git blob**（`git show HEAD:<文件>`，行尾是 LF）逐字符比过——
+  五处全部一致；比对用的探针是一支临时的 `.mjs`（跑完即删，不留在仓库里）。**方法上踩过一次坑**：探针里
+  不能直接 `execFileSync('git', …)`（本机沙箱下管道捕获子进程输出会 EPERM），改成 PowerShell 那侧
+  `git show … | node 探针 <锚点> <标签>`、探针从 stdin 读内容才跑通。白名单那条还与任务 14 那段代码块的
+  位置约定比过一次：`appearance-sheet.js` 在 `accounts-view.js` **之后**（`app/ui/` 段内 ASC），**原计划写的
+  「之前」是错的、照抄会破坏段内顺序，实现时按 ASC 改成了「之后」**，任务 14 那一步的文字已同步改准。
 - **白名单**：`ASSETS` 加了 `'./app/ui/appearance-sheet.js'`，`CACHE` 留在 `'pvault-v17'`（判断见上面连带
   改动 1）。任务 14 步骤 2 那支存在性脚本在任务 11 实测是 59 条，本步之后是 **60 条**（`'./'` 不计入）。
 - **两个守卫的实测**：
