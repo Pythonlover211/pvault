@@ -1171,16 +1171,19 @@ git commit -m 'chore(sw): canvas-image.js 提前进预缓存白名单，避免�
 
 **第二个 commit 不能挪到任务 14**：本步让 `image-store.js` 静态依赖 `canvas-image.js`，而 SW 是 cache-first——
 清单里没有它，已装旧缓存的设备离线启动就会断在 `main → invoice-view → invoice-editor → image-store →
-canvas-image` 这一环：那一个 module 404、import 链一断是**整个 app 白屏**（不只是发票面板）。这与 v14 那次
+canvas-image` 这一环：那个模块加载不了（缓存未命中 → 离线回退 `index.html` → 模块脚本被 MIME 检查拒绝，
+机制写在 `sw.js` 开头那段；**不是 404**），import 链一断是**整个 app 白屏**（不只是发票面板）。这与 v14 那次
 （`file-info.js`）是同一条规矩：**白名单必须跟产生依赖的那次提交一起走，不能等到收尾再补**。具体改法：
 `ASSETS` 加 `'./app/canvas-image.js'`（排在 `budget.js` 与 `chart.js` 之间，保持 ASC 书写风格）、`CACHE`
-升到 `'pvault-v16'` 并写下这一版的说明。外观功能其余四个文件（theme / theme-store / ui/appearance-sheet /
-appearance.css）此刻还不存在：`theme-store.js` 由任务 10 进清单（那一步让 `main.js` 静态依赖它），其余三个仍由
-任务 14 负责。
+升到 `'pvault-v16'` 并写下这一版的说明。外观功能其余的文件此刻还不存在：`theme-store.js` 与 `theme.js`
+由任务 10 一起进清单（那一步让 `main.js` 静态依赖 `theme-store`，而 `theme-store` 又静态依赖 `theme`），
+`ui/appearance-sheet.js` 与 `appearance.css` 仍由任务 14 负责。
 
-**白名单要全量校验一遍**（`cache.addAll` 是原子的，一个 404 就让整次 install 失败，表现是"离线打开白屏"）：
-把 `sw.js` 里所有 `'./…'` 路径抽出来逐个 `Test-Path`。任务 14 步骤 2 里有现成脚本，这里跑完的实测结果是
-**`全部存在，共 56 个`**（`ASSETS` 里是 57 个条目，其中 `'./'` 不匹配那条正则、脚本不数它）。
+**白名单要全量校验一遍**（`cache.addAll` 是原子的，一个 404 就让整次 install 失败——那时 SW 不激活，
+表现是「离线能力为 0」；而**漏掉一条**的机制完全不同，见 `sw.js` 开头那段）：把 `sw.js` 里的 `'./…'`
+路径抽出来逐个 `Test-Path`。任务 14 步骤 2 里有现成脚本（**任务 10 返工时已把它收紧到 `ASSETS` 切片内**，
+见那一步），这里跑完的实测结果是 **`全部存在，共 56 个`**（`ASSETS` 里是 57 个条目，其中 `'./'`
+不匹配那条正则、脚本不数它）。
 
 - [ ] **步骤 5：发票图片的回归验证（不能省）**
 
@@ -1941,8 +1944,11 @@ git commit -m 'feat(styles): body::before 背景照片层'
 ## 任务 10：`main.js` 首屏接入（不闪色）
 
 **文件：**
-- 修改：`app/main.js`
-- 修改：`sw.js`（步骤 4：`theme-store.js` 进预缓存白名单、缓存版本升到 `pvault-v17`）
+- 修改：`app/main.js`（步骤 1、2）
+- 修改：`app/theme-store.js`（步骤 1 末：`initTheme()` 的文档注释——本步让它变成了假话）
+- 修改：`sw.js`（步骤 4：`theme-store.js` 与 `theme.js` 一起进预缓存白名单）
+- 创建：`tests/boot-order.test.js`（步骤 3 末：首屏启动顺序与预缓存清单的守卫）
+- 修改：`scripts/check-theme-css.mjs`（步骤 3 末：加 ⑬ 与变异 M18）
 
 - [ ] **步骤 1：加 import 与模块级 promise**
 
@@ -1954,20 +1960,38 @@ import { initTheme } from './theme-store.js';
 
 加在 `render()` 函数之后、那段讲并发渲染的注释**之前**——也就是 `let renderSeq = 0;` 之前，但**不要**插进
 那段注释与它要说明的那行变量之间（`renderSeq` 在第 33 行，它上面那三行注释讲的是它为什么要存在，
-插进去就散了）。实测落在第 28 行：
+插进去就散了）。实测落在第 32 行：
 
 ```js
-// 主题必须在任何 mount 之前应用，否则每次冷启动都会「先闪一下默认色、再变成选中的皮肤」。
+// 主题必须在 render() 这条路径上先于它的 mount 应用，否则冷启动会「先闪一下默认色、再变成选中的皮肤」。
+// 不写成「任何 mount」「每次冷启动」：默认皮肤下闪的就是它自己（看不出差别，任务 15 的清单要求拿它当
+// 对照组）；而 openFromShortcut() 直接开录入面板的那次 mount 不走 render()，与 initTheme() 并发。
 // 为什么不放在文件末尾直接 await：onChange(render) 是同步注册、可能同步触发第一次渲染，
-// 把它挂在渲染路径上，无论谁先触发都保证「主题先行」。
-// .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。
+// 把它挂在渲染路径上，两条路谁先到都保证「这一次 render 的 mount 在主题之后」。
+// .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。兜住之后**不再重试**：
+// themeReady 从此 settled，本次页面生命周期里主题就停在默认值、要刷新才恢复（典型触发是 db.js 的
+// onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，主题不会）。代价见 theme-store.js 的 initTheme。
 let themeReady = null;
 ```
 
+（上面这段注释本身也是本步改过的，返工那轮：原话是「主题必须在**任何** mount 之前应用」「**每次**冷启动
+都会先闪一下」「**无论谁先触发**都保证主题先行」——三个全称都有反例，见下面步骤 3 的「核不到什么」。
+现在改成限定式：「在 `render()` 这条路径上」先于「这一次 `render()` 的 `mount`」，并补上了 `.catch`
+兜住之后**不再重试**的语义。）
+
+**同一份提交里还要改准 `app/theme-store.js` 的 `initTheme()` 文档注释**（注释诚实性：本步让它变成假话）。
+原文写着「少了那个 catch，一次主题失败就会升级成整页『页面加载失败』」——**实测是错的**：把 `main.js` 的
+`.catch` 删掉（变异 B，见下面步骤 3 的守卫小节）之后 `mount(app, …)` 一次都不执行、整页纯空白；那句
+「页面加载失败」在 `try` 内（它走的是视图渲染失败那条路），主题失败根本到不了它。改后的措辞是
+「一次 mount 都不会发生：页面纯空白，控制台只有一条未处理的拒绝」，并补两条本步新产生的语义：
+兜住之后不再重试（一次失败＝本次页面生命周期停在默认外观、刷新才恢复，典型触发是 `db.js` 的 `onblocked`）、
+以及 `initTheme()` 现在是首屏挂载的前置依赖（含它到底做几次 IndexedDB 操作——**不含解码**，
+`decode` 只在 `setPhoto` 那条路上）。
+
 - [ ] **步骤 2：在 `render()` 里 await 它**
 
-`render()` 函数体开头（`const seq = ++renderSeq;` 之后、`const renderers = …` 之前）插入（实测落在第 37 行；
-本函数里那两次 `mount()` 在第 49 / 54 行，都在它之后）：
+`render()` 函数体开头（`const seq = ++renderSeq;` 之后、`const renderers = …` 之前）插入（实测落在第 41 行；
+本函数里那两次 `mount()` 在第 53 / 58 行，都在它之后）：
 
 ```js
   await (themeReady ??= initTheme().catch(err => {
@@ -1991,37 +2015,39 @@ let themeReady = null;
 
 这里做静态核对。逐条都是文本层的事实，命令都以 `E:\codex-project\pvault` 为工作目录、可复现：
 
-1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：第 37 行的 `await (themeReady ??= …)` 在第 49 行
-   （视图渲染失败时那次 `mount(view, …)`）与第 54 行（`mount(app, view, renderTabBar(id))`）之前；
-   各视图内部的 `mount(root, …)` 都由第 47 行的 `await fn(view)` 间接调用，同样晚于第 37 行。
+1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：第 41 行的 `await (themeReady ??= …)` 在第 53 行
+   （视图渲染失败时那次 `mount(view, …)`）与第 58 行（`mount(app, view, renderTabBar(id))`）之前；
+   各视图内部的 `mount(root, …)` 都由第 51 行的 `await fn(view)` 间接调用，同样晚于第 41 行。
 2. **`.catch` 兜底在**：第 37–39 行整个表达式就是
    `initTheme().catch(err => { console.error('主题初始化失败，用默认外观', err); })`——主题初始化失败
    既不会冒成未处理的拒绝，也不会挡住渲染。
-3. **只初始化一次**：`themeReady` 在 `main.js` 里只出现 **2 行**——第 28 行的 `let themeReady = null;` 与
-   第 37 行的 `await (themeReady ??= …)`（`Select-String -Path app\main.js -Pattern themeReady` 可复现，
-   返回的就是这 2 行；`??=` 同时是读与写，同一个变量名只写一次，所以第 37 行只算一处）。
+3. **只初始化一次**：`themeReady` 在 `main.js` 里只出现 **2 行**——第 32 行的 `let themeReady = null;` 与
+   第 41 行的 `await (themeReady ??= …)`（`Select-String -Path app\main.js -Pattern themeReady` 可复现，
+   返回的就是这 2 行；`??=` 同时是读与写，同一个变量名只写一次，所以第 41 行只算一处）。
    `??=` 是「读-判断-写」的同步整体，并发的第二次 `render()` 只会复用同一个 promise，不会把 `initTheme()`
    跑两遍。
-4. **没有 TDZ 陷阱**：`let themeReady` 在第 28 行，而 `render()` 的第一次调用来自文件末尾的
-   `onChange(render)`（第 161 行——`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
-   所以第 37 行那个 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
+4. **没有 TDZ 陷阱**：`let themeReady` 在第 32 行，而 `render()` 的第一次调用来自文件末尾的
+   `onChange(render)`（第 165 行——`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
+   所以第 41 行那个 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
    冷启动第一帧会是 `ReferenceError`，而不是「主题先行」。
-5. **`theme-store.js` 在 `sw.js` 的 `ASSETS` 里、且路径与磁盘一致**：清单里那条是 `'./app/theme-store.js'`
-   （第 106 行），磁盘上是 `app/theme-store.js`；任务 14 步骤 2 那支存在性校验脚本跑出来是
-   `全部存在，共 57 个`（实测）。
-6. **`CACHE` 只有一处常量声明、已是 v17**：`const CACHE = 'pvault-v17'`（第 60 行）。
-7. **首屏静态依赖链的闭包只剩一个缺口**（本步实测）：从 `app/main.js` 出发沿 `import` 走一遍，闭包共
-   **50 个模块**，唯一不在 `ASSETS` 里的是 `app/theme.js`——它正是本步**新引入**的传递依赖
-   （`main → theme-store → theme`），而计划把它的清单落点排在任务 14。这不是本步顺手能改掉的数字，
-   取舍写在下面「本步与任务 14 的边界」里。
+5. **`theme-store.js` 与 `theme.js` 都在 `sw.js` 的 `ASSETS` 里、且路径与磁盘一致**：清单里那两条是
+   `'./app/theme-store.js'`（第 107 行）与紧跟其后的 `'./app/theme.js'`（第 108 行——ASC 里
+   `'-'`(0x2D) < `'.'`(0x2E)，所以 `theme-store` 在前），磁盘上两份都在；任务 14 步骤 2 那支存在性
+   校验脚本跑出来是 `全部存在，共 58 个`（实测）。
+6. **`CACHE` 只有一处常量声明、已是 v17**：`const CACHE = 'pvault-v17'`（第 62 行）。
+7. **首屏资源集合与 `ASSETS` 已经完全对齐**（本步实测）：从 `index.html` 里那 8 条 `./` 引用出发
+   （`manifest.webmanifest`、`icons/icon.svg`、5 个 CSS、`app/main.js`），沿 `import` 走一遍闭包，
+   得到首屏资源集合 **57 条**（其中 50 个 `.js`，含本步新引入的传递依赖 `main → theme-store → theme`）。
+   `ASSETS` 是 **59 条**，两者差的正好是 `'./'` 与 `'./index.html'` 这两条**入口自身**——即清单里没有
+   一条是首屏用不上的，反过来首屏也没有一条漏在外面（两个方向都实测过）。
 
 **这一节核不到什么**（与任务 9 那节同一个边界，如实写）：
 
-- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。第 37 行只保证「**内容被挂载之前**
+- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。第 41 行只保证「**内容被挂载之前**
   主题已应用」；在它之前浏览器可能已经画过一到几帧，那几帧的底色走 `styles/base.css` 的 `:root` 兜底
   （默认皮肤的浅 / 深），不是用户选的那套。**改前改后都是这样**——区别在于改前连「内容挂载时」都还是
   默认色。这条边界只能靠真机看（任务 15）。
-- 「任何 mount 之前」这个全称**有一个反例**，先列出来再落笔：文件末尾的 `openFromShortcut()`（第 163 行）
+- 「任何 mount 之前」这个全称**有一个反例**，先列出来再落笔：文件末尾的 `openFromShortcut()`（第 167 行）
   在 hash 带 `new=1` 时直接调 `openEntryPanel()`，这条路**不经过** `render()` 的那次 `await`；它自己先
   `await` 一次 IndexedDB 读（`app/ui/entry-panel.js` 第 131 行的 `Promise.all`）再挂载面板，与 `initTheme()`
   是**并发**的，谁先完成没有保证。后果限于「主屏快捷方式冷启动时，面板的第一帧可能还是默认色」；
@@ -2029,72 +2055,135 @@ let themeReady = null;
 - 「主题在任何 mount 之前应用」这句话本身，本步能核的是上面第 1 条那个范围（`render()` 路径）；
   把它读成「app 里一切挂载都晚于主题」是**读过头**了，上面那条反例就是边界。
 
-**本步与任务 14 的边界（一处值得商榷的地方）**
+**`theme.js` 跟本步一起进清单（复审裁定，本步复核后同意）**
 
 本步让 `main.js` 静态 import `theme-store.js`，而 `theme-store.js` 自己静态 import `theme.js`
-（`app/theme-store.js` 第 15 行）。按这个仓库反复写的那条纪律（「白名单必须跟产生依赖的那次提交一起走」，
-见 `sw.js` 的 v14 / v16 两段注释），`theme.js` 本该跟本步一起进清单，计划却把它留在任务 14。
-**本步没有替任务 14 做决定**：清单里只加 `'./app/theme-store.js'` 一条，与任务 14 步骤 1 的
-「只加剩下的这三个文件」、步骤 2 的「任务 10 之后是 57 个」都对得上。缺口本身如实写进了 `sw.js` 的 v17
-注释（什么时候咬人、什么时候自愈、要提前堵该怎么做）。**如果复审决定提前**，改法很小：把
-`'./app/theme.js'` 也加进本步的 `ASSETS`（按 ASC 排在 `theme-store` 之后），本步步骤 4 的预期从 57 变 58，
-任务 14 步骤 1 改成「只加剩下这两个文件」并删掉它代码块里的 `theme.js` 那一行——任务 14 步骤 2 的预期
-60 不变（58 + 2 = 60）。要不要这么挪是任务 10 / 14 的边界划分，留给复审决定。
+（`app/theme-store.js` 第 15 行）——这是**间接依赖**。仓库对间接依赖的规矩是写死的：`sw.js` 的 v14 段
+（`file-info.js` 走的正是 `main → invoice-view → invoice-editor → image-store → file-info` 这条链，
+「必须在消费方 import 之前就位，不能等到收尾再补」）、v16 段（`canvas-image.js`，「所以不等任务 14」），
+还有任务 5 那条：**白名单必须跟产生依赖的那次提交一起走**。两个文件都在首屏依赖链上，就一起进。
+只加 `theme-store.js` 的代价是清楚的：断点并没有被消除，只是从 2 环缩到 1 环（`theme-store → theme`），
+离线白屏照旧——而「装好这份缓存之后第一次打开即离线」对桌面图标启动的 PWA 是常见路径，不是窄窗口。
 
-- [ ] **步骤 4：`theme-store.js` 进预缓存白名单（顺带把新的 `schema.js` 铺到设备上）**
+连带改动（都实测过）：本步步骤 4 的预期从 57 变成 **58**；任务 14 步骤 1 改成「只加剩下这两个文件」
+（`app/ui/appearance-sheet.js`、`styles/appearance.css`），它代码块里 `theme.js` 那一行删掉；
+任务 14 步骤 2 的预期 **60 不变**（58 + 2 = 60）。
 
-**为什么必须跟这一步一起走**：本步让 `main.js` 静态 `import` 了 `theme-store.js`（步骤 1），与任务 5 让
-`image-store.js` 依赖 `canvas-image.js` 是**同一条纪律**——白名单必须跟产生依赖的那次提交一起走，不能等到任务 14
-收尾再补。`cache.addAll` 是原子的：清单里漏了它，已装旧缓存的设备离线启动就断在 `main → theme-store` 这一环，
-一个 module 404、import 链一断就是整个 app 白屏。
+**守卫（本步新增）：`tests/boot-order.test.js` + `scripts/check-theme-css.mjs` 的 ⑬**
+
+**为什么非加不可（实测）**：返工那轮把三个变异逐个做在仓库外的副本上——A 把那次 `await` 挪到
+`mount(app, …)` 之后、B 删掉 `.catch`、C 把 `??=` 改成 `=`——**在那之前全量测试与静态核验都是全绿的**
+（零告警）。原因是 `tests/` 里唯一碰 `main.js` 的是 `dev-server.test.js`（只断言 200 与 MIME），
+而核验脚本当时全文不读 `ASSETS` / `CACHE`。首屏关键路径不能这么裸着走。
+
+新文件做**不依赖 DOM 的文本级断言**（读文件、定位行、按结构断言），六条：
+
+1. `initTheme()` 在代码里只出现一次，且必须写成 `await (themeReady ??= initTheme().catch(…))`
+   （`??=` 与 `.catch` 少一个就红）；
+2. 那次 `await` 的行号 < 第一处 `mount(` 的行号、也 < `mount(app,` 的行号（顺序反了就红）；
+3. `themeReady` 只有「一次声明 + 一次使用」（多一行说明有人在渲染路径上又调了一次）；
+4. `sw.js` 的 `ASSETS` 里有 `'./app/theme-store.js'` 与 `'./app/theme.js'`，`CACHE` 是单处 `const` 声明；
+5. **首屏资源集合 ⊆ `ASSETS`**（`index.html` 的 8 条引用 + 入口的 `import` 闭包，逐个查清单）——
+   这条正是本轮那个缺口的守卫：将来任务 11 / 12 往首屏链上挂新文件时，它也会先红一次；
+6. `sw.js` 全文里带引号的相对路径去重后与 `ASSETS` 集合一致（守下面步骤 4 那个「数路径」的盲区；
+   同一条也进了核验脚本的 ⑬，两个入口）。
+
+**边界**：它只认静态 `from '…'`，不认动态 `import('…')`（仓库里全是前者）；它守的是形状，不是渲染。
+
+**A/B/C 三个变异的实测**（四份副本都建在 `E:\codex-project\_rework\` 下——**仓库外**，跑完删掉；
+`runBASE` 是未变异的对照）：
+
+| 副本 | 变异 | 全量测试结果 |
+|---|---|---|
+| `runBASE` | 无（对照） | 272 pass / 0 fail |
+| `runA` | 把那次 `await` 挪到 `mount(app, …)` 之后 | 271 pass / **1 fail**：「主题那次 await 在 render() 的两次 mount() 之前」 |
+| `runB` | 删掉 `.catch` | 270 pass / **2 fail**：「main.js 里主题初始化只有一处…」+ 上面那条（锚点失效） |
+| `runC` | `??=` 改成 `=` | 270 pass / **2 fail**：同上两条 |
+
+核验脚本这一侧的 ⑬ 也有对应变异 **M18**（往 `sw.js` 的注释里塞一条清单外的带引号路径），
+`--self-test` 里 **18/18 全被抓**（实测）。
+
+- [ ] **步骤 4：`theme-store.js` 与 `theme.js` 进预缓存白名单（顺带把新的 `schema.js` 铺到设备上）**
+
+**为什么必须跟这一步一起走**：本步让 `main.js` 静态 `import` 了 `theme-store.js`（步骤 1），而
+`theme-store.js` 又静态 `import` 了 `theme.js`（`app/theme-store.js` 第 15 行）——两个都在首屏依赖链上，
+与任务 5 让 `image-store.js` 依赖 `canvas-image.js` 是**同一条纪律**：白名单必须跟产生依赖的那次提交一起走，
+不能等到任务 14 收尾再补。
+
+**机制要说准（这条返工轮改过）**：漏掉一条**不是** `cache.addAll` 原子性的问题——原子性管的是「清单里
+**某条**路径 404（拼错、文件改名），整批 reject、install 失败」；漏掉一条是清单里根本没写它，install
+照常成功。它的后果出现在运行时：那个模块请求缓存未命中 → 走网络（在线就自愈，响应会被顺手补进缓存）
+→ 离线则回退到 `index.html`，回给模块脚本的是一个 200 的 `text/html`，浏览器按严格 MIME 检查拒绝执行，
+import 链一断，app 起不来（页面只剩 body 的底色）。**不是 404**——404 属于上面那条「清单里写错了路径」的路。
+同一段机制写在 `sw.js` 开头（那里是唯一一处；v3 / v13 / v15 / v16 各段原来都写成「离线时 404」，
+本轮一并改准）。
 
 **顺带效果才是它非做不可的原因**：`CACHE` 一变，已装旧缓存的设备会重新 `install`（`addAll` 把清单重新抓一遍
 全量）、`activate` 时删掉旧缓存，再加上 `skipWaiting` 与 `clients.claim`，设备下一次冷启动拿到的就是新缓存里的
 `schema.js`——**任务 6 已把它升到 `DB_VERSION = 3`，不做这一步，那次数据库升级永远不会发生**：SW 是缓存优先，
 设备一直命中缓存里的旧 `schema.js`（`DB_VERSION = 2`），`assets` 表建不出来，背景图一存就抛错。
 
-改法：`CACHE` 从 `'pvault-v16'` 升到 `'pvault-v17'`，`ASSETS` 里加一条（保持 ASC 书写风格，插在
-`'./app/summary.js'` 与 `'./app/vault-model.js'` 之间）：
+改法：`CACHE` 从 `'pvault-v16'` 升到 `'pvault-v17'`；`ASSETS` 里加两条（保持书写风格，插在
+`'./app/summary.js'` 与 `'./app/vault-model.js'` 之间；ASC 里 `'-'`(0x2D) < `'.'`(0x2E)，所以
+`theme-store` 在 `theme` 前）：
 
 ```js
   './app/theme-store.js',
+  './app/theme.js',
 ```
 
-`theme-store.js` 是任务 7 建好的，跑这一步时**必须已在磁盘上**——一个 404 会让整次 install 失败。
+两个文件跑这一步时都**必须已在磁盘上**：`theme-store.js` 是任务 7 建的、`theme.js` 是任务 1-4 建的；
+路径拼错就是上面那条「在线 404 → 整批 install 失败」的路。
+
+**`CACHE` 保持 v17、不为这次返工再 +1**：`sw.js` 开头那条「每次改代码都要 +1」守的是「改了 CSS / JS
+却没碰 `sw.js`、设备永远吃旧缓存」——返工改的正是 `sw.js` 本身（字节变了 → 触发 update → `addAll` 重抓
+全量），而 v17 从未发布（它只存在于 `feat/appearance` 分支），不存在拿着 v17 缓存的设备。再 +1 会把
+任务 14 已经写好的 `pvault-v18` 顶掉，那一整步的版本号、预期数字与 commit message 都得跟着改。
 
 再跑一遍白名单全量校验（脚本在任务 14 步骤 2）：
 
-预期：`全部存在，共 57 个`（任务 5 之后是 56 个；本步加的那条就是 `app/theme-store.js`。这个数在 `sw.js` 副本
-上实测过：当前 56 条加本步 1 条，再加任务 14 的 3 条，正好是那一步预期的 60 条。**本步实测就是 57 个**。）
+预期：`全部存在，共 58 个`（任务 5 之后是 56 个；本步加的两条是 `app/theme-store.js` 与 `app/theme.js`。
+56 + 2 = 58，再加任务 14 的 2 条，正好是那一步预期的 60 条。**本步实测就是 58 个**。）
 
-顺带记一个坑（本步实测踩到的）：那支校验脚本的正则 `'\./([^']+)'` **不看上下文**——注释里带引号的路径照样
-命中，所以往 `sw.js` 里写注释时**不要写出带引号的相对路径**。第一版 v17 注释里举例子写了带引号的
-`./app/theme.js`（就是讲缺口那一句），脚本立刻把清单数从 57 数成了 58：路径全都 `Test-Path` 通过、
-只有数字悄悄多了 1。这类「校验全绿、数字自己变了」的形态比报错难发现得多。现在那句写成**不带引号**的
-`./app/theme.js`，数回来是 57。以后在 `sw.js` 里举路径的例子，一律去引号。
+**顺带记一个坑（上一轮实测踩到的，本轮把它堵住了）**：那支校验脚本按 `sw.js` 的**全文**匹配、不看上下文
+——注释里带引号的路径照样命中。上一轮的 v17 注释里举了个例子、写了带引号的路径，那支脚本立刻把清单数
+从 57 数成 58：路径全都 `Test-Path` 通过、只有数字悄悄多了 1。这类「校验全绿、数字自己变了」的形态比报错
+难发现得多。本轮两处一起堵：① 把那支脚本**收紧到 `ASSETS` 数组切片内**（改法见任务 14 步骤 2）；
+② `scripts/check-theme-css.mjs` 加断言 ⑬（`sw.js` 全文里带引号的相对路径去重后必须**等于** `ASSETS`
+清单集合），并在 `tests/boot-order.test.js` 里也钉了同一条——两个入口都守。
 
-**同一份提交里，`sw.js` 的旧注释也改准了**（注释诚实性：本步让它变成了假话）
+**同一份提交里，`sw.js` 的注释改了三处**（注释诚实性；三处的理由各不相同）
 
-`sw.js` 里原本写着两行：「外观功能其余的文件：theme.js 已经建好（任务 1-4），但此刻没有任何模块 import 它
-——不请求就不会 404；theme-store / ui/appearance-sheet / appearance.css 则还没建。」本步之后这句**是假的**：
-`main.js` 静态 import 了 `theme-store.js`，而 `theme-store.js` 又 import `theme.js`（`app/theme-store.js`
-第 15 行），`theme.js` 从此**会被请求**——那句「没有任何模块 import 它」正是本步要删掉的东西。
+1. **v17 段整段重写**。上一轮的 v17 段为了讲清「只加了一半」，写了一整段自我说明（缺口在哪个环节、
+   什么时候咬人、什么时候自愈、要提前堵怎么改）。现在 `theme.js` 一起进来了，那一段**整段删掉**，
+   换成本轮那四行：加了哪两个、它们都在 `main → theme-store → theme` 这条链上、与 v14（同样是间接依赖）
+   同一个形状、剩下的 `ui/appearance-sheet.js` 与 `appearance.css` 归任务 14。
+2. **「漏一条」的机制写准**（文件开头新增一段）。原文把两件事混着说成 404，见上面这一节第一段的机制说明；
+   现在开头那段把两条路分开写——「清单里某条路径写错」= 在线 404 = `addAll` 整批 reject；
+   「清单里漏一条」= 运行时缓存未命中 = 离线回退 `index.html`、被 MIME 检查拒绝。**这不是本轮新引入的
+   错**：v3 / v13 / v15 / v16 段原来都写着「离线时 404」，本轮一并改成「加载不了」并指向开头那段。
+3. **上一轮写下的那句「theme.js 已经建好（任务 1-4），但此刻没有任何模块 import 它——不请求就不会 404」
+   整条删掉**：本步之后它是假话（`theme-store.js` 静态 import 了它，它从此会被请求）。
 
-重写后的 v17 注释写了四件事：本步加进清单的是谁、为什么必须跟这一次提交走；外观功能剩下的
-`ui/appearance-sheet.js` 与 `appearance.css` 还没建；`theme.js` 此刻**不在清单里**、计划把它的落点排在
-任务 14（代码注释里不便排版的那段推理，见上面「本步与任务 14 的边界」）；以及这个缺口什么时候会咬人、
-什么时候自愈、要提前堵该怎么做。改注释与加清单条目同属 `sw.js` 那一个 commit。
+改注释与加清单条目同属 `sw.js` 那一个 commit。
 
-- [ ] **步骤 5：Commit**
+- [ ] **步骤 5：Commit（本步五个：代码 / 测试 / 核验脚本 / 文档分开）**
 
 ```bash
-git add app/main.js
-git commit -m 'feat(theme): 首屏渲染前应用外观设置，避免闪色'
+git add app/main.js app/theme-store.js
+git commit -m 'fix(theme): 注释改准——catch 的后果、全称的边界、首屏新增的依赖'
 git add sw.js
-git commit -m 'chore(sw): theme-store.js 提前进预缓存白名单，缓存版本升到 v17'
+git commit -m 'chore(sw): theme.js 一起进预缓存白名单，并把「漏一条」的机制写准'
+git add tests/boot-order.test.js
+git commit -m 'test(theme): 首屏启动顺序与预缓存清单的文本级守卫'
+git add scripts/check-theme-css.mjs
+git commit -m 'chore(scripts): 核验脚本加 ⑬ 与变异 M18'
+git add docs/superpowers/plans/2026-09-26-pvault-custom-background.md docs/superpowers/specs/2026-09-26-pvault-custom-background-design.md
+git commit -m 'docs(appearance): 同步任务 10 返工（theme.js 入清单、机制更正、§11 判据）'
 ```
 
-**两个 commit 分开**：白名单要跟产生依赖的那次提交一起走，与任务 5 的两个 commit 是同一个道理。
+**前两个 commit 分开**：白名单要跟产生依赖的那次提交一起走，与任务 5 的两个 commit 是同一个道理。
+**后三个也各占一个**：守卫测试、核验脚本、文档是三摊东西，混在一起以后没人能单独回滚其中一摊。
 
 ---
 
@@ -2583,37 +2672,49 @@ git commit -m 'feat(backup): 备份携带背景照片与遮罩强度'
 
 - [ ] **步骤 1：改 `CACHE` 与 `ASSETS`**
 
-**`canvas-image.js` 已在任务 5、`theme-store.js` 已在任务 10 提前进清单**（那两步分别让 `image-store.js` 与
-`main.js` 静态依赖了它们，白名单必须跟产生依赖的提交一起走），`CACHE` 那时已经用到 `pvault-v17`。所以这一步只加
-剩下的这三个文件，版本号再升一版：
+**`canvas-image.js` 已在任务 5 进清单，`theme-store.js` 与 `theme.js` 已在任务 10 一起进清单**（那两步
+分别让 `image-store.js` 与 `main.js` 多了静态依赖，白名单必须跟产生依赖的提交一起走），`CACHE` 那时
+已经用到 `pvault-v17`。所以这一步只加剩下的这两个文件，版本号再升一版：
 
 ```js
 const CACHE = 'pvault-v18';
 ```
 
-在 `ASSETS` 数组里加（位置与其它条目保持一致的书写风格：`'./app/theme.js'` 按 ASC 排在任务 10 已加的
-`'./app/theme-store.js'` **之后**——`'-'`(0x2D) 小于 `'.'`(0x2E)；`'./app/ui/appearance-sheet.js'` 排在
-`'./app/ui/accounts-view.js'` **之前**；`'./styles/appearance.css'` 排在 styles 段的**最前**——
-`appearance.css` < `base.css`）：
+在 `ASSETS` 数组里加，位置按这份清单**已有的分段约定**（根 → `styles/` 段 → `icons/` → `app/` 顶层
+`.js` 段 → `app/ui/` 段；每段内部按 ASC，**不是**全清单一个字符串序）：`'./app/ui/appearance-sheet.js'`
+插在 `'./app/ui/accounts-view.js'` **之前**，`'./styles/appearance.css'` 插在 styles 段**最前**
+（`appearance.css` < `base.css`）：
 
 ```js
-  './app/theme.js',
   './app/ui/appearance-sheet.js',
   './styles/appearance.css',
 ```
 
 - [ ] **步骤 2：核对每个文件都真的存在**
 
-`cache.addAll` 是**原子**的：一个 404 就让整次安装失败，而失败的表现是「离线打开是白屏」——很难联想到是一个路径写错。
+`cache.addAll` 是**原子**的：一个 404 就让整次安装失败，而失败的表现是「SW 不激活、离线能力为 0」
+——很难联想到是一个路径写错。**但这一条与上面那支脚本管的只是「清单里写对了没有」**（路径拼错、
+文件改名、文件漏建）；「清单里**漏了一整条**」是另一条路，它不会让 install 失败，后果要到运行时才出现
+（离线缓存未命中 → 回退 `index.html` → 模块脚本被 MIME 检查拒绝）。两条路的完整说明写在 `sw.js`
+开头那段，别再把它们混成一句话（本轮返工改的就是这处混淆）。
 
 ```powershell
-$paths = Select-String -Path sw.js -Pattern "'\./([^']+)'" -AllMatches |
-  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+# 只从 ASSETS 数组切片里数。旧版按**全文**匹配，注释里带引号的路径会被算成一条清单条目——实测踩到过：
+# 在副本的注释里塞一句 './app/nowhere.js'，旧版报 59（真清单是 58），而 Test-Path 全通过、只有数字变了。
+$block = ((Get-Content sw.js -Raw) -split 'const ASSETS = \[')[1] -split '\];' | Select-Object -First 1
+$paths = [regex]::Matches($block, "'\./([^']+)'") | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 $missing = $paths | Where-Object { -not (Test-Path $_) }
 if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Host "全部存在，共 $($paths.Count) 个" }
 ```
 
-预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个、任务 10 之后是 57 个）
+预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个、
+任务 10 之后是 58 个）
+
+**与旧版的差别只有一处**：先把 `const ASSETS = [` 到 `];` 之间的切片切出来，再在切片里匹配。
+`Get-Content sw.js -Raw` 是整文件读（**不是**逐行数组——这台机器上逐行读的大文件 `.Count` 会莫名其妙地
+少几百行，实测过），切片用两次 `-split`；`[regex]::Matches` 是 .NET 静态方法，PowerShell 里可直接用。
+**它只补了「数错」这一半**：反方向（`sw.js` 全文里出现清单外的带引号路径）由 `scripts/check-theme-css.mjs`
+的 ⑬ 与 `tests/boot-order.test.js` 守着。
 
 - [ ] **步骤 3：验证离线可用**
 
@@ -2657,8 +2758,18 @@ D:\node.exe scripts\check-theme-css.mjs --self-test   # 变异自检
    新条目；照片模式下的 `--surface` 取值（`rgba(r,g,b, 0.9)`）也值得钉一条。扩展**必须同时补变异**
    （`--self-test` 里的 cases 数组），否则新断言只是恒真的绿。
 
+4. **把 ⑩ 从规格 §13 扩到规格 §11（任务 10 返工时发现的口子）**：⑩ 现在只锚 §13 那 7 条手动项，
+   而「冷启动不闪色」这条**验收标准**出自 §11——脚本里 `## 11` / `§11` / `验收标准` 这些串是 **0 命中**，
+   所以把任务 15 清单里那一整条删掉，⑩ 一声不响（它只查关键词命中，不查条目该不该在）。
+   补法照 ⑩ 现有的形状：给 §11 的条目（现在也是 7 条）做第二张关键词表，逐条断言在任务 15 的清单里
+   命中，并给新断言补一个变异（删掉任务 15 里对应的一条 → 必须报红）。选词照 ⑩ 的老教训：
+   **每个词必须在清单里唯一**（第一版 ⑩ 用了「深色」，而「皮肤与深浅」小节里也有「深色」，
+   于是删掉目标条目后它照样命中，是假绿）。这条是本次扩展的一部分，不要留成待办：⑩ 的覆盖面缺一半，
+   等于「有一类验收标准没人机器守卫」，正是这个脚本存在要防的事。
+
 **这个脚本要不要进 `sw.js` 的 `ASSETS`、要不要进 APK、要不要被 dev-server 提供**——三条都自己验
-（现状实测都不需要：`ASSETS` 57 条里 `./scripts/` 是 0 条；`build-apk.ps1` 只复制 `index.html` /
+（现状实测都不需要：`ASSETS` 里 `./scripts/` 是 0 条——**任务 10 收尾时它是 59 条**，这个数随任务 11-14
+的文件增减，别照抄，数一眼当前清单就行；`build-apk.ps1` 只复制 `index.html` /
 `manifest.webmanifest` / `sw.js` 与 `app` / `styles` / `icons`；`dev-server.js` 的
 `ALLOWED_ROOT_FILES` 是那三个文件、`ALLOWED_DIRS` 是 `app`/`styles`/`icons`）：
 
@@ -2702,10 +2813,12 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
 - [ ] 完全退出 app 再打开（不是刷新），皮肤仍然是选中的那套
 - [ ] **冷启动不闪色**：先换成一套底色反差大的皮肤（暖纸 / 紫藤这类），再硬刷新（Ctrl+Shift+R）或完全退出重开，
       第一眼看到的就是那套皮肤的底色。**拿默认皮肤当对照组**——默认皮肤这一档看不出差别是正常的（闪的就是它自己）。
+      顺带看一眼**主屏快捷方式**那条路（带 `new=1` 启动）：录入面板的首帧也不该是默认色——那条路不经过
+      `render()` 的那次 `await`（见设计规格 §5.4 的边界段），是本条**唯一**可能看到闪色的入口，专门盯它。
       **这条是任务 10 步骤 3 在本机的替代做不了、挂到这里的落地**：那边只能做静态核对，而且只核到「内容挂载
       之前主题已应用」，「第一眼」这三个字只有这里能验；真机上若仍看到一闪的默认灰蓝，记下来并对照任务 10
       步骤 3 那条边界（`base.css` 的 `:root` 兜底那一帧）。（落的是设计规格 §11 验收标准里「冷启动不闪色」
-      那一条；规格 §13 那 7 条手动项里没有它，所以下面那张对照表不动。）
+      那一条——它在返工轮被改写成可判的判据；规格 §13 那 7 条手动项里没有它，所以下面那张对照表不动。）
 - [ ] 深浅选「跟随系统」，然后改系统的深色开关，app 实时跟着变
 - [ ] 深浅选「浅色」，系统切到深色，app **不**跟着变（手动选择必须压过系统）
 - [ ] Console 里核对 `document.documentElement.dataset.theme` = 当前皮肤 id（换一套皮肤后立刻变）
