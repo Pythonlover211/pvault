@@ -46,9 +46,19 @@
 // 从此静态依赖它。白名单不跟着那一次提交一起加的话，已装旧缓存的设备离线启动会断在
 // main → invoice-view → invoice-editor → image-store → canvas-image 这一环：那一个 module 404、
 // import 链一断是整个 app 白屏（不只是发票面板）——与上面 v14 那次同一个坑，所以不等任务 14。
-// 外观功能其余的文件：theme.js 已经建好（任务 1-4），但此刻没有任何模块 import 它——不请求就不会 404；
-// theme-store / ui/appearance-sheet / appearance.css 则还没建。它们被消费方接上时，按同一条纪律进清单。
-const CACHE = 'pvault-v16';
+// v17：theme-store.js 提前进预缓存清单 —— 任务 10 让 app/main.js 静态依赖它（main → theme-store），
+// 白名单不跟产生依赖的那次提交一起加，已装旧缓存的设备离线启动就断在这一环：那一个 module 404、
+// import 链一断，app 完全起不来（页面只剩 body 的底色）——与 v14 / v16 同一个坑，所以也不等任务 14。
+// 外观功能剩下的文件：ui/appearance-sheet.js 与 appearance.css 还没建；theme.js 已经建好（任务 1-4），
+// 而且从任务 10 起被 theme-store.js 静态 import 了（这一条链是 main → theme-store → theme），
+// **但它此刻还不在下面这份清单里**——计划把它的落点排在任务 14，也就是要等到那一步才补。这与
+// v14 / v16 反复写的那条纪律（白名单跟产生依赖的提交一起走）不一致，如实记在这里：
+// 咬人的条件很窄——设备装好这份缓存之后**从没在线打开过 app**、直接就离线启动：那次 theme.js 请求
+// 会失败并回退到 index.html，module 解析不了、整页起不来。之后在线打开过一次 app 就补上了：fetch
+// 那条路会把网络拿到的资源顺手补进缓存（见文件末尾；那次 put 失败本身是被 catch 掉的，配额满时会这样，
+// 缺口便留到下一次成功加载）。要现在堵上，就把 ./app/theme.js 一并挪进来（下面这份清单里照着上下文
+// 的写法加行；本行不写成带引号的路径，是免得被任务 14 那支「从 sw.js 里数路径」的校验脚本数进来）。
+const CACHE = 'pvault-v17';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -93,6 +103,7 @@ const ASSETS = [
   './app/schema.js',
   './app/store.js',
   './app/summary.js',
+  './app/theme-store.js',
   './app/vault-model.js',
   './app/vault-store.js',
   './app/ui/accounts-view.js',
