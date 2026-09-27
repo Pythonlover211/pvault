@@ -292,6 +292,16 @@ check(cssFiles.some(f => path.basename(f) === path.basename(CSS_PATH)),
   '自检：--css 的文件名在 styles/ 里找不到同名的，覆盖不会发生（① 的比对读的是别的文件）');
 check(appFiles.some(f => path.basename(f) === path.basename(STORE_PATH)),
   '自检：--store 的文件名在 app/ 里找不到同名的，覆盖不会发生（① 的比对读的是别的文件）');
+// --app-file 也要这一条：它的用法是「拿一个副本去替代仓库里的同名文件」，而 load() 的兜底按 **basename**
+// 匹配（见上面 OVERRIDE 那段）。副本一旦改名（比如 `sheet-v10.js`），覆盖就整条不发生——变异改的文件
+// 从头到尾没被读过，脚本照旧全绿。这不是理论：复审第一轮就是这么做的，三个变异全部 exit=0、0 条失败；
+// `--self-test` 自己踩不到，只因为它的 mutate() 用 path.basename(srcPath) 保住了名字。
+const appFileBase = APP_FILE_OVERRIDE ? path.basename(APP_FILE_OVERRIDE) : null;
+check(appFileBase === null
+  || appFiles.some(f => path.basename(f) === appFileBase)
+  || cssFiles.includes(appFileBase),
+  `自检：--app-file 的文件名（${appFileBase}）在 app/ 与 styles/ 里都找不到同名的，覆盖不会发生`
+  + '——副本必须沿用原名，否则变异被静默忽略、打出的是假绿（⑯ 与 ⑮ 的现行用法一律保名）');
 
 // ── ① 两个方向 ──────────────────────────────────────────────
 const ghostCss = C_css.filter(v => !written.has(v));
@@ -454,10 +464,30 @@ check(planBox !== '', '⑩ 没在任务 15 里找到 markdown 清单块（锚点
 // 关键词只是「这一条还在不在」的粗筛：它证明不了语义对齐，强度如实写在报告里。
 // 选词必须**在该清单里唯一**——第一版用了「深色」，而「皮肤与深浅」那一节里也有「深色下各看一眼」，
 // 于是删掉「深色 + 照片 + 遮罩 0%」那一条时它照样命中（实测踩到过，是假绿）。
-const keys13 = ['竖拍', '0%', '深色 + 照片 + 遮罩 0%', '密码正文', 'v1.2.0', '体积增幅', '备份里那张图'];
-const miss13 = keys13.filter(k => !planBox.includes(k));
-check(miss13.length === 0, '⑩ 规格 §13 的 7 条在任务 15 的清单里找不到对应关键词：' + miss13.join(' '));
-say('⑩ 规格 §13 的 7 条 → 任务 15 清单关键词命中 ' + (keys13.length - miss13.length) + '/7（粗筛，非语义对齐证明）');
+// 第 2 条原来用的词是 `0%`，它在清单块里实测出现 **6 次**（同一条的「0% / 30% / 60% 各看一眼」、
+// 第 3 条的标题、以及别处的行文）——形态与 §11 那张表一样危险：删掉「遮罩 0% 时还能看清首页大数字」
+// 这一条时，`0%` 照样被别处的同一句话顶住，断言是绿的。所以改成唯一锚定它的那一句。
+const keys13 = [
+  { k: '竖拍', item: '第 1 条（竖拍照片压缩后不糊）' },
+  { k: '0% 这一档要特意看首页大数字', item: '第 2 条（遮罩 0% 时首页大数字还能看清）' },
+  { k: '深色 + 照片 + 遮罩 0%', item: '第 3 条（深色 + 照片 + 遮罩 0% 下的次要文字）' },
+  { k: '密码正文', item: '第 4 条（关键读数仍不透明、清晰）' },
+  { k: 'v1.2.0', item: '第 5 条（老库升级后数据一条不少）' },
+  { k: '体积增幅', item: '第 6 条（备份体积增幅在预期内）' },
+  { k: '备份里那张图', item: '第 7 条（恢复的是备份里那张图）' }
+];
+const miss13 = keys13.filter(e => !planBox.includes(e.k));
+check(miss13.length === 0,
+  '⑩ 规格 §13 的 7 条在任务 15 的清单里找不到对应关键词：'
+  + miss13.map(e => `${e.k}（${e.item}）`).join('、'));
+// 与 §11 那张表同一条纪律：命中 0 次由上面报，命中 ≥2 次由这条报（一个词在两处出现时，删掉其中一处
+// 它照样绿）。两张表形态一致，改一张时别把另一张落成旧样子。
+const dup13 = keys13.map(e => ({ ...e, n: planBox.split(e.k).length - 1 })).filter(e => e.n !== 1);
+check(dup13.length === 0,
+  '⑩ 规格 §13 的关键词在任务 15 清单里的出现次数不为 1（这类词由别处的同一句话顶住，断言照样绿）：'
+  + dup13.map(e => `${e.k}×${e.n}（${e.item}）`).join('、'));
+say('⑩ 规格 §13 的 7 条 → 任务 15 清单关键词命中 ' + (keys13.length - miss13.length) + '/7，'
+  + '且每个词在清单里唯一（非唯一 ' + dup13.length + ' 个，应为 0；粗筛，非语义对齐证明）');
 
 // ⑩ 的另一半：规格 §11「验收标准」（7 条）此前**没有任何机器守卫**——脚本里 `## 11` / `§11` /
 // 「验收标准」这些串是 0 命中（实测），于是把任务 15 清单里「冷启动不闪色」那一整条删掉，⑩ 一声不响。
@@ -707,7 +737,11 @@ const MIRROR_SEGMENTS = [
   { id: '任务 4', from: '## 任务 4：', to: '## 任务 5：',
     parts: [{ lang: 'js', count: 2, files: ['app/theme.js', 'tests/theme.test.js'] }] },
   { id: '任务 5', from: '## 任务 5：', to: '## 任务 6：',
-    parts: [{ lang: 'js', count: 2, files: ['app/canvas-image.js', 'app/image-store.js', 'app/theme-store.js'] }] },
+    // 任务 5 的两个块：一个在 canvas-image.js（新文件头注释），一个在 image-store.js（改成从
+    // canvas-image 取那三个函数）。**候选里刻意不列 `app/theme-store.js`**：它后来（任务 8）也加了
+    // 一行逐字符相同的 import，列进来等于给这个块留一个「巧合同名」的候选——那一行两边一模一样，
+    // 任何基于文本的守卫都分辨不出抄的是哪一个，但至少别让候选集合自己把巧合当命中。
+    parts: [{ lang: 'js', count: 2, files: ['app/canvas-image.js', 'app/image-store.js'] }] },
   { id: '任务 6', from: '## 任务 6：', to: '## 任务 7：',
     parts: [{ lang: 'js', count: 6, files: ['app/schema.js', 'tests/schema.test.js'] }] },
   { id: '任务 7', from: '## 任务 7：', to: '## 任务 8：',
@@ -771,9 +805,10 @@ for (const seg of MIRROR_SEGMENTS) {
   }
 }
 
-// ── ⑯ 照片模式只动 --surface ⇄ 三处写死的 0.9 ────────────────
-// 「0.9」在这个仓库里出现三次：theme.js 的 PHOTO_SURFACE_ALPHA（唯一真相）、base.css 注释里的
-// `rgba(r,g,b, 0.9)`、规格 §6.3 的 `rgba(r,g,b, .9)`。三处都写死，谁改谁漏就是一份静默漂移的副本
+// ── ⑯ 照片模式只动 --surface ⇄ 六处写死的 0.9 ────────────────
+// 「0.9」这个数在仓库里被写死了**六处**（实测）：theme.js 的 PHOTO_SURFACE_ALPHA（唯一真相）、
+// `styles/base.css` 注释里的 `rgba(r,g,b, 0.9)`、规格里的**四处**（§5.1 与 §6.3 与 §9.1 是
+// `rgba(r,g,b, .9)`、§5.4 是 `rgba(r,g,b, 0.9)`）。六处都是副本，谁改谁漏就是一份静默漂移的副本
 // （与 ③ 的 --scrim-a 同一个形状，只是这里的副本在注释与规格里）。形状那一半钉的是「只动 --surface」
 // ——照片模式偷偷改了别的变量（比如把 --surface-2 也变透、把输入框上的字送进照片纹理）在 Node 里
 // 一行都不会红，只有真机上「字看不清了」这种主观现象。
@@ -782,11 +817,16 @@ const cssAlpha = [...cssSrc.matchAll(/rgba\(r,g,b, ([0-9.]+)\)/g)].map(m => m[1]
 check(cssAlpha.length === 1 && cssAlpha[0] === alphaStr,
   `⑯ base.css 注释里写死的透明度实测 ${JSON.stringify(cssAlpha)}，期望恰好一处、值 = PHOTO_SURFACE_ALPHA(${alphaStr})`
   + '——注释与常量不一致时，读者照着注释改代码就会把常量改错');
-const s63At = specText.indexOf('### 6.3 可读性');
-check(s63At >= 0, '⑯ 规格里没找到「### 6.3 可读性」（锚点失效）');
-const specAlpha = /rgba\(r,g,b, (\.?[0-9.]+)\)/.exec(specText.slice(s63At))?.[1];
-check(specAlpha !== undefined && Number(specAlpha) === theme.PHOTO_SURFACE_ALPHA,
-  `⑯ 规格 §6.3 里写死的透明度实测 ${JSON.stringify(specAlpha)}，与 PHOTO_SURFACE_ALPHA(${alphaStr}) 不符`);
+// 规格那四处**全部**比对，不再只取第一个匹配：早先用 `exec` + `indexOf('### 6.3')` 的写法只守到 §6.3，
+// 另外三处（§5.1 / §5.4 / §9.1）改掉一声不响（实测：把 §9.1 的 `.9` 改成 `.8` → exit=0、0 条失败），
+// 而这段注释当时正写着「谁改谁漏就是一份静默漂移的副本」——自己的话没兑现。
+const specAlphas = [...specText.matchAll(/rgba\(r,g,b, (\.?[0-9.]+)\)/g)].map(m => m[1]);
+check(specAlphas.length === 4,
+  `⑯ 规格里写死透明度的副本实测 ${specAlphas.length} 处，期望 4 处（§5.1 / §5.4 / §6.3 / §9.1）`
+  + '——处数变了先核对新那一处是不是同一份 0.9，是的话把这里的期望值一起改（别让新副本没人守）');
+const specAlphaBad = specAlphas.filter(a => Number(a) !== theme.PHOTO_SURFACE_ALPHA);
+check(specAlphaBad.length === 0,
+  `⑯ 规格里这些写死的透明度与 PHOTO_SURFACE_ALPHA(${alphaStr}) 不一致：` + specAlphaBad.join(' '));
 // 形状那条的期望 alpha 取 **base.css 注释里那一份**，不是常量本身：拿常量当期望是**自指**的——
 // 把 PHOTO_SURFACE_ALPHA 改成 0.8，期望值跟着变成 0.8，十组断言照样全绿（实测踩到过：M27 第一版
 // 就是这么漏过去的）。这正是 tests/theme.test.js 那份「正典清单不拿 default.light 当基准」的道理。
@@ -829,7 +869,7 @@ const ownVars = [...new Set([...appearanceCss.matchAll(/--[a-zA-Z0-9_-]+\s*:/g)]
 check(ownVars.length === 0,
   '⑯ styles/appearance.css 里自己定义了 CSS 变量（它的头注释说「变量全部来自主题」，自造的那一个'
   + '只有这套皮肤这一档有值、换肤即失效）：' + ownVars.join(' '));
-say(`⑯ 照片模式：10 组里动了别的变量的 0 组；0.9 三处一致（JS=base.css 注释=规格 §6.3=${alphaStr}）；`
+say(`⑯ 照片模式：10 组里动了别的变量的 0 组；0.9 的六处副本一致（常量=base.css 注释=规格 4 处=${alphaStr}）；`
   + `appearance.css 自造变量 ${ownVars.length} 个（应为 0）`);
 
 // ── 输出 ────────────────────────────────────────────────────
@@ -906,8 +946,8 @@ if (SELF_TEST) {
     { name: 'M25 改计划里补丁覆盖的那一行（⑮ 的补丁失配）', file: PLAN_PATH, flag: '--plan', find: '        // **不写「跟着备份一起走」**：导出包现在还不带背景（`buildBackup` 的 data 里没有它，那是任务 13', repl: '        // **不写「跟着备份一起走」**：导出包现在还不带背景（`buildBackup` 的 data 里没有它，那是任务 13 那一步', expect: ['已知偏差补丁命中 0 次'] },
     // ⑮ 的第三条：片段型镜像（任务 12 的两个小块）。
     { name: 'M26 改 settings-sheet.js 的 import（⑮ 任务 12 的片段镜像）', file: path.join(APP_DIR, 'ui/settings-sheet.js'), flag: '--app-file', find: "import { openAppearanceSheet } from './appearance-sheet.js';", repl: "import { openAppearanceSheet } from './appearance-sheet-x.js';", expect: ['⑮ 计划「任务 12」的第 1 个 js 块'] },
-    // ⑯ 的三条：常量改值（三处写死的 0.9 一起对不上）、照片分支多动一个变量、外观面板自造变量。
-    { name: 'M27 把 PHOTO_SURFACE_ALPHA 改成 0.8（⑯ 的 0.9 三处一致）', fakeRoot: true, change: { file: 'app/theme.js', find: 'export const PHOTO_SURFACE_ALPHA = 0.9;', repl: 'export const PHOTO_SURFACE_ALPHA = 0.8;' }, expect: ['⑯ 照片模式的 --surface 与「该档 --surface 的三个通道', '⑯ base.css 注释里写死的透明度', '⑯ 规格 §6.3 里写死的透明度'] },
+    // ⑯ 的三条：常量改值（六处写死的 0.9 一起对不上）、照片分支多动一个变量、外观面板自造变量。
+    { name: 'M27 把 PHOTO_SURFACE_ALPHA 改成 0.8（⑯ 的 0.9 六处一致）', fakeRoot: true, change: { file: 'app/theme.js', find: 'export const PHOTO_SURFACE_ALPHA = 0.9;', repl: 'export const PHOTO_SURFACE_ALPHA = 0.8;' }, expect: ['⑯ 照片模式的 --surface 与「该档 --surface 的三个通道', '⑯ base.css 注释里写死的透明度', '⑯ 规格里这些写死的透明度与 PHOTO_SURFACE_ALPHA'] },
     { name: 'M28 让照片分支连 --surface-2 一起改（⑯ 只动 --surface）', fakeRoot: true, change: { file: 'app/theme.js', find: "    vars['--surface'] = `rgba(${hexToRgb(base['--surface'])}, ${PHOTO_SURFACE_ALPHA})`;", repl: "    vars['--surface'] = `rgba(${hexToRgb(base['--surface'])}, ${PHOTO_SURFACE_ALPHA})`;\n    vars['--surface-2'] = 'rgba(0, 0, 0, 0.9)';" }, expect: ['⑯ 照片模式动的变量不止 --surface'] },
     { name: 'M29 appearance.css 自造一个 CSS 变量（⑯ 的变量纪律）', file: path.join(STYLES_DIR, 'appearance.css'), flag: '--app-file', find: [
       '.hint-text {',
@@ -937,7 +977,15 @@ if (SELF_TEST) {
       '  // 多传一个对象 JS 本来就允许，函数忽略它即可；而它也确实不需要父面板刷新（改的是 CSS 变量，',
       '  // 不是设置面板的内容）。',
       "  { id: 'appearance', label: '外观与背景', open: openAppearanceSheet },"
-    ].join('\n'), repl: '', expect: ['是空块'] }
+    ].join('\n'), repl: '', expect: ['是空块'] },
+    // 复审后的三条（每一条都对应一处「修好之前不会红」的缺口，见各自注释）：
+    // 1) ⑯ 的规格副本：以前只守 §6.3（`exec` 只取第一个匹配），改 §5.1 / §5.4 / §9.1 三处都不会红。
+    { name: 'M35 把规格 §9.1 里写死的 .9 改成 .8（⑯ 的规格副本全覆盖）', file: SPEC_PATH, flag: '--spec', find: '只有 `--surface` 变成 `rgba(r,g,b, .9)`', repl: '只有 `--surface` 变成 `rgba(r,g,b, .8)`', expect: ['⑯ 规格里这些写死的透明度与 PHOTO_SURFACE_ALPHA(0.9) 不一致'] },
+    // 2) ⑩ 的 §13 表：第 2 条原来锚在 `0%` 上（清单里出现 6 次），删掉那一条时它照样命中。
+    { name: 'M36 改掉清单里「0% 这一档要特意看首页大数字」那句（⑩ §13 第 2 条的锚点）', file: PLAN_PATH, flag: '--plan', find: '（**0% 这一档要特意看首页大数字**）', repl: '（那个 0% 档要特意看首页大数字）', expect: ['⑩ 规格 §13 的 7 条在任务 15 的清单里找不到对应关键词'] },
+    // 3) `--app-file` 的覆盖自检：副本改名之后覆盖整条不发生，变异被静默忽略（复审实测三个变异全绿）。
+    //    这条变异**故意**给副本换一个仓库里没有的名字，断言脚本自己会拒绝这次覆盖。
+    { name: 'M37 把 --app-file 的变异副本改成与仓库不同的文件名（覆盖自检）', file: path.join(APP_DIR, 'ui/appearance-sheet.js'), flag: '--app-file', as: 'sheet-v10.js', find: '导出备份时会一起带走。', repl: '导出备份时会一起带走！', expect: ['自检：--app-file 的文件名'] }
   ];
 
   const variantDir = path.join(TMP_ROOT, 'variants');
@@ -945,10 +993,12 @@ if (SELF_TEST) {
   safeMkdir(variantDir);
   safeMkdir(outDir);
 
-  function mutate(caseName, srcPath, find, repl, all) {
+  function mutate(caseName, srcPath, find, repl, all, as) {
     const dir = path.join(variantDir, caseName.replace(/[^\w\u4e00-\u9fa5-]+/g, '_'));
     safeMkdir(dir);
-    const out = path.join(dir, path.basename(srcPath));
+    // `as` 只在「故意把副本改名」的那条自检里用（M37）：默认沿用原名，因为 load() 的兜底按 basename
+    // 匹配，改名会让覆盖整条不发生——那正是 M37 要证明脚本能自己发现的事。
+    const out = path.join(dir, as ?? path.basename(srcPath));
     const text = readFileSync(srcPath, 'utf8');
     const eol = text.includes('\r\n') ? '\r\n' : '\n';
     const F = find.replace(/\n/g, eol), R = repl.replace(/\n/g, eol);
@@ -1022,7 +1072,7 @@ if (SELF_TEST) {
       }
       args = ['--root', FR];
     } else {
-      const out = mutate(c.name, c.file, c.find, c.repl, c.all === true);
+      const out = mutate(c.name, c.file, c.find, c.repl, c.all === true, c.as);
       args = [c.flag, out];
     }
     const r = runCheck(args, c.name);
