@@ -2604,6 +2604,11 @@ export function openAppearanceSheet() {
 }
 ```
 
+**任务 13 之后这个文件的现状**：上面那份是**任务 11 的 HEAD**（计划里的代码块镜的是各任务自己的 HEAD，不是最终 HEAD）。
+其中 `if (!state.photo)` 分支里那段注释与那句 `hint-text` 都在任务 13 里改过——**「不写「跟着备份一起走」」这条判断
+的前提（导出包还不带背景）随任务 13 消失**，面板上那句承诺已经加回来了（并注明了它的边界：`encodeBackground`
+失败的那一次导出不带背景，而那条降级是静默的）。现状见 `app/ui/appearance-sheet.js` 与任务 13 开头那条第 4 点。
+
 - [ ] **步骤 2：创建 `styles/appearance.css`**
 
 ```css
@@ -3065,6 +3070,35 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
 **文件：**
 - 修改：`app/backup.js`
 - 修改：`app/backup-store.js`
+- 新增：`tests/helpers/fake-browser.js`（内存版 IndexedDB + FileReader 桩，本步为了能自动测）
+- 新增：`tests/backup-store.test.js`（导出与导入成对跑的守卫）
+- 修改：`tests/backup.test.js`（`data` 的键集断言 + 两条新的 background 断言）
+
+**本步相对计划原文的四处改动**（原文的判断经不起下面给出的事实，逐条列在这里；理由同时写进了代码注释）：
+
+1. **`overlay` 的判据**。原文是 `Number(meta?.overlay) >= 0 ? Number(meta.overlay) : null`。
+   `Number(null)` / `Number('')` / `Number(false)` 都是 `0`，而 `0` 在这里是**合法**的遮罩强度
+   （`theme.js` 的 `OVERLAY_MIN` 就是 0，滑块能拖到那一格），于是「设置里根本没有这一项」会被写成
+   「用户选了 0% 遮罩」——一个从没发生过的值，而备份包是换机时唯一的数据面。改用 `overlayOrNull()`：
+   **一个判据只回答一个问题**（0 是「无遮罩」，`null` 才是「没有」）。
+2. **`clears` 里加 `assets`（仅当备份没带背景时）**。原文的「不要加」给的理由是「没有替补的东西一律不删」。
+   那条纪律的前提在本例里不成立：**`settings` 是整表覆盖的**，导入一份不含背景的备份时，本机那条
+   `backgroundImage` 必然被这次覆盖清掉——本机那张图**已经失去引用、画面上也不再显示它**，把字节留在
+   库里只会让它在下一次导出里复活（`encodeBackground` 只认 `assets` 那条记录、不看设置里有没有引用）
+   并跟着备份跑到第三台设备上去。规格 §7 的「否则清掉这两处」与规格 §13 那条「恢复的是一台机器上的图
+   （不是当前这台残留的）」的验收项指向同一个做法；**只留一半**（留图丢设置、或留设置丢图）才是要禁止的。
+   （真要在这种情况下保住本机背景，得把设置行也一起保留、两处都不动——像 `vault` 那样，那是另一个决定。）
+3. **失败降级的可见性**。`encodeBackground` 失败仍按原文降级成「这次不带背景」（账目比背景重要），
+   但注释里如实写明**这条降级是静默的**：`exportBackup` 的返回值里没有对应通道，用户唯一的线索是
+   控制台那条 `warn`。原文没写这一层，后来者容易读成「用户会知道」。
+4. **面板上那句被删掉的备份承诺加回来了**。`app/ui/appearance-sheet.js`（任务 11 的产物）里原本写着
+   「**不写「跟着备份一起走」**：导出包现在还不带背景（…那是任务 13 的事）」，用户可见的文案里因此
+   没有备份这回事。本步把这个前提消掉了（导出、导入两侧都有测试钉住），所以：文案改成
+   「……然后存在这台手机上，导出备份时会一起带走」，注释同步改准**并写明边界**——`encodeBackground`
+   失败的那一次导出不带背景，而那条降级是静默的，所以这句是「会」不是「永远会」。
+   判断依据：一句真话且对用户有用的话，不该因为「上一版做不到」而永久留在删除状态；用户最担心的正是
+   「换手机后背景没了」，而备份是他唯一能主动保住它的手段。`theme-store.js` 里那句「当前的备份包就没有
+   assets（规格 §7 的任务 13 接缝）」也是同一件事的另一种说法，一并对齐。
 
 - [ ] **步骤 1：`buildBackup` 带上 background**
 
@@ -3072,7 +3106,7 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
 
 ```js
       // 背景照片（base64）与它的遮罩强度。与 invoiceFiles 同理**刻意不深拷贝**：
-      // 它是一张一两百 KB 的 base64 串，structuredClone 会白复制一份，而数组由调用方现造现交。
+      // 它是一个几百 KB 的 base64 串，structuredClone 会白复制一份，而对象由调用方现造现交。
       background: payload.background ?? null,
 ```
 
@@ -3081,8 +3115,14 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
 `app/backup-store.js`：在文件顶部常量区（`ARRAY_STORES` 附近）加：
 
 ```js
-// 外观设置里的三个键名。背景图本身存在 assets 表里（见 schema.js），
-// 这里只需要知道设置里那一行叫什么。
+// 背景照片那一对名字。图片本身存在 assets 表里（见 schema.js），设置里那一行只存引用与遮罩强度
+// （`{ assetId, overlay, createdAt }`，见 theme-store.js 的 setPhoto）。
+// `'bg'` 与 theme-store.js 导出的 BACKGROUND_ASSET_ID **是同一把钥匙**，这里刻意再定义一次而不从
+// 那边 import：theme-store 会牵进 DOM 与 Canvas 一整串模块，这一层不需要它们（image-scale.js 那次
+// 也是同一个理由）。两个常量同名同值，改一处就得改另一处。
+// 导出与导入两侧都要用到它们，而且必须成对——只改一处就会留下「设置指向一张不存在的图」
+// （theme-store 的 applyPhoto 会按「没有背景」兜住并顺手清掉设置）或「图在库里、没人引用」
+// （界面看不出来，但下一次导出会把它带走）。文件头第 7 条讲的就是这件事。
 const BACKGROUND_KEY = 'backgroundImage';
 const BACKGROUND_ASSET_ID = 'bg';
 ```
@@ -3091,8 +3131,10 @@ const BACKGROUND_ASSET_ID = 'bg';
 
 ```js
   // 背景照片单独打包成 data.background。它与「不含图片」开关**无关**：
-  // 它是外观设置的一部分，压缩后只有一两百 KB，而「换机后背景丢了、找不回来」
-  // 是没法补救的（用户自己选的那张照片可能早就删了）。
+  // 它是外观设置的一部分，压缩后的照片只有一两百 KB，而「换机后背景丢了、找不回来」是没法补救的
+  // （用户自己选的那张照片可能早就删了、设备上只剩这一份，与图片那条路同源）。
+  // 上面那道几十 MB 的体量闸门（MAX_INLINE_FILES_BYTES）只盯着 invoiceFiles，不会把这一张挡在外面：
+  // 它是 KB 量级，而拦下它的代价是用户换机后背景再也找不回来，收益接近零。
   const background = await encodeBackground(settings);
 ```
 
@@ -3102,16 +3144,39 @@ const BACKGROUND_ASSET_ID = 'bg';
   const pkg = buildBackup({ ...arrays, settings, vault, invoiceFiles, background }, now);
 ```
 
-在 `encodeFiles` 的定义之后加：
+在 `encodeFiles` 的定义之后加（`overlayOrNull` 挨着它一起加）：
 
 ```js
+// 遮罩强度：只认数字与非空的可解析数字字符串（与 theme.js 的 normalizeOverlay 同一套判据），
+// 其余（字段缺失、null、空串、false、NaN）一律 null = 「备份里没有这个值」。
+//
+// **为什么不能图省事写 `Number(x) >= 0 ? Number(x) : null`**：Number(null) / Number('') /
+// Number(false) 都是 0，而 0 在这里是一个**合法的遮罩强度**（theme.js 的 OVERLAY_MIN 就是 0，
+// 意思是「完全不加遮罩」，滑块能拖到那一格）。那句写法会把「设置里根本没有这一项」写成
+// 「用户选了 0% 遮罩」——一个从没发生过的值。备份包是换机时唯一的数据面，写进去的假值
+// 会一直被当真：theme.js 的 normalizeOverlay 早就为同一件事写过一段注释
+// （Number(null) 那几种转换会把「这个设置没有」静默变成 0% 或 1%），这里是同一个坑的第二次出现。
+function overlayOrNull(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /**
- * 把背景照片编码进备份包。
- * 任何一步失败都返回 null 而不是抛错：一张背景图不该把整次导出打回去——
- * 导出是用户保住账目的唯一手段，而账目比背景重要得多（与 encodeFiles 里
- * 「跳过脏记录」同一条纪律）。
- * settings 传进来是为了取那份设置里的遮罩强度：照片与遮罩必须一起走，
- * 否则恢复回来的是张原图配默认强度的背景，而用户调过的那个值悄悄丢了。
+ * 把背景照片编码进备份包（data.background）。任何一步失败都返回 null 而不是抛错：
+ * 一张背景图不该把整次导出打回去——导出是用户保住账目的唯一手段，而账目比背景重要得多
+ * （与 encodeFiles 里「跳过脏记录」同一条纪律）。
+ * **这条降级是静默的**：exportBackup 的返回值里没有「这次没带背景」的通道（skipped 是发票图片的
+ * 张数，混进背景会污染那个数），用户唯一的线索是控制台那条 warn。要让他知道得再开一条通道，
+ * 本步没做——因此别在这里的注释或界面文案里写「用户会看到」。
+ *
+ * settings 传进来是为了在背景包里一并记下遮罩强度（data.background.overlay）。注意**恢复遮罩
+ * 并不走这个字段**：settings 是整表覆盖的，导入后遮罩来自备份 settings 里那一行（背景包里的
+ * overlay 与它同源，都是 theme-store 写下的那份 meta，不会打架）。这份字段是「照片自己的记录」，
+ * 也留给将来任何要读它的地方（比如摘要里显示「这份备份带背景」），眼下没有消费方。
  */
 async function encodeBackground(settings) {
   try {
@@ -3122,7 +3187,9 @@ async function encodeBackground(settings) {
     if (!image) return null;
     const meta = settings.find(r => r?.key === BACKGROUND_KEY)?.value ?? null;
     return {
-      overlay: Number(meta?.overlay) >= 0 ? Number(meta.overlay) : null,
+      overlay: overlayOrNull(meta?.overlay),
+      // 只认有值的数字：0 是 1970-01-01，一个像真实时间的哨兵值，宁可写成 null 也不让它混进去
+      // （theme.js 的 normalizeBackground 给 createdAt 判过同一件事，那边连字符串都不认）。
       createdAt: Number(row.createdAt) || null,
       mime: row.mime || 'image/jpeg',
       image
@@ -3139,56 +3206,122 @@ async function encodeBackground(settings) {
 在 `importBackup` 里，`invoiceFiles` 那个循环之后、`settings` 校验之前加：
 
 ```js
-  // 背景照片：与 invoiceFiles 同一条路（Blob 进不了 JSON，只能单独反解），
-  // 但**不参与 clears**，也不在「备份里没有就删本机」的范畴里：
-  //   · 备份里带了背景 → 覆盖 assets 里那一条（id 固定 'bg'，直接 put 就是覆盖）；
-  //     遮罩强度不需要在这里写回，它随 settings 表整体覆盖，已经跟着走了。
-  //   · 备份里没带背景（老备份，或那次导出时读图失败）→ 什么都不做。
-  //     此时设置里那条 backgroundImage 会被 settings 的整体覆盖带走，
-  //     即使残留一个指向不存在记录的 assetId，theme-store 的 applyPhoto 也会
-  //     按「没有背景」优雅降级并顺手清掉它。
+  // 背景照片：与 invoiceFiles 同一条路（Blob 进不了 JSON，只能单独反解），但处置**正好相反**，
+  // 而且两处必须成对，见文件头第 7 条。这里只做前半段（写），后半段（清）在下面 clears 那一段——
+  // 那里才拿得到 clears 数组。两段合起来是一条规则：
+  //   备份里**带**了可恢复的背景 → assets 里那条 'bg' 写回去（id 固定，put 即覆盖）；
+  //   备份里**没有**（老备份根本没有这个键、那次导出时读图失败、或这段 base64 解不开）
+  //     → 本机那条一并清掉，并且不让设置里留下指向它的 backgroundImage 行（见下面 settings 循环）。
+  // 为什么「没有」时要清、而 invoiceFiles 却保留：settings 是整表覆盖的，本机那条 backgroundImage
+  // 必然被这次导入清掉——本机那张图**已经失去引用**，画面上也不再显示它。此时把字节留在库里不等于
+  // 「保住用户的东西」，只会让它在下一次导出里复活（encodeBackground 只认 assets 那条记录、
+  // 不看设置里有没有引用）并跟着备份跑到第三台设备上去。真要在这种情况下保住本机背景，得把设置行
+  // 也一起保留（像 vault 那样两处都不动），那是另一个决定：规格 §13 里那条「恢复的是一台机器上的图
+  // （不是当前这台残留的）」的验收项与它冲突——「留图 + 备份的设置行」恰恰会做出「图上来了、
+  // 但不是备份里那张」的混合状态，比干脆没有更难解释。
   const bg = data.background;
-  if (bg && typeof bg === 'object') {
-    const bgBlob = base64ToBlob(bg.image, bg.mime);
-    if (bgBlob) {
-      puts.push({
-        store: 'assets',
-        value: {
-          id: BACKGROUND_ASSET_ID,
-          blob: bgBlob,
-          mime: bg.mime || 'image/jpeg',
-          size: Number(bgBlob.size) || 0,
-          createdAt: Number(bg.createdAt) || Date.now()
-        }
-      });
-    }
+  // 判据只看「能不能解出一张图」：形状不对（字符串、数组、null、老备份的 undefined）与 base64 坏了
+  // 走同一条路——都没有可恢复的背景。base64ToBlob 自己会挡住空串/非 4 倍数/解不开的串。
+  const bgBlob = (bg && typeof bg === 'object') ? base64ToBlob(bg.image, bg.mime) : null;
+  if (bgBlob) {
+    puts.push({
+      store: 'assets',
+      value: {
+        id: BACKGROUND_ASSET_ID,
+        blob: bgBlob,
+        mime: bg.mime || 'image/jpeg',
+        size: Number(bgBlob.size) || 0,
+        // 与 theme-store 的 setPhoto 同一个字段含义（这条记录是什么时候写下的）。
+        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻。
+        createdAt: Number(bg.createdAt) || Date.now()
+      }
+    });
   }
 ```
 
-**注意**：`clears` 列表**不要**加 `assets`（保持原样）。理由写在 `clears` 那段注释已有的纪律里：没有替补的东西一律不删——备份里没带背景时清空 assets，只会删掉本机唯一一张背景图，而文件里并没有它的替补。
+`settings` 那个**入队**循环里加一行跳过（校验循环不动：只查 key 是不是字符串）：
+
+```js
+  for (const row of data.settings) {
+    if (row.key === VAULT_KEY) continue; // 密码箱只认 data.vault，避免文件里两份互相打架
+    // 备份里没有可恢复的背景时不写回这一行：写了就是一条指向不存在记录的**悬空设置**
+    // （theme-store 的 applyPhoto 会按「没有背景」兜住它并顺手把设置清掉，但那要等到下一次启动，
+    // 中间这段时间里库里的状态是自相矛盾的）。它与上面「清 assets」是同一件事的两半。
+    if (!bgBlob && row.key === BACKGROUND_KEY) continue;
+    puts.push({ store: 'settings', value: row });
+  }
+```
+
+`clears` 那一段加**另一半**（成对的第二半）：
+
+```js
+  const clears = ARRAY_STORES.filter(name => Array.isArray(data[name]));
+  if (arrayOrEmpty(data.invoiceFiles).length > 0) clears.push('invoiceFiles');
+  if (!bgBlob) clears.push('assets');
+  clears.push('settings');
+```
+
+**注意**：`clears` 里的 `assets` 是**有条件的**（只在备份没带背景时可恢复时清），不是无条件加。
+无条件清会在「备份真的带了背景」时做一次多余的删除（那时上面那条 `put` 已经把同一个 id 覆盖掉了，
+`assets` 现在也只有这一条记录，但清单不该靠「现在只有一条」活着）。理由与那句 `if (arrayOrEmpty(...))`
+完全同构：**清空要么是为覆盖、要么是为不留下上一份数据的残留，两件事都得先有「可覆盖的东西」。**
 
 - [ ] **步骤 4：跑测试**
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：全部 PASS。**如果 `tests/backup*.test.js` 里有对 `data` 字段形状的断言被打红**，说明那条断言是「只认这几个键」的写法——读一下它是想守住什么，然后决定是把 `background` 加进白名单，还是把断言改成「包含」而非「完全相等」。把判断理由写进注释。
+**实测（本步落地时）：284 pass / 0 fail，exit=0，duration ≈ 11.5s**（基线 273 pass / 0 fail、≈0.8s；
+新增的 11 条 = `tests/backup-store.test.js` 的 9 条 + `tests/backup.test.js` 的 2 条。
+耗时涨在 PBKDF2 上：`exportBackup` 与 `importBackup` 都按 600000 轮跑，这是真机口径，不为了测试快而调低）。
 
-- [ ] **步骤 5：手动跑一次完整往返（这一步不能省）**
+**`data` 字段形状那条断言确实被打红了**（`buildBackup 带上格式标识、版本与时间戳`）——它写的是
+「键集**完全相等**」。判断：**把 `background` 加进那份清单，保持「完全相等」不改宽成「包含」**。
+理由：`data` 里有哪些键本身是有意义的决定（导入侧靠「键在不在」判断要不要清本机的表、靠「值是什么」
+判断要不要清本机那条背景），加一个键就该在这里显式改一次、顺手想清楚导入端认不认它；改成「包含」
+等于让新键悄悄溜进备份包——`invoiceFiles` 那次漏掉 `name` 正是「新字段没人在清单上过一遍」的后果。
+理由已写进 `tests/backup.test.js` 的注释里。同时补了两条：`payload` 没有背景时键在、值为 `null`，
+以及背景对象原样进包。
+
+- [ ] **步骤 5：手动跑一次完整往返（这一步不能省；本机没有浏览器，落点在任务 15）**
+
+本机（开发机）没有可用浏览器，下面 5 条**一条都没跑过**。步骤 4 的自动化只盖住了「数据形状」那一层
+（导入导出之后库里剩下什么），真机上的渲染、文件下载、真实 IndexedDB 的事务语义都不在里面
+（桩盖不住什么，写在 `tests/helpers/fake-browser.js` 的开头）。清单里对应的是任务 15 的
+「备份导出携带背景，导入后背景还在」那一条。
 
 1. 起本地服务，设置一张背景照片（遮罩调成非默认值，比如 45%）
-2. 猜一下：备份 → 导出（记下文件大小）
+2. 备份 → 导出（记下文件大小；顺手对一下它与规格 §8 那条「约 +100~400KB」的预期）
 3. 在站点的 IndexedDB 里清空 `assets` 表（DevTools → Application → IndexedDB → pvault → assets → 右键 Clear），刷新页面确认背景消失
 4. 备份 → 导入刚才那个文件，输入密码
 5. 确认：背景回来了，且遮罩是 45% 而不是默认的 30%
 
 **第 5 步的「45%」是关键**：只验「背景回来了」会漏掉「遮罩强度没跟着走」这种一半成功的恢复。
+（自动化里已经有对应的一条：`成对①` 断言导入后 `settings.backgroundImage.overlay === 45`——
+但它验的是库里的值，不是画面上真的按 45% 遮罩渲染。）
 
-- [ ] **步骤 6：Commit**
+**再加一条本步新增的真机条目**（任务 15 落到清单里）：**导入一份「没有背景」的备份到一台有背景的
+手机上**，确认导入后背景**和**它的设置行一起消失（不是「图还在、只是不显示」）。这条是本次成对处置
+在真实设备上的落点；包在浏览器里导不出十几种形状，只能人工造这一种。
+
+- [ ] **步骤 6：Commit（三条：代码 / 测试 / 文档同步）**
 
 ```bash
-git add app/backup.js app/backup-store.js
+git add app/backup.js app/backup-store.js app/theme-store.js app/ui/appearance-sheet.js tests/backup.test.js
 git commit -m 'feat(backup): 备份携带背景照片与遮罩强度'
+
+git add tests/helpers/fake-browser.js tests/backup-store.test.js
+git commit -m 'test(backup): 背景导出与导入的成对守卫'
+
+git add docs/
+git commit -m 'docs(appearance): 同步任务 13（计划镜像、规格 §7、面板承诺与手动清单）'
 ```
+
+三条的顺序有理由：**第一次提交后全量测试就是绿的**（`tests/backup.test.js` 的键集断言与代码在同一条
+提交里改，它是形状契约的一半）；第二条只加测试设施与守卫，不动生产代码；第三条只碰文档。
+`tests/backup.test.js` 跟着代码走而不是跟着测试走，就是为了不让中间那次提交红。
+后两条文件（`app/theme-store.js` 与 `app/ui/appearance-sheet.js`）进第一条，因为它们改的是**注释与
+用户文案**——那些句子在代码改动落地的那一刻就变成假话了（「备份包还没有 assets」「不写『跟着备份一起走』」），
+让它们和代码分两次提交会留下一个「代码说带了、注释说没带」的中间状态。
 
 ---
 
@@ -3497,6 +3630,7 @@ git commit -m 'docs: 手动验证清单加入外观与背景章节'
 **类型与命名一致性**（跨任务核对）
 
 - `BACKGROUND_ASSET_ID`：任务 7 定义并导出，任务 13 的 `backup-store.js` 里**再定义一次**（模块之间不共享常量是有意的——`backup-store.js` 不该 import 一个依赖 DOM 的模块；两处都用 `'bg'` 这个字面量，任务 13 的注释里写明了它是同一把钥匙）。
+- `encodeBackground`：**两个模块各有一个同名函数，语义不同，不要互相 import 也不要互相参照**——`theme-store.js`（任务 8）那个收一个 `File`、把用户选的照片压成 JPEG 再写进 `assets`；`backup-store.js`（任务 13）那个收 `settings` 数组、把库里那张图转成 base64 塞进备份包。名字撞车是因为两处都是「背景图编码」，签名与职责是正交的；要改其中一处时先看清是哪一个（`backup-store.js` 里那份的 JSDoc 写明了它的失败语义与降级）。
 - `normalizeOverlay`：任务 3 定义，任务 8 的 `setOverlay()` 使用（任务 8 步骤 1 特别提醒把它补进 import 清单）。
 - `setPhoto` / `removePhoto` / `setOverlay` / `setPreset` / `setMode` / `currentTheme`：任务 7–8 导出，任务 11 的面板按这套名字 import。
 - `themeCssVars(themeId, mode, { photo })`：任务 4 定义，任务 7 的 `paint()` 调用。

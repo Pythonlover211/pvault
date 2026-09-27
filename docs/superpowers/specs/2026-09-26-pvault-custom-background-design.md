@@ -375,13 +375,14 @@ body::before {
 
 ## 7. 备份与恢复
 
-- 导出：`exportBackup()` 里读 `assets` 的 `'bg'` 记录 → base64 → 放进 `data.background = { overlay, createdAt, mime, image }`。读失败时置 `null` 并 `console.warn`，**不能让一张背景图把整次导出打回去**（与 `encodeFiles` 里「跳过脏记录」同一纪律）。
-- 导入：`importBackup()` 里若 `data.background` 有值且能解出 Blob，就写回 `assets`（`id: 'bg'`）并更新 `settings.backgroundImage`；否则清掉这两处（备份里没有背景，恢复后就不该留着上一台设备的背景）。
+- 导出：`exportBackup()` 里读 `assets` 的 `'bg'` 记录 → base64 → 放进 `data.background = { overlay, createdAt, mime, image }`。读失败时置 `null` 并 `console.warn`，**不能让一张背景图把整次导出打回去**（与 `encodeFiles` 里「跳过脏记录」同一纪律）。**这条降级是静默的**：`exportBackup` 的返回值里没有对应通道，用户唯一的线索是控制台那条 `warn`——别在注释或界面文案里写成「用户会看到」。
+- 导入：`importBackup()` 里若 `data.background` 有值且能解出 Blob，就把 `assets` 的 `'bg'` 写回去（`id` 固定，put 即覆盖）；遮罩强度**不在这里单独写**——它随 `settings` 表整体覆盖一起走，备份 `settings` 里那一行就是载体。否则（没有值、或解不出 Blob）两处**一起清掉**：`clears` 加上 `assets`，同时跳过备份 `settings` 里的 `backgroundImage` 行（备份里没有背景，恢复后就不该留着上一台设备的背景，也不该留下一条指向不存在记录的悬空设置）。
 - **这是本次最容易漏的接缝**：`invoiceFiles` 那次就是因为在设计里写了「备份是整表导出，不用改」而漏掉 `name` 字段，直到换机才暴露。所以：
   - `data.background` 的读写**必须在同一个函数里成对出现**（导出与导入放在相邻的代码段，由评审逐行对照）；
   - 恢复后的背景图必须能被 `theme-store.js` 正常读到并应用（验证方式见手动清单）；
-  - `assets` 表在 `importBackup` 里**不进 `clears` 列表**——它只在背景这一条路上被写，整表清空会让「备份里没有背景」这种正常情况变成一次多余的删除。
-- **任务 13 落地之前，导入必然留下一次悬空设置**：现在的 `importBackup` 整表覆盖 `settings`，而 `assets` 既不进 `clears` 也不在导出内容里（`data` 只有 `txns/accounts/categories/receivables/settings/invoices/invoiceFiles/vault`）。于是在 A 机开过背景的用户把备份导进 B 机之后，`settings.backgroundImage` 指向 `'bg'`，而 B 机的 `assets` 是空的。这不会崩——`theme-store.js` 的 `applyPhoto` 按「没有背景」兜住它、顺手把设置清掉——但用户看到的是「导入后背景没了」，而**任务 13 的导入侧必须把 `assets` 与 `settings.backgroundImage` 成对处理**（有则一起写回、无则一起清掉），否则每次导入都留一条悬空设置。
+  - `assets` 在 `importBackup` 里**按条件进 `clears`**：只在备份里**没有**可恢复的背景时才清。备份真的带了背景时不清——那个 id 固定是 `'bg'`，写回就是覆盖同一条记录，多余的删除只会删掉将来可能存在的别的资源记录（`assets` 现在只有这一条，但清单不该靠「现在只有一条」活着）。它和上面那句 `if (arrayOrEmpty(data.invoiceFiles).length > 0)` 是同构的：**清空要么是为覆盖、要么是为不留下上一份数据的残留，两件事都得先有「可覆盖的东西」。**
+- **「没有就清」与「没有替补的东西一律不删」在这里不冲突**（这条容易被误读成违反了纪律，所以写全）：`settings` 是整表覆盖的，备份里没有 `backgroundImage` 行时本机那一行必然被这次覆盖清掉——那张图**已经失去引用、画面上也不再显示它**，此时留字节不等于保住用户的东西，只会让它在下一次导出里复活（`encodeBackground` 只认 `assets` 那条记录、不看设置里有没有引用）并跟着备份跑到第三台设备上去。要真保住本机背景，得把设置行也一起保留（像 `vault` 那样两处都不动）——那会让「背景还在，但**不是备份里那张**」的混合状态出现在导入之后，与 §13 那条「恢复的是一台机器上的图（不是当前这台残留的）」的验收项冲突。**只留一半**（留图丢设置、或留设置丢图）才是要禁止的。
+- **历史（任务 13 之前）**：那时的 `importBackup` 整表覆盖 `settings`，而 `assets` 既不进 `clears` 也不在导出内容里（`data` 只有 `txns/accounts/categories/receivables/settings/invoices/invoiceFiles/vault`）。于是在 A 机开过背景的用户把备份导进 B 机之后，`settings.backgroundImage` 指向 `'bg'`，而 B 机的 `assets` 是空的——每次导入都留下一条悬空设置。现在不会了（见上一条）。这段留着是为了说明 `theme-store.js` 里 `applyPhoto` 那段注释在讲什么。
 
 ---
 
@@ -418,8 +419,12 @@ body::before {
 
 ### 9.2 不新增测试但必须回归的
 
-- 现有 247 个测试全绿（基准不能掉）。
-- `tests/backup*.test.js` 里若有对备份包 `data` 字段形状的断言，导入/导出背景的加入会不会让它失败（实现时逐个跑）。
+- 现有测试全绿（基准不能掉——**不在这里写死条数**：它随每个任务增长，写死必过时；各步落地时的实测值记在计划的对应步骤里）。
+- `tests/backup*.test.js` 里对备份包 `data` 字段形状的断言：任务 13 落地时**确实红了一条**
+  （`buildBackup 带上格式标识、版本与时间戳` 的键集「完全相等」断言）。处置是把 `background` 加进那份
+  清单、保持「完全相等」不改宽成「包含」，理由见计划任务 13 步骤 4。另外任务 13 新增了常驻测试
+  `tests/backup-store.test.js`（内存版 IndexedDB 桩上的导入导出往返，11 条）——`backup-store.js`
+  从「只能手验」变成「数据形状那一层有自动守卫，真机行为仍需手验」。
 
 ### 9.3 模拟器 / 真机验证（CDP）
 
