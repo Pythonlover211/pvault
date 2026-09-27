@@ -435,10 +435,10 @@ body::before {
 
 | 接缝 | 具体动作 | 漏掉的后果 |
 |---|---|---|
-| `sw.js` 的 `ASSETS` | 加 `./app/theme.js`、`./app/theme-store.js`、`./app/ui/appearance-sheet.js`；`CACHE` 升到 `pvault-v16` | 离线 / APK 里这三个模块 404，整个 app 白屏 |
+| `sw.js` 的 `ASSETS` | `./app/canvas-image.js`（任务 5，v16）、`./app/theme-store.js` 与 `./app/theme.js`（任务 10，v17，两个一起加——它们在同一条首屏依赖链上）已经加完；剩下 `./app/ui/appearance-sheet.js` 与 `./styles/appearance.css` 在任务 14，`CACHE` 那时升到 `pvault-v18` | 漏加一个模块：离线启动时它的请求缓存未命中 → 回退 `index.html` → 模块脚本被 MIME 检查拒绝，app 起不来。**这不是 404**——404 属于「清单里写了一条不存在的路径」，那时 `addAll` 会整批 reject、install 失败 |
 | `backup-store.js` 的导出与导入 | `data.background` 两处成对写 | 换机后背景静默消失（与 `name` 字段同一个坑） |
 | `DB_VERSION` 2 → 3 | `schema.js` 加 `assets` + 升版本号 | 新表建不出来，存图直接抛错 |
-| `main.js` 的 `render()` | 首屏前 `await themeReady` | 每次冷启动闪一下默认色 |
+| `main.js` 的 `render()` | 在 `render()` 这条路径上、内容挂载前 `await themeReady`（边界见 §5.4） | 内容先挂载、再上色：**默认皮肤 + 默认深浅之外的档**冷启动会闪一下默认色 |
 | `settings-sheet.js` | 新入口插对位置 | 设置面板里出现两个「备份」或漏掉一行 |
 | `build-apk.ps1` | **不用改**（整目录复制） | —（写在这里是为了让评审确认「真的不用改」） |
 

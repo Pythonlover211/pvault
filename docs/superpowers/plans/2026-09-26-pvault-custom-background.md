@@ -65,7 +65,7 @@
 | `app/ui/settings-sheet.js` | 加「外观与背景」入口（插在 `budget` 与 `backup` 之间）。 |
 | `app/backup-store.js` | 导出/导入 `data.background`。 |
 | `app/backup.js` | `buildBackup` 里带上 `background`。 |
-| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5、`theme-store.js` 在任务 10 提前加，其余 3 个在任务 14）；`CACHE` 依次升到 `pvault-v17`（任务 10）与 `pvault-v18`（任务 14），任务 5 已用到 v16。 |
+| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5；`theme-store.js` 与 `theme.js` 在任务 10 一起提前加——它们在同一条首屏依赖链上；其余 2 个在任务 14）；`CACHE` 依次升到 `pvault-v17`（任务 10）与 `pvault-v18`（任务 14），任务 5 已用到 v16。 |
 | `index.html` | 加一行 `styles/appearance.css`。 |
 | `tests/schema.test.js` | 三处会被这次改动打红的断言（见任务 6）。 |
 | `docs/手动验证清单.md` | 加外观章节。 |
@@ -1322,9 +1322,13 @@ import * as db from './db.js';
 import { getSetting, setSetting } from './store.js';
 import {
   DEFAULT_PRESET, DEFAULT_MODE, OVERLAY_DEFAULT,
-  normalizePreset, normalizeMode, normalizeBackground,
+  normalizePreset, normalizeMode, normalizeBackground, normalizeOverlay,
   resolveMode, scrimAlpha, themeCssVars
 } from './theme.js';
+// 解码 / 缩放 / JPEG 导出与发票那条路共用同一份（理由见 canvas-image.js 的头注释），
+// 压缩参数也用发票同一套（长边 1600、质量 0.72），背景图不另立一套。
+import { decode, drawTo, releaseSource } from './canvas-image.js';
+import { MAX_EDGE, JPEG_QUALITY } from './image-scale.js';
 
 /** 背景图在 assets 表里的固定主键。只存一张，重复选图就是覆盖同一条。 */
 export const BACKGROUND_ASSET_ID = 'bg';
@@ -1418,6 +1422,7 @@ function attachSystemListener() {
   else if (typeof mq.addListener === 'function') mq.addListener(onSystemChange);
   systemListenerAttached = true;
 }
+
 ```
 
 - [ ] **步骤 2：加 `initTheme` 与三个写入口**
@@ -1430,11 +1435,28 @@ function attachSystemListener() {
  * 「先闪一下默认蓝、再变成暖纸」。
  *
  * **调用方必须 catch**：主题读不出来时照常渲染，只是外观是 CSS 里的兜底默认值。
- * （任务 10）的 main.js 把 `initTheme().catch(...)` 挂在渲染路径上正是为此；少了那个 catch，
- * 一次主题失败就会升级成整页「页面加载失败」。这条路径失败时页面上是 0 个变量、0 个 dataset、
- * 0 个监听——连「半套主题」都不是，所以宁可要默认外观也不要它冒到视图层。
+ * main.js（任务 10）把 `initTheme().catch(...)` 挂在渲染路径上正是为此；少了那个 catch，那次 await 会抛在
+ * render() 的 try 之外（try 只管视图那一段），整个 render() 以 rejected promise 收场——**一次 mount 都不会
+ * 发生**：页面纯空白，控制台只有一条未处理的拒绝，连 main.js 里那句「页面加载失败」都渲染不出来
+ * （那句在 try 内，走的是视图渲染失败那条路）。这条路径失败时页面上是 0 个变量、0 个 dataset、0 个监听
+ * ——连「半套主题」都不是，所以宁可要默认外观也不要它冒到视图层。
+ * 兜住之后也不会重试：main.js 把结果缓存在模块级的 themeReady 里，失败同样是一个 settled 的结果，于是
+ * 一次主题失败＝本次页面生命周期停在「DOM 上 0 个变量、外观走 CSS 兜底那套」的状态，只有刷新才会重新
+ * 走一遍 initTheme（走到这条路的是 db.js 的 onblocked：另一个标签页占着旧连接；视图那边会自愈，主题
+ * 这边不会）。**这个结论在任务 11 之后会变窄**：面板接上「外观与背景」之后，setPreset / setMode 会被
+ * 用户点到，它们各自 paint() 一次、把整条变量写出去，DOM 就从「0 个变量」回到有值了——那时「停在默认
+ * 外观」不再成立（停在的是用户刚点的那套，只是本页启动时没从库里读出来）。要手动补一次，也可以直接
+ * 再调一次本函数。
  *
- * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写），监听不重复挂。
+ * **它现在是首屏渲染路径上的前置依赖**（任务 10 挂上去的）：`render()` 的那次 mount 要等它跑完——
+ * **只覆盖 `render()` 这条路**：主屏快捷方式那条（openFromShortcut → openEntryPanel）不经过它、与它
+ * 并发（见 main.js 里那段注释与规格 §5.4 的边界段）。它做的 IndexedDB 操作是
+ * settings 三条读（下面那次 Promise.all），有照片时再加 assets 一条读与一次 blob URL 创建
+ * （**不做解码**——decode 只在 setPhoto 那条路上）。将来若把慢操作搬进这里（比如启动就解码背景图），
+ * 要重新评估这个依赖，别默默加重首屏。
+ *
+ * 可以重复调用：第二次会从库里重读并重画（12 个变量全部重写；有照片时还会重读一次 assets，
+ * 重建 blob URL 并当场释放上一个），监听不重复挂。
  * 将来需要「不刷新页面就把外部改动读进来」（比如导入备份之后）就用这个入口。
  */
 export async function initTheme() {
@@ -1448,9 +1470,14 @@ export async function initTheme() {
   applied.mode = resolveMode(applied.modeChoice, systemDark());
   applied.overlay = normalizeBackground(bgRaw)?.overlay ?? OVERLAY_DEFAULT;
   paint();
-  // 背景照片的加载（applyPhoto）在任务 8 才实现。这里先不调用它：调一个尚不存在的函数
-  // 会让 initTheme 直接 reject，而那时变量已经写进页面、监听却还没挂上——一个「半套主题」的中间态。
-  // 任务 8 实现 applyPhoto 后，把调用补在下面这行之前，并在提交说明里点明它关闭了这个中间态。
+  // 照片要 await 出来，**不能**挂成 fire-and-forget：上面这次 paint() 画的是内存里的 applied，
+  // 而卡片的不透明度（--surface）与背景图（--bg-image）要等 applyPhoto 里的第二次 paint() 才到位。
+  // 不 await 的话那次补画落在 initTheme 返回之后（常常已经 mount 完了），冷启动时用户看到的是
+  // 「卡片先实心、再突然变半透明并冒出一张照片」——规格 §5.4 要求它在 render() 那条路径上先于 mount，
+  // 照片是同一层外观，没有理由把它排除在外。代价只有首屏多等一次 assets 读（settings 那条
+  // 上面已经读过，直接传给 applyPhoto，不再重复读），与 mount 之后读交易列表同量级。
+  // 失败只记一条日志：一次照片读取失败不该升级成主题失败，initTheme 照常返回、监听照常挂上。
+  await applyPhoto(bgRaw).catch(err => console.error('背景照片加载失败，按没有背景处理', err));
   attachSystemListener();
   return currentTheme();
 }
@@ -1959,18 +1986,21 @@ import { initTheme } from './theme-store.js';
 ```
 
 加在 `render()` 函数之后、那段讲并发渲染的注释**之前**——也就是 `let renderSeq = 0;` 之前，但**不要**插进
-那段注释与它要说明的那行变量之间（`renderSeq` 在第 33 行，它上面那三行注释讲的是它为什么要存在，
-插进去就散了）。实测落在第 32 行：
+那段注释与它要说明的那行变量之间（`renderSeq` 在第 40 行，它上面那三行注释讲的是它为什么要存在，
+插进去就散了）。实测落在第 35 行：
 
 ```js
 // 主题必须在 render() 这条路径上先于它的 mount 应用，否则冷启动会「先闪一下默认色、再变成选中的皮肤」。
-// 不写成「任何 mount」「每次冷启动」：默认皮肤下闪的就是它自己（看不出差别，任务 15 的清单要求拿它当
-// 对照组）；而 openFromShortcut() 直接开录入面板的那次 mount 不走 render()，与 initTheme() 并发。
+// 不写成「任何 mount」「每次冷启动」：默认皮肤 + 默认深浅档下闪的就是它自己（看不出差别），但**不是
+// 所有默认皮肤的组合都看不出**——手动选深色而系统是浅色时，兜底帧走 base.css 的 :root（浅色），应用后
+// 是深色，这一档照样会闪；而 openFromShortcut() 直接开录入面板的那次 mount 不走 render()，与 initTheme() 并发。
 // 为什么不放在文件末尾直接 await：onChange(render) 是同步注册、可能同步触发第一次渲染，
 // 把它挂在渲染路径上，两条路谁先到都保证「这一次 render 的 mount 在主题之后」。
 // .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。兜住之后**不再重试**：
-// themeReady 从此 settled，本次页面生命周期里主题就停在默认值、要刷新才恢复（典型触发是 db.js 的
-// onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，主题不会）。代价见 theme-store.js 的 initTheme。
+// themeReady 从此 settled，本次页面生命周期里主题就停在「DOM 上 0 个变量、外观走 CSS 兜底」的状态、
+// 要刷新才恢复（典型触发是 db.js 的 onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，
+// 主题不会。任务 11 接上「外观与背景」面板之后这条会变窄：用户点一次皮肤或深浅就会 paint() 把整条写出去）。
+// 代价见 theme-store.js 的 initTheme。
 let themeReady = null;
 ```
 
@@ -1990,8 +2020,8 @@ let themeReady = null;
 
 - [ ] **步骤 2：在 `render()` 里 await 它**
 
-`render()` 函数体开头（`const seq = ++renderSeq;` 之后、`const renderers = …` 之前）插入（实测落在第 41 行；
-本函数里那两次 `mount()` 在第 53 / 58 行，都在它之后）：
+`render()` 函数体开头（`const seq = ++renderSeq;` 之后、`const renderers = …` 之前）插入（实测落在第 44 行；
+本函数里那两次 `mount()` 在第 56 / 61 行，都在它之后）：
 
 ```js
   await (themeReady ??= initTheme().catch(err => {
@@ -2015,26 +2045,28 @@ let themeReady = null;
 
 这里做静态核对。逐条都是文本层的事实，命令都以 `E:\codex-project\pvault` 为工作目录、可复现：
 
-1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：第 41 行的 `await (themeReady ??= …)` 在第 53 行
-   （视图渲染失败时那次 `mount(view, …)`）与第 58 行（`mount(app, view, renderTabBar(id))`）之前；
-   各视图内部的 `mount(root, …)` 都由第 51 行的 `await fn(view)` 间接调用，同样晚于第 41 行。
+1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：第 44 行的 `await (themeReady ??= …)` 在第 56 行
+   （视图渲染失败时那次 `mount(view, …)`）与第 61 行（`mount(app, view, renderTabBar(id))`）之前；
+   各视图内部的 `mount(root, …)` 都由第 54 行的 `await fn(view)` 间接调用，同样晚于第 44 行。
 2. **`.catch` 兜底在**：第 37–39 行整个表达式就是
    `initTheme().catch(err => { console.error('主题初始化失败，用默认外观', err); })`——主题初始化失败
    既不会冒成未处理的拒绝，也不会挡住渲染。
-3. **只初始化一次**：`themeReady` 在 `main.js` 里只出现 **2 行**——第 32 行的 `let themeReady = null;` 与
-   第 41 行的 `await (themeReady ??= …)`（`Select-String -Path app\main.js -Pattern themeReady` 可复现，
-   返回的就是这 2 行；`??=` 同时是读与写，同一个变量名只写一次，所以第 41 行只算一处）。
+3. **只初始化一次**：`themeReady` 在 `main.js` 的**代码**里只出现 **2 处**——第 35 行的
+   `let themeReady = null;` 与第 44 行的 `await (themeReady ??= …)`（`??=` 同时是读与写，同一个变量名
+   只写一次，所以第 44 行只算一处）。**口径要说清**：`Select-String -Path app\main.js -Pattern themeReady`
+   返回的是 **3 行**——第 30 行那句注释（「themeReady 从此 settled…」）里也有这个词。文本层的行数与
+   代码层的处数不是一回事，`tests/boot-order.test.js` 那条断言数的是**剥掉注释之后**的代码行。
    `??=` 是「读-判断-写」的同步整体，并发的第二次 `render()` 只会复用同一个 promise，不会把 `initTheme()`
    跑两遍。
-4. **没有 TDZ 陷阱**：`let themeReady` 在第 32 行，而 `render()` 的第一次调用来自文件末尾的
-   `onChange(render)`（第 165 行——`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
-   所以第 41 行那个 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
+4. **没有 TDZ 陷阱**：`let themeReady` 在第 35 行，而 `render()` 的第一次调用来自文件末尾的
+   `onChange(render)`（第 168 行——`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
+   所以第 44 行那个 `await` 求值时声明早已初始化。反过来看更清楚：声明要是写在 `onChange(render)` 之后，
    冷启动第一帧会是 `ReferenceError`，而不是「主题先行」。
 5. **`theme-store.js` 与 `theme.js` 都在 `sw.js` 的 `ASSETS` 里、且路径与磁盘一致**：清单里那两条是
-   `'./app/theme-store.js'`（第 107 行）与紧跟其后的 `'./app/theme.js'`（第 108 行——ASC 里
+   `'./app/theme-store.js'`（第 115 行）与紧跟其后的 `'./app/theme.js'`（第 116 行——ASC 里
    `'-'`(0x2D) < `'.'`(0x2E)，所以 `theme-store` 在前），磁盘上两份都在；任务 14 步骤 2 那支存在性
    校验脚本跑出来是 `全部存在，共 58 个`（实测）。
-6. **`CACHE` 只有一处常量声明、已是 v17**：`const CACHE = 'pvault-v17'`（第 62 行）。
+6. **`CACHE` 只有一处常量声明、已是 v17**：`const CACHE = 'pvault-v17'`（第 70 行）。
 7. **首屏资源集合与 `ASSETS` 已经完全对齐**（本步实测）：从 `index.html` 里那 8 条 `./` 引用出发
    （`manifest.webmanifest`、`icons/icon.svg`、5 个 CSS、`app/main.js`），沿 `import` 走一遍闭包，
    得到首屏资源集合 **57 条**（其中 50 个 `.js`，含本步新引入的传递依赖 `main → theme-store → theme`）。
@@ -2043,12 +2075,12 @@ let themeReady = null;
 
 **这一节核不到什么**（与任务 9 那节同一个边界，如实写）：
 
-- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。第 41 行只保证「**内容被挂载之前**
+- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。第 44 行只保证「**内容被挂载之前**
   主题已应用」；在它之前浏览器可能已经画过一到几帧，那几帧的底色走 `styles/base.css` 的 `:root` 兜底
   （默认皮肤的浅 / 深），不是用户选的那套。**改前改后都是这样**——区别在于改前连「内容挂载时」都还是
   默认色。这条边界只能靠真机看（任务 15）。
 - 「任何 mount 之前」这个全称**有一个反例**，先列出来再落笔：文件末尾**调用**的 `openFromShortcut()`
-  （第 167 行是那次**调用**，函数定义在第 114 行）
+  （第 170 行是那次**调用**，函数定义在第 117 行）
   在 hash 带 `new=1` 时直接调 `openEntryPanel()`，这条路**不经过** `render()` 的那次 `await`；它自己先
   `await` 一次 IndexedDB 读（`app/ui/entry-panel.js` 第 131 行的 `Promise.all`）再挂载面板，与 `initTheme()`
   是**并发**的，谁先完成没有保证。后果限于「主屏快捷方式冷启动时，面板的第一帧可能还是默认色」；
@@ -2072,27 +2104,34 @@ let themeReady = null;
 
 **守卫（本步新增）：`tests/boot-order.test.js` + `scripts/check-theme-css.mjs` 的 ⑬**
 
-**为什么非加不可（实测）**：返工那轮把三个变异逐个做在仓库外的副本上——A 把那次 `await` 挪到
+**为什么非加不可（实测）**：加它之前把三个变异逐个做在仓库外的副本上——A 把那次 `await` 挪到
 `mount(app, …)` 之后、B 删掉 `.catch`、C 把 `??=` 改成 `=`——**在那之前全量测试与静态核验都是全绿的**
 （零告警）。原因是 `tests/` 里唯一碰 `main.js` 的是 `dev-server.test.js`（只断言 200 与 MIME），
-而核验脚本当时全文不读 `ASSETS` / `CACHE`。首屏关键路径不能这么裸着走。
+而核验脚本当时不读 `ASSETS` / `CACHE`（它现在读了：⑬ 是后来补的）。首屏关键路径不能这么裸着走。
 
-新文件做**不依赖 DOM 的文本级断言**（读文件、定位行、按结构断言），六条：
+**守卫自己也要能被证伪（返工第二轮的教训）**：第一版守卫的抽取正则只认双引号，兜底又只有
+「引用数 ≥ 5」，于是「一个模块都没抽到、断言照样全绿」——实测：把 `index.html` 的 `src` 改成单引号之后，
+那一版抽到 7 条引用、其中 `.js` **0 条**，而全量测试 272 pass / 0 fail。现在每一处抽取都配了**失效断言**，
+而且第 1 条就是专门守这件事的自检：它红了，下面几条的行号与闭包都不可信。
 
-1. `initTheme()` 在代码里只出现一次，且必须写成 `await (themeReady ??= initTheme().catch(…))`
+新文件做**不依赖 DOM 的文本级断言**（读文件、定位行、按结构断言），七条：
+
+1. **守卫自身的前提**：剥注释不改变 `main.js` 的行数；`index.html` 的引用里必须抽到入口
+   `./app/main.js`；首屏闭包里的 `.js` 数不得低于 45（实测基线 50，少 5 个就得来查）；
+2. `initTheme()` 在**代码**里只出现一次，且必须写成 `await (themeReady ??= initTheme().catch(…))`
    （`??=` 与 `.catch` 少一个就红）；
-2. 那次 `await` 的行号 < 第一处 `mount(` 的行号、也 < `mount(app,` 的行号（顺序反了就红）；
-3. `themeReady` 只有「一次声明 + 一次使用」（多一行说明有人在渲染路径上又调了一次）；
-4. `sw.js` 的 `ASSETS` 里有 `'./app/theme-store.js'` 与 `'./app/theme.js'`，`CACHE` 是单处 `const` 声明；
-5. **首屏资源集合 ⊆ `ASSETS`**（`index.html` 的 8 条引用 + 入口的 `import` 闭包，逐个查清单）——
+3. 那次 `await` 的行号 < 第一处 `mount(` 的行号、也 < `mount(app,` 的行号（顺序反了就红）；
+4. `themeReady` 只有「一次声明 + 一次使用」（多一处说明有人在渲染路径上又调了一次）；
+5. `sw.js` 的 `ASSETS` 里有 `'./app/theme-store.js'` 与 `'./app/theme.js'`，`CACHE` 是单处 `const` 声明；
+6. **首屏资源集合 ⊆ `ASSETS`**（`index.html` 的引用 + 入口的 `import` 闭包，逐个查清单）——
    这条正是本轮那个缺口的守卫：将来任务 11 / 12 往首屏链上挂新文件时，它也会先红一次；
-6. `sw.js` 全文里带引号的相对路径去重后与 `ASSETS` 集合一致（守下面步骤 4 那个「数路径」的盲区；
-   同一条也进了核验脚本的 ⑬，两个入口）。
+7. `sw.js` 里带引号的相对路径集合 ⇄ `ASSETS` 清单集合（**双向**；与核验脚本的 ⑬ 同一条，两个入口）。
 
-**边界**：它只认静态 `from '…'`，不认动态 `import('…')`（仓库里全是前者）；它守的是形状，不是渲染。
+**边界（都写在文件注释里）**：只认静态 `from '…'` / `from "…"`，动态 `import('…')` 看不见——那是漏检，
+不是误报；剥注释是字符串感知的（`'http://…'` 里的 `//` 不当注释，仓库里真有这种行），但不解析正则字面量
+内部、也不展开模板串的 `${}`；第 7 条**故意不剥注释**——注释里举例写的带引号路径正是它要抓的东西。
 
-**A/B/C 三个变异的实测**（四份副本都建在 `E:\codex-project\_rework\` 下——**仓库外**，跑完删掉；
-`runBASE` 是未变异的对照）：
+**A/B/C 三个变异（首屏顺序那三个，返工第一轮）**——副本建在仓库外，跑完删掉，`runBASE` 是未变异的对照：
 
 | 副本 | 变异 | 全量测试结果 |
 |---|---|---|
@@ -2101,8 +2140,18 @@ let themeReady = null;
 | `runB` | 删掉 `.catch` | 270 pass / **2 fail**：「main.js 里主题初始化只有一处…」+ 上面那条（锚点失效） |
 | `runC` | `??=` 改成 `=` | 270 pass / **2 fail**：同上两条 |
 
-核验脚本这一侧的 ⑬ 也有对应变异 **M18**（往 `sw.js` 的注释里塞一条清单外的带引号路径），
-`--self-test` 里 **18/18 全被抓**（实测）。
+**守卫自身的变异（返工第二轮，证的是「修好了」而不是「看起来绿」）**：
+
+| 变异 | 结果 |
+|---|---|
+| `index.html` 的 `src` 改单引号 | 新守卫 **273 pass / 0 fail**（抽取认两种引号：探针 8 条引用、`.js` 1 条）；**旧守卫（HEAD 版）272 pass / 0 fail，而那正是静默失明**（探针：旧抽取 7 条、`.js` **0 条**） |
+| `index.html` 的 `src` 改成**无引号**（抽取真失效） | **271 pass / 2 fail**——第 1 条自检与第 6 条闭包断言同时报 |
+| `main.js` 的 `import` 改双引号 | 273 pass / 0 fail（新抽取认两种引号） |
+| `ASSETS` 里一条少了 `./` 前缀（`'app/db.js'`） | 核验脚本 **exit=1**：「⑬ ASSETS 里这些条目没有对应的 ./ 同形写法」；**HEAD 版脚本 exit=0（绿）**——单向判据的盲区，已复现并修好 |
+| `ASSETS` 里一条指向磁盘上不存在的路径（`'./app/nowhere.js'`） | ⑬ **绿**（它不管磁盘存在性，如实写清）；任务 14 那支存在性脚本报「缺失：app/nowhere.js」 |
+
+核验脚本这一侧的 ⑬ 另有 **M18**（注释里塞一条清单外的带引号路径）与 **M19**（清单条目少 `./` 前缀），
+`--self-test` 里 **19/19 全被抓**（实测）。
 
 - [ ] **步骤 4：`theme-store.js` 与 `theme.js` 进预缓存白名单（顺带把新的 `schema.js` 铺到设备上）**
 
@@ -2813,7 +2862,9 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
 - [ ] 选一套非默认皮肤，切到别的 Tab 再切回来，颜色保持
 - [ ] 完全退出 app 再打开（不是刷新），皮肤仍然是选中的那套
 - [ ] **冷启动不闪色**：先换成一套底色反差大的皮肤（暖纸 / 紫藤这类），再硬刷新（Ctrl+Shift+R）或完全退出重开，
-      第一眼看到的就是那套皮肤的底色。**拿默认皮肤当对照组**——默认皮肤这一档看不出差别是正常的（闪的就是它自己）。
+      第一眼看到的就是那套皮肤的底色。**对照组分两种**：默认皮肤 **+ 默认深浅**（跟随系统、且系统的深浅与
+      兜底那档一致）这一档看不出差别是正常的（闪的就是它自己）；而**默认皮肤 + 手动深色、系统却是浅色**
+      这一档照样会闪——兜底帧走 `base.css` 的 `:root`（浅色）、应用后是深色，得单独试一次。
       顺带看一眼**主屏快捷方式**那条路（带 `new=1` 启动）：录入面板的首帧也不该是默认色——那条路不经过
       `render()` 的那次 `await`（见设计规格 §5.4 的边界段），是本条**唯一**可能看到闪色的入口，专门盯它。
       **这条是任务 10 步骤 3 在本机的替代做不了、挂到这里的落地**：那边只能做静态核对，而且只核到「内容挂载
