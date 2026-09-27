@@ -238,8 +238,10 @@ export function openAppearanceSheet() {
         // **「导出备份时会一起带走」这句是任务 13 之后才加回来的**：它此前被删掉，理由是「导出包现在还不带
         // 背景，面板不该承诺一件这个版本做不到的事」——那个理由随任务 13 消失了（`buildBackup` 的 data
         // 里有 `background`，导出时由 `encodeBackground` 填、导入时写回 `assets`，两侧都有测试钉住）。
-        // 边界（别把这句读成全称）：`encodeBackground` 失败时**那一次**导出不带背景，而那条降级是静默的
-        // （只有 Console 里一条 warn）。所以这句承诺成立的前提是「读图没出岔子」，它是「会」不是「永远会」。
+        // 边界（别把这句读成全称）：`encodeBackground` 失败时**那一次**导出不带背景。失败时用户会
+        // 当场看到——`exportBackup` 返回的 `backgroundSkipped` 由备份面板落成一行警示
+        // （app/ui/backup-view.js 里的 export-background-skipped），所以不必等到换机才发现。
+        // 但这句承诺本身仍然是「会」，不是「永远会」。
         el('div', { class: 'hint-text', text: '选一张照片铺在卡片下面。照片的最长边最多留 1600 像素，然后存在这台手机上，导出备份时会一起带走。' })
       ]);
     }

@@ -176,7 +176,7 @@ export function openBackupSheet({ onChanged } = {}) {
       // includeFiles 默认 true（未勾选就是含图）：图片是这台设备上唯一的一份，
       // 只有用户明确选了「不含图片」才省掉它。
       const includeFiles = !noFilesCheck.checked;
-      const { filename, text, skipped } = await exportBackup(pw, Date.now(), { includeFiles });
+      const { filename, text, skipped, backgroundSkipped } = await exportBackup(pw, Date.now(), { includeFiles });
       download(filename, text);
       await markBackedUp();
       // 「文件真的落盘了吗」网页里无从得知：浏览器拦截下载、用户在另存为里点了取消、
@@ -194,6 +194,15 @@ export function openBackupSheet({ onChanged } = {}) {
         skipped > 0 ? el('div', {
           class: 'vault-warn', dataset: { role: 'export-skipped' },
           text: `有 ${skipped} 张发票图片没能写进这份备份（图片数据本身有问题）。账目都在，但这几张图恢复后看不到。`
+        }) : null,
+        // 背景走**自己**的通道（backgroundSkipped），不并进上面那个张数——它有自己的一句文案，
+        // 后果也和发票图片不同：背景只有一张，而且面板上刚承诺过「导出备份时会一起带走」。
+        // 不说出来的话，用户看到的是「已导出」加常规提示，完全有理由以为照片安全了——
+        // 而那张图按面板自己的说明，可能已经是设备上唯一的一份（相册里的原件早删了）。
+        backgroundSkipped ? el('div', {
+          class: 'vault-warn', dataset: { role: 'export-background-skipped' },
+          text: '本机那张背景照片没能写进这份备份（读它的时候出错了）。账目都在，'
+            + '但换手机或重装后恢复，背景不会跟着过去——可以稍后再导一份。'
         }) : null,
         el('div', {
           class: 'vault-warn', dataset: { role: 'export-note' },
@@ -370,6 +379,16 @@ export function openBackupSheet({ onChanged } = {}) {
     const filesText = summary.invoiceFiles > 0
       ? String(summary.invoiceFiles)
       : '不包含（保留本机现有的图片）';
+    // 背景这一行。判据 `hasBackground` 与导入侧的实删行为同向，但**方向与图片相反**，所以文案
+    // 不能对称地抄上面那一句：
+    //   · 备份带了背景 → 写回本机那条记录，背景就是备份里那张；
+    //   · 备份没带背景（老备份、或那次导出时读图失败）→ 本机那条记录被**删掉**。
+    // 这句话必须写出来：用户可能把相册里早就删掉的照片设成了背景，本机那份是**唯一**一份，
+    // 而这一屏是他点「确认覆盖并恢复」之前唯一一次知情机会——这正是上面 filesText 那段
+    // 「他可能因此不敢用那份备份，或者反过来以为原图还在而被清掉」的另一半。
+    const backgroundText = summary.hasBackground
+      ? '包含'
+      : '不包含（本机那张背景会被一起清掉）';
     return el('section', { class: 'card stack' }, [
       el('div', { class: 'group-title', text: '备份文件内容' }),
       el('div', { class: 'stack' }, [
@@ -398,6 +417,11 @@ export function openBackupSheet({ onChanged } = {}) {
           el('span', { class: summary.invoiceFiles > 0 ? 'num' : '', text: filesText })
         ]),
         el('div', { class: 'row' }, [
+          el('span', { class: 'muted tiny', text: '背景照片' }),
+          // 不加 'num'：这一格是「包含 / 不包含（…）」，不是数字（与下面密码箱那一行同一种写法）。
+          el('span', { text: backgroundText })
+        ]),
+        el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '密码箱' }),
           // 「包含」判据与导入侧的取值是同一件事：data.vault 是真值就用它覆盖本机，
           // 是 null / 缺失就保留本机那一行（见 importBackup 的 vaultToWrite）。buildBackup 只可能
@@ -408,10 +432,14 @@ export function openBackupSheet({ onChanged } = {}) {
       // 这句话原来写的是「导入会替换手机上现有的全部数据」，而加了发票之后它不再准确：
       // 老备份里没有发票这一项，恢复它并不会动本机发票。说错方向是有代价的——用户可能因此
       // 不敢用老备份救急，或者反过来以为「不包含」的东西也会被清掉。所以按住上面那几行摘要来说。
+      // **背景那一行是反的**（任务 13）：它写着「不包含」时本机那张会被清掉，不是保留。
+      // 所以这里必须点名它，不能让用户拿「不包含就保留」这条规律去推背景——两行文案相邻，
+      // 一旦推错，代价是本机唯一一份照片。
       el('div', {
         class: 'vault-warn',
         text: '导入会替换手机上现有的账目、账户、分类与设置，这一步不能撤销。'
-          + '上面写着「不包含」的那几项，本机现有的数据会保留。'
+          + '上面写着「不包含（保留本机现有…）」的那几项，本机现有的数据会保留；'
+          + '只有背景照片那一行是反的：写着「不包含」时，本机那张背景会被一起清掉，不会保留。'
       }),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn', type: 'button', text: '取消', onclick: () => { sheet.close(); } }),

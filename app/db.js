@@ -122,14 +122,24 @@ export async function putAll(entries) {
   await txDone(tx);
 }
 
-// 在单个事务里清空若干仓库并写入若干记录。导入备份时用：
+// 在单个事务里清空若干仓库、删除若干条记录、并写入若干记录。导入备份时用：
 // 「清空」与「写入」必须在同一个事务内，否则中途失败会留下一个空库。
-export async function replaceAll({ clears = [], puts = [] }) {
+//
+// **clears 与 deletes 是两件事，别拿 clears 代替 deletes**：clear() 是**整表**动作，一张表里只要
+// 可能有「这次导入不该碰」的记录，就不能用它。加 deletes 的直接原因就是 assets：背景图固定占主键
+// 'bg'，但那张表是通用资源表（将来可能躺着别的资源），导入侧要删的只有一条记录——用 clears 会把
+// 整张表端掉，于是调用方注释里那句「清单不该靠『现在只有一条』活着」就成了一句空话。
+// deletes 的 entries 形如 [{ store, key }]，与 removeAll 同形。
+//
+// 执行顺序是 clear → delete → put：同一个 key 不会既删又写（调用方按「有没有可恢复的值」二选一），
+// 真出现时 put 在最后，写进去的那条赢。
+export async function replaceAll({ clears = [], puts = [], deletes = [] }) {
   const db = await open();
-  const names = [...new Set([...clears, ...puts.map(e => e.store)])];
+  const names = [...new Set([...clears, ...puts.map(e => e.store), ...deletes.map(e => e.store)])];
   const tx = db.transaction(names, 'readwrite');
   enqueue(tx, () => {
     for (const name of clears) tx.objectStore(name).clear();
+    for (const e of deletes) tx.objectStore(e.store).delete(e.key);
     for (const e of puts) tx.objectStore(e.store).put(e.value);
   });
   await txDone(tx);

@@ -87,6 +87,23 @@ export function summarizeBackup(obj) {
     // 界面据此显示「不包含（保留本机现有发票）」，不能让用户在这两件处置相反的事之间猜。
     hasInvoices: Array.isArray(data.invoices),
     hasInvoiceFiles: Array.isArray(data.invoiceFiles),
-    hasVault: Boolean(data.vault)
+    hasVault: Boolean(data.vault),
+    // 背景照片。**它的方向与上面那几行相反**：备份不带背景时，导入会把**本机那张删掉**
+    // （见 backup-store.js 文件头第 7 条），所以界面那一行不能写成「不包含（保留本机现有的…）」。
+    hasBackground: hasBackgroundImage(data.background)
   };
+}
+
+// 「这份备份带没带一张可恢复的背景」。
+// 为什么不直接复用导入侧的 base64ToBlob：那个函数在 backup-store.js 里，而本模块是**纯模块**、
+// 而且被 backup-store import（反向 import 就是循环依赖，理由见本文件顶部那条分层规则）。
+// 所以这里取它的两条必要条件：image 是非空字符串、且长度是 4 的倍数（后一条正是 base64ToBlob
+// 用来挡住「被截断的串」的判据——atob 对长度不是 4 倍数的串**不抛错**，会安静地解出半截数据）。
+// **已知边界**：一段长度合法、字符却非法的 base64（只有手改文件才造得出来）在这里算「包含」、
+// 在导入侧算「没有」。那时摘要说「包含」而导入后背景没了——这是这一处的不一致，如实记在这里，
+// 别把它读成「两边的判据一定一致」。
+function hasBackgroundImage(bg) {
+  if (!bg || typeof bg !== 'object') return false;
+  const image = bg.image;
+  return typeof image === 'string' && image !== '' && image.length % 4 === 0;
 }
