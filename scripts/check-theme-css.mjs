@@ -23,6 +23,11 @@
 //      或引用了一个没进缓存的文件），清单里的条目也一律该有 './' 的同形写法（否则会躲过全文比对）。
 //      **它抓不住「清单里少一条」**（少一条时两边同时少，照样绿）——那件事归
 //      tests/boot-order.test.js 的首屏闭包断言与任务 14 步骤 2 的存在性脚本。
+//   ⑭ app 里 `el(…, { class: '…' })` 用到的类名，`styles/*.css` 里必须真有对应规则（或有白名单里的
+//      理由）。这条是任务 11 返工补的：面板当时用了 `field-label` / `btn-ghost` 两个**全仓零定义**的
+//      类名（破坏性的「移除」与「换一张」因此长得一样），而那时 64 项核验全绿——`tests/` 里没有一条
+//      碰 DOM 的断言。**它管不到**：拼接出来的类名、JS 里不在 `class:` 值位置上的类名、以及
+//      「这个类视觉上合不合适」（后者归任务 15 真机验收）。
 //
 // 用法：
 //   node scripts/check-theme-css.mjs                 核验（**只读仓库**）
@@ -189,7 +194,7 @@ const groupCounts = new Map();
 let total = 0;
 const groupOf = msg => {
   if (msg.startsWith('自检：')) return '自检';
-  const m = /^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬])/.exec(msg);
+  const m = /^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭])/.exec(msg);
   return m ? m[1] : '其他';
 };
 function check(ok, msg) {
@@ -504,11 +509,50 @@ check(notPrefixed.length === 0,
   '⑬ ASSETS 里这些条目没有对应的 ./ 同形写法（清单约定一律写 \'./…\'，写成别的形态会躲过全文比对）：' + notPrefixed.join(' '));
 say(`⑬ sw.js：ASSETS ${listed.size} 条、全文带引号路径 ${quotedPaths.size} 个；清单外 ${outsideAssets.length} 个、非 ./ 形态 ${notPrefixed.length} 个（都应为 0）`);
 
+// ── ⑭ app 里 el(...) 的类名 ⇄ styles/ 里真有这条规则 ─────────
+// 为什么加：视图/面板写的 class 名是**字符串**，写错了（或指向一个只活在计划里、从没被写进任何
+// 样式表的类）在 Node 里一行都不会红——`tests/` 里没有任何东西碰 DOM。实测踩到过：任务 11 的面板
+// 用了 `field-label` 与 `btn-ghost`，而 `styles/*.css` 里一条定义都没有（全仓 0 命中），于是
+// 「移除」这个破坏性按钮与「换一张」长得一模一样，而当时 64 项核验全绿。
+// 边界（如实写）：只认**字面量**形态的 class（`class: 'a b'`，含三元里那两个分支的写法）；
+// `class: 'x' + suffix` 这种拼接只抽得到前半截，抽不到的那部分属于漏检、不是误报；
+// 它也不判断「这个类该不该长这样」，只管「有没有人给它写过规则」——视觉是否合适仍归任务 15 的真机验收。
+// 白名单：没有对应规则、但**已经核实过不影响渲染**的类名。加一条要写明理由（它为什么不需要规则）。
+// 下面两条是 ⑭ 上线时实测抓出来的**既有**类名（不属于任务 11 的改动），核实后都不补规则：
+//   keypad      ——纯容器（app/ui/keypad.js:53），盒子由子元素撑开，样式全在 .keypad-display / .keypad-grid 上。
+//   stats-nav   ——按钮的样式来自祖先选择器 `.stats-month button`（styles/ledger.css:80），类名只是钩子。
+const CLASS_WHITELIST = ['keypad', 'stats-nav'];
+const cssRuleRe = name => new RegExp('\\.' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])');
+const classNames = new Map();
+for (const f of appFiles) {
+  const src = stripJsComments(load(f));
+  const rel = path.relative(ROOT, f).split(path.sep).join('/');
+  for (const m of src.matchAll(/\bclass:\s*([^,\n}]+)/g)) {
+    for (const s of m[1].matchAll(/['"]([^'"]*)['"]/g)) {
+      for (const name of s[1].split(/\s+/).filter(Boolean)) {
+        if (!classNames.has(name)) classNames.set(name, new Set());
+        classNames.get(name).add(rel);
+      }
+    }
+  }
+}
+// 抽取失效自检：一个类名都没抽到、或数量塌了，下面的断言就是空转（守卫静默失明比没有守卫更危险）。
+// 下限取 150：任务 11 返工时的实测基线是 174（`app/` 下 30 个 .js 模块），塌到 150 以下就该来查。
+check(classNames.size >= 150,
+  `⑭ 只从 app/ 里抽到 ${classNames.size} 个 el(...) 类名（实测基线 174，下限取 150）——抽取多半失效了，这条别当成通过`);
+const missingClasses = [...classNames.keys()]
+  .filter(n => !CLASS_WHITELIST.includes(n) && !cssRuleRe(n).test(cssText))
+  .sort();
+check(missingClasses.length === 0,
+  '⑭ app 里 el(...) 用到的这些类名在 styles/ 里没有任何规则（类名写错，或这个类只活在计划里）：'
+  + missingClasses.map(n => `${n}（${[...classNames.get(n)].join('、')}）`).join('、'));
+say(`⑭ app 里 el(...) 的类名 ${classNames.size} 个；styles/ 里没有规则的 ${missingClasses.length} 个（应为 0）；白名单 ${CLASS_WHITELIST.length} 条`);
+
 // ── 输出 ────────────────────────────────────────────────────
 if (!SELF_TEST) {
   console.log('任务 9 静态核验（文本层；渲染层结论不在这里，见计划任务 15）');
   console.log(report.join('\n'));
-  const order = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '自检', '其他'];
+  const order = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '自检', '其他'];
   console.log('\n分组计数（可复现的口径：脚本每次运行都会打印这张表）：');
   console.log('  ' + order.filter(g => groupCounts.has(g)).map(g => `${g} ${groupCounts.get(g)} 条`).join('、')
     + `　合计 ${total} 条`);
@@ -558,7 +602,10 @@ if (SELF_TEST) {
     { name: 'M18 sw.js 注释里出现一条清单外的带引号路径（⑬ 的覆盖）', file: SW_PATH, flag: '--sw', find: '// 只列应用真正运行需要的资源。', repl: "// 只列应用真正运行需要的资源（例如 './app/nowhere.js' 这种写错路径的）。", expect: ['⑬ sw.js 里出现了不在 ASSETS 清单里的带引号相对路径'] },
     // ⑬ 双向的另一半：清单条目少了 './' 前缀时，全文比对会漏掉它。第一版 ⑬ 只查单向，这条变异
     // 当时是绿的（实测过）——现在必须红。
-    { name: 'M19 ASSETS 里一条条目少了 ./ 前缀（⑬ 双向的那一半）', file: SW_PATH, flag: '--sw', find: "  './app/db.js',", repl: "  'app/db.js',", expect: ['⑬ ASSETS 里这些条目没有对应的 ./ 同形写法'] }
+    { name: 'M19 ASSETS 里一条条目少了 ./ 前缀（⑬ 双向的那一半）', file: SW_PATH, flag: '--sw', find: "  './app/db.js',", repl: "  'app/db.js',", expect: ['⑬ ASSETS 里这些条目没有对应的 ./ 同形写法'] },
+    // ⑭ 的变异：往一个被扫描的 app 模块里塞一个 styles/ 里没有定义的类名。任务 11 的面板真实踩过
+    // 这个坑（`field-label` / `btn-ghost` 全仓零定义），当时没有任何断言看得见。
+    { name: 'M20 app 里用了 styles/ 没有定义的类名（⑭ 的覆盖）', file: STORE_PATH, flag: '--store', find: 'export function currentTheme() {', repl: "const _probeEl = el('div', { class: 'zz-no-such-class' });\nexport function currentTheme() {", expect: ['⑭ app 里 el(...) 用到的这些类名在 styles/ 里没有任何规则', 'zz-no-such-class'] }
   ];
 
   const variantDir = path.join(TMP_ROOT, 'variants');
