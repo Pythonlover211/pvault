@@ -55,6 +55,16 @@ export function currentTheme() {
 }
 
 /**
+ * 当前背景图在用的那个 blob URL（没有照片时是 null）。给「外观与背景」面板的缩略图用。
+ * **调用方不要 revoke 它**：背景层正拿它当 --bg-image，释放掉背景就没了；它的生命周期归本模块
+ * （setPhotoVars 在换图 / 移除时释放上一个）。让面板自己再 createObjectURL 一份，等于同一张图
+ * 两份 URL、两份 revoke 责任——多一个泄漏点，而不是少一个。
+ */
+export function currentPhotoUrl() {
+  return photoUrl;
+}
+
+/**
  * 把 themeCssVars 给出的那组变量与三个属性一次性写到 <html> 上，顺带更新系统栏颜色。
  *
  * **改这个函数时要整条守住这份合同**：themeCssVars 返回多少个键就写多少个（不筛、不挑），

@@ -6,7 +6,7 @@ import { el, mount } from './dom.js';
 import { openSheet } from './sheet.js';
 import { THEMES, THEME_TOKENS, OVERLAY_MIN, OVERLAY_MAX } from '../theme.js';
 import {
-  currentTheme, setPreset, setMode, setPhoto, removePhoto, setOverlay
+  currentTheme, currentPhotoUrl, setPreset, setMode, setPhoto, removePhoto, setOverlay
 } from '../theme-store.js';
 
 const MODE_OPTIONS = [
@@ -18,8 +18,11 @@ const MODE_OPTIONS = [
 // 拖动遮罩时两次写库之间的最小间隔（毫秒）。理由写在 queueOverlay 那一段。
 const OVERLAY_WRITE_MS = 100;
 
-// 皮肤卡上的小色块：底色用该皮肤的 --bg，中间的圆点用 --accent。
-// 这两个颜色就是用户切换时最先感受到的差异，所以拿它们当预览。
+// 皮肤卡上的小色块：底色用该皮肤的 --bg、描边用它的 --border、中间的圆点用 --accent
+// ——三处都取**浅色档**那一组（THEME_TOKENS[id].light），与当前深浅档无关。
+// 这是刻意的，不是漏考虑深浅：五张卡要横向比「哪套是什么样」，取同一档才比得出来；而深色档那五组
+// --bg（#131315 / #1c1712 / #141a14 / #17131f / #0e1a1d）彼此几乎一样，跟着深浅档走反而让这块预览
+// 失去分辨力。代价如实说：深色用户看到的预览是浅色档的样子，不是他当前屏幕的样子。
 function themeChip(themeId) {
   const tokens = THEME_TOKENS[themeId].light;
   const chip = el('span', { class: 'theme-chip' });
@@ -39,17 +42,30 @@ export function openAppearanceSheet() {
 
   const sheet = openSheet({ title: '外观与背景', body: container });
 
-  // ── 写库失败的统一出口 ──────────────────────────────────────
-  // 这个面板碰到的写库都是「操作已经发生、只是没记住」，而 setPreset / setMode / setPhoto /
-  // removePhoto 的 JSDoc 都把 rejection 交给了调用方（也就是这里）。不接住的后果本仓库判过：
-  // 未捕获的 rejection 在页面上就是「点了没反应」。这里给一句能照着做的话，而不是把 IndexedDB
-  // 的英文异常甩出去——err.message 通常已经是可读的中文（db.js 的 onblocked 就写好了「请关掉
-  // 其它 pvault 页面后重试」），与发票图片那条路同一条口径。
+  // ── 写库失败与重绘 ──────────────────────────────────────────
+  // 这个面板碰到的每一次写库都是「操作已经发生、只是没记住」，而 setPreset / setMode / setPhoto /
+  // removePhoto / setOverlay 的 JSDoc 都把 rejection 交给了调用方（也就是这里）。不接住的后果本仓库
+  // 判过：未捕获的 rejection 在页面上就是「点了没反应」。这里给一句能照着做的话，再把原始错误接上，
+  // 与发票图片那条路同一条口径。**但这句口径里只有前半是硬承诺**：err.message 通常是可读的中文
+  //（db.js 的 onblocked 就写好了「请关掉其它 pvault 页面后重试」），实测也有英文的
+  //（比如 `Image is not defined`）——那句话别读成「永远是中文」。
   // tail 由调用方给：几种操作失败时界面到底变没变并不一样（见下面两处各自的注释），
   // 一句万能的「界面已经变了」对其中一条就是假话。
   function reportWriteFailure(title, err, tail) {
     console.error(title, err);
     alert(`${title}：${err?.message || err}\n${tail}`);
+  }
+
+  // 重绘这一层自己也会抛（构造节点、挂载失败），而它挂在 finally 里——抛出去就是一个**没人接**的
+  // rejection（这次点击的业务结果其实已经定了，提示也弹过了）。所以重绘单独兜住，只记一条日志。
+  async function safeRerender() {
+    try {
+      // 先把滑块待写的值交出去：不先交，面板会画回一个旧值（原因见 flushOverlay）。
+      await flushOverlay();
+      await rerender();
+    } catch (err) {
+      console.error('外观面板重绘失败', err);
+    }
   }
 
   // 点皮肤 / 点深浅：这两个函数是「先画后写库」（见 theme-store.js），写库失败时内存与 DOM 已经改了。
@@ -61,7 +77,7 @@ export function openAppearanceSheet() {
     } finally {
       // 失败也要重绘：内存里的状态已经变了，不重绘就会留下「按钮高亮与页面颜色对不上」。
       // 成功那条路同样要重绘，否则高亮根本不会跟着走。
-      await rerender();
+      await safeRerender();
     }
   }
 
@@ -74,7 +90,7 @@ export function openAppearanceSheet() {
       reportWriteFailure('移除背景没能完成', err,
         '照片可能还在，也可能只剩一半——重开一次 app 看看现在是什么样子。');
     } finally {
-      await rerender();
+      await safeRerender();
     }
   }
 
@@ -89,7 +105,7 @@ export function openAppearanceSheet() {
   //     各自写回，后完成的那次可能盖掉更新的值，库里最终留哪个值取决于时序。
   // 已知代价：画面上遮罩的实际变化最多每 OVERLAY_WRITE_MS 更新一次，拖动时的平滑度取决于这个值。
   // 本机没有浏览器，这个数只能靠任务 15 的真机验收（清单里有一条：拖动跟手、松手后重启仍是那个值）。
-  let overlaySent = null;      // 已经交给写库链路的值
+  let overlaySent = null;      // 已经交给写库链路的值（失败时会被回滚，见 writeOverlay）
   let overlayQueued = null;    // 最近一次要写的值（可能还没落库）
   let overlayTimer = null;
   let overlayChain = Promise.resolve();
@@ -98,6 +114,11 @@ export function openAppearanceSheet() {
   function writeOverlay(value) {
     overlaySent = value;
     overlayChain = overlayChain.then(() => setOverlay(value)).catch(err => {
+      // **失败要把它回滚**（只回滚自己那一次，别把后来者的标记抹掉）：不回滚的话，下一次补写会被
+      // `overlayQueued !== overlaySent` 判成「这个值已经写过了」而跳过——于是首帧失败一次之后，
+      // 就算写库恢复了也永远补不上：库停在旧值、画面上是新值，重启后跳回去。
+      //（实测过这条：首帧写失败、50ms 后恢复 → 尾部补写被跳过、put 次数 0、库里还是 30。）
+      if (overlaySent === value) overlaySent = null;
       console.error('背景遮罩没能记住', err);
       // 与上面那条路同一条口径，但**只提示一次**：拖动时每次失败都 alert 会连弹，而 alert 会阻塞
       // 主线程——正在拖的那只手会被卡住，一个提示反而把「跟手」这件事搞坏。
@@ -105,6 +126,16 @@ export function openAppearanceSheet() {
       overlayAlerted = true;
       alert(`遮罩没能存进手机：${err?.message || err}\n画面上已经变了，但下次打开可能会变回去。`);
     });
+  }
+
+  // 把待写的值立刻交出去（不再等 OVERLAY_WRITE_MS），并返回整条写库链。
+  // 拖动途中去点皮肤时，rerender 会拿 currentTheme().overlay 重建滑块：不先把 pending 值交出去，
+  // 面板会画回「上一次已经写过的那个值」，而库里与画面上都是新值——三处两个真相
+  //（实测：面板 35%、库 55、DOM 0.55）。
+  function flushOverlay() {
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    if (overlayQueued !== null && overlayQueued !== overlaySent) writeOverlay(overlayQueued);
+    return overlayChain;
   }
 
   function queueOverlay(value) {
@@ -117,9 +148,15 @@ export function openAppearanceSheet() {
     }, OVERLAY_WRITE_MS);
   }
 
+  // 规格 §8 第 4 条：面板顶部一行小字说明当前皮肤名——一列色块看不出「我现在是哪套」。
+  function renderCurrent(state) {
+    const name = THEMES.find(t => t.id === state.preset)?.name ?? state.preset;
+    return el('div', { class: 'hint-text', text: '当前皮肤：' + name });
+  }
+
   function renderPresets(state) {
-    return el('div', { class: 'stack' }, [
-      el('div', { class: 'field-label', text: '配色' }),
+    return el('div', { class: 'field' }, [
+      el('label', { text: '配色' }),
       el('div', { class: 'theme-row' }, THEMES.map(t => {
         const selected = t.id === state.preset;
         return el('button', {
@@ -134,8 +171,8 @@ export function openAppearanceSheet() {
   }
 
   function renderModes(state) {
-    return el('div', { class: 'stack' }, [
-      el('div', { class: 'field-label', text: '深浅' }),
+    return el('div', { class: 'field' }, [
+      el('label', { text: '深浅' }),
       el('div', { class: 'seg-row' }, MODE_OPTIONS.map(m => {
         const selected = m.id === state.modeChoice;
         return el('button', {
@@ -163,11 +200,13 @@ export function openAppearanceSheet() {
           await setPhoto(file);
         } catch (err) {
           console.error('背景图设置失败', err);
-          // 与发票图片那条路一致：给一句能照着做的话，而不是把 IndexedDB 的英文异常甩出去。
+          // 与发票图片那条路一致：给一句能照着做的话，再把原始错误接上。
           alert('这张照片没能设成背景：' + (err?.message || err));
         } finally {
+          // picking 先复位、再重绘：重绘失败（safeRerender 兜住）也不该把 picking 卡在 true 上，
+          // 否则用户此后每次选图都被 `if (!file || picking) return` 挡掉。
           picking = false;
-          await rerender();
+          await safeRerender();
         }
       }
     });
@@ -179,10 +218,13 @@ export function openAppearanceSheet() {
     });
 
     if (!state.photo) {
-      return el('div', { class: 'stack' }, [
-        el('div', { class: 'field-label', text: '背景照片' }),
+      return el('div', { class: 'field' }, [
+        el('label', { text: '背景照片' }),
         el('div', { class: 'photo-row' }, [pick, fileInput]),
-        el('div', { class: 'hint-text', text: '选一张照片铺在卡片下面。照片会压到长边 1600 像素后存进手机，并跟着备份一起走。' })
+        // 只说这一版真做得到的事：照片压到长边 1600 后存在这台手机上。**不写「跟着备份一起走」**
+        // ——导出包现在还不带背景（`buildBackup` 的 data 里没有它，那是任务 13 的事），
+        // 面板不该向用户承诺一件这个版本做不到的事。
+        el('div', { class: 'hint-text', text: '选一张照片铺在卡片下面。照片会压到长边 1600 像素后存在这台手机上。' })
       ]);
     }
 
@@ -201,6 +243,12 @@ export function openAppearanceSheet() {
     slider.value = String(state.overlay);
     const valueLabel = el('span', { class: 'ov-value', text: state.overlay + '%' });
 
+    // 缩略图用 theme-store 正在给背景层用的那个 blob URL（规格 §8 第 3 条）。
+    // **面板不 revoke 它**：它不是面板建的、背景层还在用它，revoke 掉背景就没了；它是 theme-store
+    // 自己的状态，换图 / 移除时由 setPhotoVars 负责释放。面板自己再建一个 URL 等于同一张图两份
+    // URL、两份 revoke 责任，多一个泄漏点而不是少一个。
+    const thumbUrl = currentPhotoUrl();
+
     // 一条已知的降级，本面板**不**替它兜底，这里只把这层写清：若 settings 里那条 backgroundImage
     // 被外部清掉、而内存里的 applied.photo 还是 true（判据与来源见 theme-store.js 的 setOverlay），
     // 拖这个滑块只会改画面、不会重建设置——重启后照片按「没有背景」处理，用户的观感是「我调了遮罩、
@@ -208,11 +256,13 @@ export function openAppearanceSheet() {
     // 这一层，要在这里提示就得给 theme-store 加一条新通道；而自愈的正确位置也**不在面板**——能判断
     // 「设置丢了」的只有 theme-store 自己。所以本步保持原行为（任务 8 那段注释已经把这个选择写死），
     // 只留下这段说明。
-    return el('div', { class: 'stack' }, [
-      el('div', { class: 'field-label', text: '背景照片' }),
-      el('div', { class: 'photo-row' }, [pick, fileInput,
+    return el('div', { class: 'field' }, [
+      el('label', { text: '背景照片' }),
+      el('div', { class: 'photo-row' }, [
+        thumbUrl ? el('img', { class: 'photo-thumb', src: thumbUrl, alt: '当前背景照片' }) : null,
+        pick, fileInput,
         el('button', {
-          class: 'btn btn-ghost', type: 'button', dataset: { action: 'remove-photo' },
+          class: 'btn btn-danger', type: 'button', dataset: { action: 'remove-photo' },
           text: '移除',
           onclick: () => removeBackground()
         })
@@ -226,9 +276,9 @@ export function openAppearanceSheet() {
   // 也不会出现「按钮的高亮和实际皮肤不一致」这种两处状态各写一半的问题。
   async function rerender() {
     const state = currentTheme();
-    mount(container, [renderPresets(state), renderModes(state), renderPhoto(state)]);
+    mount(container, [renderCurrent(state), renderPresets(state), renderModes(state), renderPhoto(state)]);
   }
 
-  rerender();
+  safeRerender();
   return sheet;
 }
