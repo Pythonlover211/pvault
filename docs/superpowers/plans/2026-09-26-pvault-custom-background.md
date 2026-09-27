@@ -65,7 +65,7 @@
 | `app/ui/settings-sheet.js` | 加「外观与背景」入口（插在 `budget` 与 `backup` 之间）。 |
 | `app/backup-store.js` | 导出/导入 `data.background`。 |
 | `app/backup.js` | `buildBackup` 里带上 `background`。 |
-| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5；`theme-store.js` 与 `theme.js` 在任务 10 一起提前加——它们在同一条首屏依赖链上；其余 2 个在任务 14）；`CACHE` 依次升到 `pvault-v17`（任务 10）与 `pvault-v18`（任务 14），任务 5 已用到 v16。 |
+| `sw.js` | `ASSETS` 加 5 个新文件（`canvas-image.js` 在任务 5；`theme-store.js` 与 `theme.js` 在任务 10 一起提前加——它们在同一条首屏依赖链上；`appearance.css` 在任务 11 提前加——`index.html` 挂了它的 `<link>`，它因此也是首屏依赖；最后一个 `appearance-sheet.js` 在任务 14，那要等任务 12 把它接进 `import` 闭包）；`CACHE` 依次升到 `pvault-v17`（任务 10）与 `pvault-v18`（任务 14），任务 5 已用到 v16。 |
 | `index.html` | 加一行 `styles/appearance.css`。 |
 | `tests/schema.test.js` | 三处会被这次改动打红的断言（见任务 6）。 |
 | `docs/手动验证清单.md` | 加外观章节。 |
@@ -1177,7 +1177,9 @@ canvas-image` 这一环：那个模块加载不了（缓存未命中 → 离线�
 `ASSETS` 加 `'./app/canvas-image.js'`（排在 `budget.js` 与 `chart.js` 之间，保持 ASC 书写风格）、`CACHE`
 升到 `'pvault-v16'` 并写下这一版的说明。外观功能其余的文件此刻还不存在：`theme-store.js` 与 `theme.js`
 由任务 10 一起进清单（那一步让 `main.js` 静态依赖 `theme-store`，而 `theme-store` 又静态依赖 `theme`），
-`ui/appearance-sheet.js` 与 `appearance.css` 仍由任务 14 负责。
+`ui/appearance-sheet.js` 与 `appearance.css` 那时都还没建——后来分别由任务 11（`appearance.css`：
+`index.html` 挂了它的 `<link>`，它因此是首屏依赖）与任务 14（`appearance-sheet.js`，要等任务 12 把
+`settings-sheet.js` 的 import 接上）进清单。
 
 **白名单要全量校验一遍**（`cache.addAll` 是原子的，一个 404 就让整次 install 失败——那时 SW 不激活，
 表现是「离线能力为 0」；而**漏掉一条**的机制完全不同，见 `sw.js` 开头那段）：把 `sw.js` 里的 `'./…'`
@@ -1443,10 +1445,12 @@ function attachSystemListener() {
  * 兜住之后也不会重试：main.js 把结果缓存在模块级的 themeReady 里，失败同样是一个 settled 的结果，于是
  * 一次主题失败＝本次页面生命周期停在「DOM 上 0 个变量、外观走 CSS 兜底那套」的状态，只有刷新才会重新
  * 走一遍 initTheme（走到这条路的是 db.js 的 onblocked：另一个标签页占着旧连接；视图那边会自愈，主题
- * 这边不会）。**这个结论在任务 11 之后会变窄**：面板接上「外观与背景」之后，setPreset / setMode 会被
- * 用户点到，它们各自 paint() 一次、把整条变量写出去，DOM 就从「0 个变量」回到有值了——那时「停在默认
- * 外观」不再成立（停在的是用户刚点的那套，只是本页启动时没从库里读出来）。要手动补一次，也可以直接
- * 再调一次本函数。
+ * 这边不会）。
+ * **这个结论以「没有人能点到 setPreset / setMode」为前提**——它们各自 paint() 一次、把整条变量写出去，
+ * DOM 就从「0 个变量」回到有值，那时「停在默认外观」不再成立（停在的是用户刚点的那套，只是本页启动时
+ * 没从库里读出来）。而它们现在有调用方了：唯一一处是「外观与背景」面板的皮肤 / 深浅按钮
+ * （app/ui/appearance-sheet.js，任务 11 建好），那个面板则由设置面板里的入口打开（任务 12 接上）——
+ * 在那之前用户点不到它。要手动补一次，也可以直接再调一次本函数。
  *
  * **它现在是首屏渲染路径上的前置依赖**（任务 10 挂上去的）：`render()` 的那次 mount 要等它跑完——
  * **只覆盖 `render()` 这条路**：主屏快捷方式那条（openFromShortcut → openEntryPanel）不经过它、与它
@@ -1999,7 +2003,7 @@ import { initTheme } from './theme-store.js';
 // .catch 兜底：主题出错不该拖垮整页——照常渲染，只是外观是默认的（比白屏好得多）。兜住之后**不再重试**：
 // themeReady 从此 settled，本次页面生命周期里主题就停在「DOM 上 0 个变量、外观走 CSS 兜底」的状态、
 // 要刷新才恢复（典型触发是 db.js 的 onblocked——另一个标签页占着旧连接；用户关掉它，视图数据会自愈，
-// 主题不会。任务 11 接上「外观与背景」面板之后这条会变窄：用户点一次皮肤或深浅就会 paint() 把整条写出去）。
+// 主题不会。setPreset / setMode 的调用方只有外观面板（app/ui/appearance-sheet.js，任务 11 建、入口任务 12 接）：点一次皮肤或深浅就会 paint()）。
 // 代价见 theme-store.js 的 initTheme。
 let themeReady = null;
 ```
@@ -2101,6 +2105,11 @@ let themeReady = null;
 连带改动（都实测过）：本步步骤 4 的预期从 57 变成 **58**；任务 14 步骤 1 改成「只加剩下这两个文件」
 （`app/ui/appearance-sheet.js`、`styles/appearance.css`），它代码块里 `theme.js` 那一行删掉；
 任务 14 步骤 2 的预期 **60 不变**（58 + 2 = 60）。
+
+**任务 11 又动了同一处（返工记录）**：那一步往 `index.html` 挂了 `appearance.css` 的 `<link>`，于是
+`appearance.css` 提前到任务 11 进清单（**不升版本号**：v17 只在未发布的分支上，`addAll` 写的还不是一份
+服役中的缓存），任务 14 只剩 `appearance-sheet.js` 一个文件——它那一步的预期仍是 **60 不变**
+（59 + 1 = 60，进任务 11 之后是 59）。
 
 **守卫（本步新增）：`tests/boot-order.test.js` + `scripts/check-theme-css.mjs` 的 ⑬**
 
@@ -2207,7 +2216,8 @@ import 链一断，app 起不来（页面只剩 body 的底色）。**不是 404
 1. **v17 段整段重写**。上一轮的 v17 段为了讲清「只加了一半」，写了一整段自我说明（缺口在哪个环节、
    什么时候咬人、什么时候自愈、要提前堵怎么改）。现在 `theme.js` 一起进来了，那一段**整段删掉**，
    换成本轮那四行：加了哪两个、它们都在 `main → theme-store → theme` 这条链上、与 v14（同样是间接依赖）
-   同一个形状、剩下的 `ui/appearance-sheet.js` 与 `appearance.css` 归任务 14。
+   同一个形状、剩下的 `ui/appearance-sheet.js` 与 `appearance.css` 归任务 14（**这一句后来又被任务 11 改准**：
+   `appearance.css` 由那一步提前加，见上面那条连带改动）。
 2. **「漏一条」的机制写准**（文件开头新增一段）。原文把两件事混着说成 404，见上面这一节第一段的机制说明；
    现在开头那段把两条路分开写——「清单里某条路径写错」= 在线 404 = `addAll` 整批 reject；
    「清单里漏一条」= 运行时缓存未命中 = 离线回退 `index.html`、被 MIME 检查拒绝。**这不是本轮新引入的
@@ -2264,6 +2274,9 @@ const MODE_OPTIONS = [
   { id: 'dark', label: '深色' }
 ];
 
+// 拖动遮罩时两次写库之间的最小间隔（毫秒）。理由写在 queueOverlay 那一段。
+const OVERLAY_WRITE_MS = 100;
+
 // 皮肤卡上的小色块：底色用该皮肤的 --bg，中间的圆点用 --accent。
 // 这两个颜色就是用户切换时最先感受到的差异，所以拿它们当预览。
 function themeChip(themeId) {
@@ -2285,6 +2298,84 @@ export function openAppearanceSheet() {
 
   const sheet = openSheet({ title: '外观与背景', body: container });
 
+  // ── 写库失败的统一出口 ──────────────────────────────────────
+  // 这个面板碰到的写库都是「操作已经发生、只是没记住」，而 setPreset / setMode / setPhoto /
+  // removePhoto 的 JSDoc 都把 rejection 交给了调用方（也就是这里）。不接住的后果本仓库判过：
+  // 未捕获的 rejection 在页面上就是「点了没反应」。这里给一句能照着做的话，而不是把 IndexedDB
+  // 的英文异常甩出去——err.message 通常已经是可读的中文（db.js 的 onblocked 就写好了「请关掉
+  // 其它 pvault 页面后重试」），与发票图片那条路同一条口径。
+  // tail 由调用方给：几种操作失败时界面到底变没变并不一样（见下面两处各自的注释），
+  // 一句万能的「界面已经变了」对其中一条就是假话。
+  function reportWriteFailure(title, err, tail) {
+    console.error(title, err);
+    alert(`${title}：${err?.message || err}\n${tail}`);
+  }
+
+  // 点皮肤 / 点深浅：这两个函数是「先画后写库」（见 theme-store.js），写库失败时内存与 DOM 已经改了。
+  async function applyThemeChange(fn, title) {
+    try {
+      await fn();
+    } catch (err) {
+      reportWriteFailure(title, err, '界面已经按你点的换了，但下次打开可能会变回去。');
+    } finally {
+      // 失败也要重绘：内存里的状态已经变了，不重绘就会留下「按钮高亮与页面颜色对不上」。
+      // 成功那条路同样要重绘，否则高亮根本不会跟着走。
+      await rerender();
+    }
+  }
+
+  // 移除背景：removePhoto 是「先删库、成功之后再改内存与 DOM」，所以失败时界面**可能**一点没变
+  //（第一步就失败），也可能删了图却没清设置（第二步失败）——对它不能说「界面已经变了」。
+  async function removeBackground() {
+    try {
+      await removePhoto();
+    } catch (err) {
+      reportWriteFailure('移除背景没能完成', err,
+        '照片可能还在，也可能只剩一半——重开一次 app 看看现在是什么样子。');
+    } finally {
+      await rerender();
+    }
+  }
+
+  // ── 遮罩滑块的写库节流 ──────────────────────────────────────
+  // 每次 setOverlay 要做一次 getSetting + 一次 setSetting（两次 IndexedDB 事务），而 range 的 input
+  // 在拖动时按帧触发（触摸屏上一秒几十次）。所以这里做**节流**而不是防抖：
+  //   · 画面必须跟手——防抖（等停手再写）会让遮罩在松手之前一动不动，而「所见即所得」正是这个面板
+  //     的全部卖点；节流让第一次拖动立刻生效，之后的更新最多滞后 OVERLAY_WRITE_MS。
+  //   · **尾部那次补写是必需的**：只做「首帧 + 间隔」会在用户停手时丢掉最后一个值，留下
+  //     「面板显示 50%、库里还是 40%」——重启后遮罩自己跳回去。
+  //   · **串行（overlayChain）同样是必需的**：两次 setOverlay 并发跑，各自 getSetting 读到旧记录、
+  //     各自写回，后完成的那次可能盖掉更新的值，库里最终留哪个值取决于时序。
+  // 已知代价：画面上遮罩的实际变化最多每 OVERLAY_WRITE_MS 更新一次，拖动时的平滑度取决于这个值。
+  // 本机没有浏览器，这个数只能靠任务 15 的真机验收（清单里有一条：拖动跟手、松手后重启仍是那个值）。
+  let overlaySent = null;      // 已经交给写库链路的值
+  let overlayQueued = null;    // 最近一次要写的值（可能还没落库）
+  let overlayTimer = null;
+  let overlayChain = Promise.resolve();
+  let overlayAlerted = false;  // 见 writeOverlay：拖动时的失败只提示一次
+
+  function writeOverlay(value) {
+    overlaySent = value;
+    overlayChain = overlayChain.then(() => setOverlay(value)).catch(err => {
+      console.error('背景遮罩没能记住', err);
+      // 与上面那条路同一条口径，但**只提示一次**：拖动时每次失败都 alert 会连弹，而 alert 会阻塞
+      // 主线程——正在拖的那只手会被卡住，一个提示反而把「跟手」这件事搞坏。
+      if (overlayAlerted) return;
+      overlayAlerted = true;
+      alert(`遮罩没能存进手机：${err?.message || err}\n画面上已经变了，但下次打开可能会变回去。`);
+    });
+  }
+
+  function queueOverlay(value) {
+    overlayQueued = value;
+    if (overlayTimer) return;                  // 间隔内：交给下面那次补写
+    writeOverlay(value);                       // 首帧立刻应用，遮罩跟着手指走
+    overlayTimer = setTimeout(() => {
+      overlayTimer = null;
+      if (overlayQueued !== overlaySent) writeOverlay(overlayQueued);
+    }, OVERLAY_WRITE_MS);
+  }
+
   function renderPresets(state) {
     return el('div', { class: 'stack' }, [
       el('div', { class: 'field-label', text: '配色' }),
@@ -2295,10 +2386,7 @@ export function openAppearanceSheet() {
           type: 'button',
           dataset: { theme: t.id },
           'aria-pressed': String(selected),
-          onclick: async () => {
-            await setPreset(t.id);
-            await rerender();
-          }
+          onclick: () => applyThemeChange(() => setPreset(t.id), '皮肤没能存进手机')
         }, [themeChip(t.id), el('span', { class: 'theme-name', text: t.name })]);
       }))
     ]);
@@ -2315,10 +2403,7 @@ export function openAppearanceSheet() {
           dataset: { mode: m.id },
           'aria-pressed': String(selected),
           text: m.label,
-          onclick: async () => {
-            await setMode(m.id);
-            await rerender();
-          }
+          onclick: () => applyThemeChange(() => setMode(m.id), '深浅没能存进手机')
         });
       }))
     ]);
@@ -2365,8 +2450,9 @@ export function openAppearanceSheet() {
       min: String(OVERLAY_MIN), max: String(OVERLAY_MAX), step: '5',
       'aria-label': '背景遮罩强度',
       oninput: e => {
+        // 数字每帧跟手（它就在滑块旁边，滞后一眼就看得出来）；写库走上面的节流。
         valueLabel.textContent = e.target.value + '%';
-        setOverlay(e.target.value);
+        queueOverlay(e.target.value);
       }
     });
     // range 的初值用 property 设而不是属性：setAttribute('value') 在部分内核上
@@ -2374,13 +2460,20 @@ export function openAppearanceSheet() {
     slider.value = String(state.overlay);
     const valueLabel = el('span', { class: 'ov-value', text: state.overlay + '%' });
 
+    // 一条已知的降级，本面板**不**替它兜底，这里只把这层写清：若 settings 里那条 backgroundImage
+    // 被外部清掉、而内存里的 applied.photo 还是 true（判据与来源见 theme-store.js 的 setOverlay），
+    // 拖这个滑块只会改画面、不会重建设置——重启后照片按「没有背景」处理，用户的观感是「我调了遮罩、
+    // 照片却没了」。面板看不出这件事：currentTheme() 只给 photo: true / false，没有「设置还在不在」
+    // 这一层，要在这里提示就得给 theme-store 加一条新通道；而自愈的正确位置也**不在面板**——能判断
+    // 「设置丢了」的只有 theme-store 自己。所以本步保持原行为（任务 8 那段注释已经把这个选择写死），
+    // 只留下这段说明。
     return el('div', { class: 'stack' }, [
       el('div', { class: 'field-label', text: '背景照片' }),
       el('div', { class: 'photo-row' }, [pick, fileInput,
         el('button', {
           class: 'btn btn-ghost', type: 'button', dataset: { action: 'remove-photo' },
           text: '移除',
-          onclick: async () => { await removePhoto(); await rerender(); }
+          onclick: () => removeBackground()
         })
       ]),
       el('div', { class: 'ov-row' }, [el('span', { class: 'ov-label', text: '遮罩' }), slider, valueLabel]),
@@ -2528,18 +2621,35 @@ export function openAppearanceSheet() {
 <link rel="stylesheet" href="./styles/appearance.css">
 ```
 
-- [ ] **步骤 4：手动验证**
+- [ ] **步骤 4：手动验证（本机做不了，落点在任务 15）**
 
 起本地服务，打开设置 → 外观与背景（入口在任务 12 才接上，本步可以临时在 Console 里调 `import('./app/ui/appearance-sheet.js').then(m => m.openAppearanceSheet())` 验证）。
 
 预期：面板打开，五张皮肤卡显示各自的底色与强调色圆点；点一张，整个界面立刻换色；深浅三个按钮可切换；没有照片时只有「选择图片」按钮。
 
-- [ ] **步骤 5：Commit**
+**本机没有可用浏览器，这一步实际做不了**（`puppeteer-core` 未安装、系统 Edge 的 `--headless` 输出为空），所以本步只做静态核对（`node --check`、真 `import` 模块、逐行核对事件绑定与错误路径），把「渲染与交互」明确挂到任务 15。**那一条落点已经核实存在**（不是一句「挪到任务 15」了事）：面板的视觉与本步新增的三件事都有对应条目——
+皮肤卡预览色块、面板里只有「选择图片」、照片设好后的三个控件 → 「皮肤与深浅」与「背景照片」两节里本步追加的三条；
+未处理的拒绝 → 同节的 Console 条目；滑块节流的两半（跟手 + 尾部补写）→ 「背景照片」里那条「拖动跟手、松手后重启仍是那个值」。
+
+- [ ] **步骤 5：Commit（四个：代码 / 注释 / 白名单 / 文档）**
 
 ```bash
 git add app/ui/appearance-sheet.js styles/appearance.css index.html
 git commit -m 'feat(appearance): 外观与背景面板'
+git add app/theme-store.js app/main.js
+git commit -m 'fix(theme): 注释改准——面板接上后「停在默认外观」的前提'
+git add sw.js
+git commit -m 'chore(sw): appearance.css 提前进预缓存白名单'
+git add docs/superpowers/plans/2026-09-26-pvault-custom-background.md
+git commit -m 'docs(appearance): 同步任务 11（面板代码、白名单归属、任务 15 落点）'
 ```
+
+**第二个 commit 是注释诚实性**：面板一接上，`initTheme()` 的「一次主题失败＝本次页面生命周期停在默认外观」与 `main.js` 里同型的那句就各自多了一个前提（「没有人能点到 `setPreset` / `setMode`」）。它们改成本步的措辞时**没有跟着任务号走**——写成「面板文件由任务 11 建好、设置入口任务 12 接」，这样在任务 12 之后读仍然是准的。
+
+**第三个 commit 不能挪到任务 14**：本步让 `index.html` 挂上 `styles/appearance.css` 的 `<link>`，它从此是首屏静态依赖；SW 是 cache-first，白名单里没有它，已装旧缓存的设备离线启动就会走到「缓存未命中 → 回退 `index.html` → 模块/样式表被 MIME 检查拒绝」那条路（机制写在 `sw.js` 开头那段），**白名单必须跟产生依赖的那次提交一起走**（v14 / v16 / v17 三次都是这么做的）。
+**`ui/appearance-sheet.js` 这一步不进清单**：本步只是把它建出来，还没有任何模块 import 它（入口在任务 12），它此刻不在首屏依赖链上；它必须在任务 12 把 `settings-sheet.js` 的 import 接上的那一次提交里进来（那一步之后 `tests/boot-order.test.js` 的第 6 条也会先红一次，那正是它被设计出来要挡的事）。
+**`CACHE` 这一步不升版本**：v17 只存在于还没发布的分支上、没有任何设备装着它，所以按 `sw.js` 开头那条例外的边界（「已经在设备上服役过的版本，改 `ASSETS` 就得 +1」）还不到该 +1 的时候——`addAll` 写的还不是一份服役中的缓存。
+**两个守卫的分工本步也实测过**：把 `appearance.css` 那一行从清单里删掉之后，`tests/boot-order.test.js` 立刻报「这些首屏资源不在 ASSETS 里：./styles/appearance.css」（exit=1），而 `scripts/check-theme-css.mjs` 仍是 64 项全绿——⑬ 抓不住「清单里少一条」，这条边界脚本自己的注释里写明了，所以两个入口都得留。
 
 ---
 
@@ -2723,8 +2833,9 @@ git commit -m 'feat(backup): 备份携带背景照片与遮罩强度'
 - [ ] **步骤 1：改 `CACHE` 与 `ASSETS`**
 
 **`canvas-image.js` 已在任务 5 进清单，`theme-store.js` 与 `theme.js` 已在任务 10 一起进清单**（那两步
-分别让 `image-store.js` 与 `main.js` 多了静态依赖，白名单必须跟产生依赖的提交一起走），`CACHE` 那时
-已经用到 `pvault-v17`。所以这一步只加剩下的这两个文件，版本号再升一版：
+分别让 `image-store.js` 与 `main.js` 多了静态依赖，白名单必须跟产生依赖的提交一起走），`appearance.css`
+已在任务 11 进清单（那一步让 `index.html` 挂上了它的 `<link>`，同一个道理），`CACHE` 那时已经用到
+`pvault-v17`。所以这一步只加剩下的**一个**文件，版本号再升一版：
 
 ```js
 const CACHE = 'pvault-v18';
@@ -2732,12 +2843,10 @@ const CACHE = 'pvault-v18';
 
 在 `ASSETS` 数组里加，位置按这份清单**已有的分段约定**（根 → `styles/` 段 → `icons/` → `app/` 顶层
 `.js` 段 → `app/ui/` 段；每段内部按 ASC，**不是**全清单一个字符串序）：`'./app/ui/appearance-sheet.js'`
-插在 `'./app/ui/accounts-view.js'` **之前**，`'./styles/appearance.css'` 插在 styles 段**最前**
-（`appearance.css` < `base.css`）：
+插在 `'./app/ui/accounts-view.js'` **之前**：
 
 ```js
   './app/ui/appearance-sheet.js',
-  './styles/appearance.css',
 ```
 
 - [ ] **步骤 2：核对每个文件都真的存在**
@@ -2758,7 +2867,7 @@ if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Ho
 ```
 
 预期：`全部存在，共 60 个`（61 个条目里 `'./'` 不匹配这条正则、脚本不数它；任务 5 之后跑是 56 个、
-任务 10 之后是 58 个）
+任务 10 之后是 58 个、任务 11 之后是 59 个）
 
 **与旧版的差别只有一处**：先把 `const ASSETS = [` 到 `];` 之间的切片切出来，再在切片里匹配。
 `Get-Content sw.js -Raw` 是整文件读（**不是**逐行数组——这台机器上逐行读的大文件 `.Count` 会莫名其妙地
@@ -2879,6 +2988,13 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
       （这三条是 `paint()` 那份「整条写出去」合同的唯一兜底，见设计规格 §5.4）
 - [ ] （已知项，不是 bug）浏览器 / PWA 里系统栏颜色应跟着皮肤变；**APK 里不会变**——壳的状态栏由
       `themes.xml` 写死，原因与将来怎么改见设计规格 §5.5
+- [ ] 五张皮肤卡上的小色块与当前深浅档**无关**：底色是各皮肤浅色档的 `--bg`、圆点是它的 `--accent`
+      （`themeChip` 取的就是 `THEME_TOKENS[id].light`）。任意两张卡看起来应当不一样，选中那张有强调色
+      描边与淡底色——这条核的是「切换时最先感受到的差异」有没有被如实呈现
+- [ ] **全程 Console 不许出现未处理的拒绝**（`Uncaught (in promise)`）：把五套皮肤逐一点一遍、深浅三种
+      各切一次、选一张照片、再点「移除」、来回拖几次遮罩——这一串动作做完，Console 里不该冒出未处理的
+      拒绝（面板的四个写入口 setPreset / setMode / setPhoto / removePhoto 都接住了 rejection；没接住时
+      页面上的表现就是「点了没反应」）
 
 ### 背景照片
 - [ ] **没有照片时（冷启动的首屏、以及点「移除」之后）整屏只有 `--bg` 的底色**：看不到任何多出来的
@@ -2892,6 +3008,11 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
 - [ ] 点「移除」，确认背景消失且卡片恢复不透明
 - [ ] 换一张图，确认旧图没有残留在界面上
 - [ ] 老库升级：用 v1.2.0 的数据打开新版本，确认账目 / 发票 / 密码箱一条不少（**这是 assets 表迁移的验证**）
+- [ ] 没设照片时面板里**只有**「选择图片」与说明文字（没有遮罩滑块）；设过之后出现「换一张」「移除」
+      与遮罩滑块 + 右侧百分比
+- [ ] 拖动遮罩是**跟手**的（不是松手才变），来回拖几次后停手，**松手时那个值就是最终值**：完全退出 app
+      再打开，遮罩仍是它（既不是拖动中间某个值、也不是默认的 30%）。这条同时验节流的两个半边——
+      首帧立刻生效、尾部那次补写把停手时的值落了库
 
 ### 备份
 - [ ] 导出含背景的备份，确认体积增幅在预期内（约 +100~400KB）
@@ -2912,6 +3033,11 @@ git commit -m 'chore(scripts): 按外观面板的新文件扩展静态核验脚�
 | 老库（v1.2.0）升级后数据一条不少 | 「背景照片」第 8 条 |
 | 备份体积增幅在预期内 | 「备份」第 1 条 |
 | 恢复后背景还在、且是备份里那张图 | 「备份」第 2 条（**本轮把「是备份里那张图」这层补进同一条**） |
+
+**任务 11 追加的四条不是 §13 缺项，别写进这张表**（§13 那 7 条是规格定死的手动项；这四条来自任务 11
+的面板与错误路径）。它们**一律追加在各自小节的末尾**——这张表是按「子节内顺序数」定位的，插在中间会让
+表里所有编号错位。四条覆盖三件事：皮肤卡的预览色块（`themeChip` 恒取浅色档）、面板在两个状态下的控件
+集合、以及任务 11 新加的两条（未处理的拒绝、遮罩节流的两半）。
 
 - [ ] **步骤 2：全量回归**
 
