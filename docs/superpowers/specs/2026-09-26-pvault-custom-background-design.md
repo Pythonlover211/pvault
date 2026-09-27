@@ -142,7 +142,7 @@ export function themeCssVars(themeId, mode, { photo })  // → { '--bg': '#…',
 
 `--bg`、`--surface`、`--surface-2`、`--border`、`--text`、`--text-2`、`--text-3`、`--accent`、`--accent-weak`、`--on-accent`、`--shadow`、`--scrim-rgb`
 
-一共 12 个。**没有 `--surface-rgb`**：它与 `--surface` 是同一个颜色的两种写法，存两份必然漂移，而漂移只在「开了背景照片」这个状态下才看得出来（卡片半透明用的正是它的通道值）——不开照片的人永远碰不到。卡片半透明的 `rgba(...)` 由 `themeCssVars()` 从 `--surface` 现算（`#rrggbb` → `r,g,b`），于是物理上不可能跟 `--surface` 对不上；它也因此**不是**一个写到页面上的变量，CSS 里不会出现 `var(--surface-rgb)`。
+一共 12 个。**没有 `--surface-rgb`**：它与 `--surface` 是同一个颜色的两种写法，存两份必然漂移，而漂移只在「开了背景照片」这个状态下才看得出来（卡片半透明用的正是它的通道值）——不开照片的人永远碰不到。卡片半透明的 `rgba(...)` 由 `themeCssVars()` 从 `--surface` 现算（`#rrggbb` → `r,g,b`），于是物理上不可能跟 `--surface` 对不上；它也因此**不是**一个写到页面上的变量，CSS 里没有它的消费点（写「CSS 里不会出现 `var(--surface-rgb)`」这种字面说法会被注释自身命中——它自己就含这个串）。
 
 这份清单在 `tests/theme.test.js` 里**写死**（正典清单），基准不拿 `default.light` 自指——自指的基准下「十组一起少一个变量」也是绿的。
 
@@ -288,7 +288,12 @@ async function render(id) {
 
 `base.css` 保留一份 `:root`（默认皮肤浅色）+ 一条 `@media (prefers-color-scheme: dark) { :root { …默认皮肤深色… } }` 作为「JS 还没跑完的那一帧」的兜底。带属性的规则特异性 `(0,2,0)`／`(0,3,0)` 天然压过 `:root` 的 `(0,1,0)`——但**因为实际值由 JS 写进 inline style，这一条其实用不上**，留着只是让 `base.css` 单独看仍然是完整可用的（也方便将来做纯 CSS 的预览页）。
 
-任务 9 在同一个 `:root` 里加了背景照片那四个变量的兜底（`--bg-image` / `--bg-scrim` / `--scrim-rgb` / `--scrim-a`）。它们同样只在「这个变量从未被写过 inline」时生效。`--bg-image` 与 `--bg-scrim` 的兜底都是 `none`，与「两个都没写过」画出来一样（`var()` 没有回退值，缺一个会让整条 `background-image` 在 computed-value 求值时失效、两层一起没），所以它们不改变默认状态的渲染结果；`--scrim-rgb` 与 `--scrim-a` 的消费点在 JS 写进 inline style 的那条表达式里（`--bg-scrim` 的兜底是字面量 `none`，不引用它们），CSS 里没有 `var(--scrim-rgb)` / `var(--scrim-a)`，属防御性兜底，在当前代码里几乎不产生可见效果。逐条理由写在 `styles/base.css` 的注释里。**深色那一份 `:root` 不补 `--scrim-rgb`**：JS 没跑完那一帧它没有作用对象（`--bg-scrim` 也是 `none`），极性由 JS 按 resolved 的深浅写。
+任务 9 在同一个 `:root` 里加了背景照片那四个变量的兜底（`--bg-image` / `--bg-scrim` / `--scrim-rgb` / `--scrim-a`）。四条性质一样：只在「这个变量从未被写过 inline」时生效，作用是让这一层的默认状态在 CSS 里自文档化、并给将来的改动上保险，**当前都不产生可见的渲染差异**。逐条：
+
+- `--bg-image` 与 `--bg-scrim` 的兜底都是 `none`，与「两个都没写过」画出来一样（`var()` 没有回退值，缺一个会让整条 `background-image` 在 computed-value 求值时失效、两层一起没）。兜底值必须是这种「等于不存在」的东西——写成真遮罩或真色块，首帧就会看到一整块遮罩盖住整个 app。
+- `--scrim-rgb` 与 `--scrim-a` 在 CSS 里**没有第二个消费点**（消费它们的是 JS 写进 inline style 的那条表达式；`--bg-scrim` 的兜底是字面量 `none`，不引用它们），所以在这一帧同样没有可见效果。它们唯一可能生效的情形与前提写在 `styles/base.css` 的注释里：`--scrim-a` 连那条路都没有（`setPhotoVars` 里两行 `setProperty` 相邻、不会只写一行）；`--scrim-rgb` 需要「这个键从头到尾没被写过」，而 `paint()` 的循环本来一定会写它，所以只剩两种可能——循环被改坏漏掉了它，或 `paint()` 抛错（它唯一的 `throw` 是 `theme.js` 的 `hexToRgb`，要色板违反 HEX6 才触发，见下面那条已知项）。
+
+这四个变量在深色那一份 `:root` 里都不补：`--scrim-rgb` 在「JS 没跑完那一帧」本来就没有作用对象（`--bg-scrim` 也是 `none`）。**注意这与 `--bg` 不同**——`--bg` 在 `@media` 深色块里是补了的（`--bg: #131315`）；代价要说清：这条兜底一旦真的生效（也就是 `paint()` 漏写 `--scrim-rgb` 的那条路），深色档下拿到的是**白色**遮罩，极性是错的。
 
 **写入口的顺序：先画、再写库。** `setPreset()` / `setMode()` 都是「改内存 → `paint()` → `await setSetting()`」。反过来的话，写库一抛（`db.js` 的 `onblocked` 是真实可达路径，配额满也是）就留下「内存已改、DOM 还是旧皮肤」：面板拿 `currentTheme()` 重绘会显示「已经选中」，页面却还是上一个颜色，用户下次打开又变回去。先画，内存与 DOM 永远一致，写库失败只影响「下次启动记不记得住」。这两个写入口**不 catch**，rejection 交给调用方（面板）去提示「没保存成功」；它们与 `setPhoto` / `removePhoto` / `setOverlay` 一样 `return currentTheme()`。
 
@@ -348,7 +353,7 @@ body::before {
 }
 ```
 
-- `--bg-image`：由 JS 设为 `url(blob:…)`；未开照片时 `none`（配合 `--bg-scrim` 为透明，整层等于不存在）。
+- `--bg-image`：由 JS 设为 `url(blob:…)`；未开照片时 `none`（此时 `--bg-scrim` 也是 `none`，整层等于不存在）。
 - `--bg-scrim`：`linear-gradient(rgba(var(--scrim-rgb), var(--scrim-a)), rgba(var(--scrim-rgb), var(--scrim-a)))`。两层背景叠在一起：第一层是遮罩色，第二层是照片。
 - `--scrim-rgb`：浅色皮肤 `255,255,255`，深色皮肤 `0,0,0`（深浅切换时由 `themeCssVars` 一起给）。
 - `--scrim-a`：由遮罩滑块控制，`scrimAlpha(overlay)`，0–0.6。
