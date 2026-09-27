@@ -1727,8 +1727,9 @@ git commit -m 'feat(theme): 背景照片的压缩、存取与遮罩调节'
      改动上保险，当前都不产生可见的渲染差异。逐条：
        · --bg-image / --bg-scrim 的值是两个 none。它俩与「两个都没写过」画出来一样——var()
          不带回退值，谁缺一个都会让整条 background-image 在 computed-value 求值时失效、两层
-         一起没。所以「JS 还没跑完那一帧」「applyPhoto 在写变量之前就抛错（库里那张图读不
-         出来）」「JS 主动写 none」这三种状态渲染完全相同。兜底值必须让这一层等于不存在：
+         一起没。所以「JS 还没跑完那一帧」「applyPhoto 在写变量之前就抛错（读 assets 抛错，
+         不是记录不存在——记录不存在走 setPhotoVars(null)，DOM 上写的是显式的 none）」
+         「JS 主动写 none」这三种状态渲染完全相同。兜底值必须让这一层等于不存在：
          这里若写成一个真遮罩或真色块，那一帧就会看到一整块遮罩盖住整个 app。
        · --scrim-rgb / --scrim-a 在 CSS 里**没有第二个消费点**（消费它们的是 JS 写进 inline
          style 的那条表达式，theme-store.js 的 setPhotoVars；styles/ 与 app/ 里再无第二处
@@ -1747,12 +1748,26 @@ git commit -m 'feat(theme): 背景照片的压缩、存取与遮罩调节'
      四条都救不了「写过之后再漏写」的残留：inline 值优先于样式表里的 :root，真漏写时 DOM 上
      留着的是上一次写进去的旧值（--scrim-rgb 就是深色那套的 '0,0,0'）——这正是 paint() 注释
      里那句合同的原意，与这里给不给兜底无关。
-     显式写出 none 而不是干脆不写，还挡住一种将来的半套写法：只写 --bg-scrim（不写
-     --bg-image）时，没有兜底是整层失效、有兜底则会在空背景上单独冒出一层遮罩。
+     这两行兜底**不是纯粹无风险的装饰**：它把将来可能的半套写法从「显眼的失败」换成了
+     「隐蔽的失败」，两个方向都写在这里，读者有权知道：
+       · 只写 --bg-image、漏写 --bg-scrim（有照片、没遮罩）：没有兜底时 var(--bg-scrim) 未定义
+         会让整条 background-image 失效、两层都不画，用户看到的是「照片没了」——显眼；有了
+         这条兜底，它替换成 none，效果是 `none, url(…)`：**照片裸奔、没有遮罩**，数字直接压
+         在照片纹理上，看不清——隐蔽。对一个存密码的 app，后者的严重性高得多。
+       · 只写 --bg-scrim、漏写 --bg-image：没有兜底是整层失效，有兜底则会在空背景上单独冒出
+         一层遮罩。
+     保留这两行的理由不是「它没有风险」，而是：四行是一组（把那句「默认状态等于不存在」显式
+     写出来），而真出上面那种事时该修的是写半套的那个缺陷。代价如实记在这里。
      写法与 JS 对齐，免得同一份真相在仓库里出现两种写法：--scrim-rgb 不带空格（JS 色板里
      就是 '255,255,255'，tests/theme.test.js 的 SHAPES 把它钉成 /^\d{1,3},\d{1,3},\d{1,3}$/）、
      --scrim-a 带前导 0（scrimAlpha(OVERLAY_DEFAULT) 的结果是 '0.3'，JS 那边 String() 不会
      写出 '.3'）。
+     这四条与 JS 运行值的**逐字符相等**是硬要求，但它在 CSS 这一侧**目前没有守卫**：仓库里没有
+     任何测试解析 base.css 的内容（tests/theme.test.js 钉的是 JS 侧的 scrimAlpha(30) === 0.3，
+     改 JS 常量时它会响，但不会提醒 CSS 这份没跟上），而 --scrim-a 的 0.3 恰恰是
+     OVERLAY_DEFAULT 的第二份真相——将来 OVERLAY_DEFAULT 改了而这里没改，界面上是静默的
+     30% 与 40% 之差。任务 14 会把核验脚本收进 `scripts/check-theme-css.mjs`，前提条件就是
+     它带着「这四条 === JS 运行值，逐字符」这条必备断言。
      --scrim-rgb 这里给的是**浅色**那份，与 --bg **不同**：--bg 在下面的 @media 深色块里补了
      深色档（`--bg: #131315` 就在那儿），--scrim-rgb 没有补。不补的理由是它在「JS 没跑完那一
      帧」本来就没有作用对象（--bg-scrim 也是 none，遮罩层不存在）；但代价要写明白——一旦这条
@@ -1760,8 +1775,7 @@ git commit -m 'feat(theme): 背景照片的压缩、存取与遮罩调节'
   --bg-image: none;
   --bg-scrim: none;
   --scrim-rgb: 255,255,255;
-  --scrim-a: 0.3;
-```
+  --scrim-a: 0.3;```
 
 四处与初版计划的写法不同，都是刻意的：
 
@@ -1783,12 +1797,28 @@ git commit -m 'feat(theme): 背景照片的压缩、存取与遮罩调节'
      已改成「与 `--bg` **不同**」，并写明代价——这条兜底一旦真的生效，深色档下拿到的是白色遮罩、
      极性是错的。
    - (c) 同一轮还改掉了可达性说过强的一句：「本次会话里 `paint()` 一次都没成功跑完、用户仍然选了
-     照片」，改成写清前提（`initTheme` 在 `paint()` 之前就失败、且此后那次 `paint()` 抛错），并
-     说明它唯一的 `throw` 是 `theme.js` 的 `hexToRgb`（要色板违反 HEX6 才触发，规格 §5.4 记成
-     已知项）、而 `initTheme` 里那次 `paint()` 是 `photo=false`、不会调用 `hexToRgb`。
+     照片」，改成写清前提——这个键要「从未被写过」，而 `initTheme` 里那次 `paint()` 是
+     `photo=false`、不会调用 `hexToRgb`，一定会先写上它，所以只剩两种可能：循环被改坏漏掉了它，
+     或 `paint()` 抛错（它唯一的 `throw` 是 `theme.js` 的 `hexToRgb`，要色板违反 HEX6 才触发，
+     规格 §5.4 记成已知项）。
+   - (d) 第三轮返工把「库里那张图读不出来」收窄成「读 `assets` 抛错，不是记录不存在——记录不存在
+     走 `setPhotoVars(null)`，DOM 上写的是显式的 `none`」：原措辞有歧义，读成「记录不存在」就与
+     实现不符了。
 4. **四行统一成一种性质**（同一次返工）：`--bg-image` / `--bg-scrim` 两行同样**没有可见的渲染
    差异**（与「两个都没写过」等价），所以四条一律写成「自文档化 + 防御将来的改动」，不再只把
    `--scrim-rgb` / `--scrim-a` 叫「防御性」。
+5. **`--scrim-a: 0.3` 是第二份真相，它的守卫落在任务 14**（第三轮返工补）：`0.3` 就是
+   `OVERLAY_DEFAULT = 30` 在 CSS 里的副本。实测仓库里**没有任何测试解析 `base.css` 的内容**
+   （`tests/theme.test.js` 钉的是 JS 侧的 `scrimAlpha(30) === 0.3`，改 JS 常量时它会响，但不会
+   提醒 CSS 这份没跟上），所以 CSS 这一侧的漂移是静默的。任务 14 步骤 5 收进 `scripts/` 的那个
+   脚本**必须**带着「这四条兜底值 === JS 运行值，逐字符」这条断言，否则这条兜底只是一份会漂移的
+   副本——**保留它的正当性完全建立在这条守卫上**。
+6. **这两行兜底不是零风险的装饰**（第三轮返工补）：`--bg-scrim: none` 会把将来「只写
+   `--bg-image`、漏写 `--bg-scrim`」这种缺陷从**显眼的失败**（没有兜底 → `var()` 未定义 → 整条
+   `background-image` 失效 → 两层都不画 → 用户看到「照片没了」）换成**隐蔽的失败**（有兜底 →
+   `none, url(…)` → 照片裸奔、没有遮罩 → 数字压在照片上看不清）。对存密码的 app，后者严重得多。
+   兜底仍然保留（四行一组、把「默认状态等于不存在」显式写出来），但这条权衡如实写进了
+   `styles/base.css` 的注释。
 
 这一段的论证如实写在 `styles/base.css` 的注释里，与上面这段代码块一样逐字符一致。
 
@@ -1825,8 +1855,7 @@ body::before {
      `pointer-events: none` 穿透，那个位置的命中测试就会轮到这一层。显式写死它不参与，
      既是给将来的改动上保险，也让「这层不接收交互」在样式里自明。 */
   pointer-events: none;
-}
-```
+}```
 
 **不要**用 `background-attachment: fixed`：移动端 WebView 对它的 `cover` 处理不一致，而这个伪元素本来就是 `position: fixed`，不随滚动移动。
 
@@ -2508,6 +2537,25 @@ if ($missing) { Write-Host "缺失：`n$($missing -join "`n")" } else { Write-Ho
 Copy-Item <任务 9 的会话临时目录>\check-bg-vars.mjs scripts\check-theme-css.mjs
 ```
 
+**这个脚本守的是哪些东西（搬进来时必须一条不少，逐条自己确认）**：
+
+1. **`:root` 兜底的四个值 === JS 运行值，逐字符**——`--bg-image` / `--bg-scrim` 对 `'none'`、
+   `--scrim-rgb` 对 `themeCssVars('default','light')['--scrim-rgb']`、`--scrim-a` 对
+   `String(scrimAlpha(OVERLAY_DEFAULT))`。**这条是必备断言，不是附带项**：`--scrim-a: 0.3` 是
+   `OVERLAY_DEFAULT` 在 CSS 里的第二份真相，而仓库里**没有任何测试解析 `base.css` 的内容**
+   （`tests/theme.test.js` 钉的是 JS 侧的 `scrimAlpha(30) === 0.3`，改 JS 常量时它会响，但不会
+   提醒 CSS 这份没跟上）。少了这条断言，将来改了 `OVERLAY_DEFAULT` 而 CSS 没跟着改，界面上就是
+   静默的 30% 与 40% 之差，没有任何东西会报错——任务 9 保留那行兜底的正当性**完全建立在这条
+   断言上**。
+2. **变量名的两个方向**：CSS 里 `var()` 消费的每个名字都要有人写（JS 的 `setProperty` 或 CSS 的
+   `:root` 兜底）；JS 写进 CSS 值的表达式里引用的名字同理。
+3. **`body::before` 的声明集合**与规格 §6.2 一致（含 `z-index: -1`、`pointer-events: none`，
+   **不含** `background-attachment`）。
+4. **任务 9 的两个代码块 ⇄ `styles/base.css` 逐字符一致**（按 `\n` 归一化；别按工作区字节比，
+   工作区行尾是混杂的）。
+5. **变异自检（`--self-test`）：每条断言都要有一个「改坏之后它会红」的变异陪着**，否则那条断言
+   可能是恒真的绿。任务 9 收尾时的快照是 **15 个变异全被抓**。
+
 **新文件不必进 `sw.js` 的 `ASSETS` 白名单**，也不需要 `build-apk.ps1` 改复制清单。这两条**别照抄，
 自己核对一遍**（现状实测：`ASSETS` 里 57 条中 `./scripts/…` 是 0 条；`build-apk.ps1` 只复制
 `index.html` / `manifest.webmanifest` / `sw.js` 与 `app` / `styles` / `icons` 三个目录）：
@@ -2523,9 +2571,9 @@ Select-String -Path scripts\build-apk.ps1 -Pattern 'foreach \(\$d in'          #
 D:\node.exe scripts\check-theme-css.mjs
 ```
 
-预期：全部通过（任务 9 交付时是 **46 项检查 + 10 个变异全被抓**；搬进仓库时若又长了几项，以脚本
+预期：全部通过（任务 9 收尾时的快照是 **57 项检查 + 15 个变异全被抓**；搬进仓库时若又长了几项，以脚本
 自己的输出为准）。这一步的产物同时也是**给后来人的守卫**：改了 `base.css` 的背景层或兜底值，跑它
-就知道计划里的代码块有没有跟着漂。
+就知道计划里的代码块有没有跟着漂；而上面第 1 条断言则是那四行兜底唯一的漂移守卫。
 
 - [ ] **步骤 6：Commit**
 
