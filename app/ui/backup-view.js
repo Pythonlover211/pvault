@@ -364,6 +364,14 @@ export function openBackupSheet({ onChanged } = {}) {
     const invoicesText = summary.hasInvoices
       ? String(summary.invoices)
       : '不包含（保留本机现有发票）';
+    // 报销单那一行的文案，与发票那一行同一种写法、同一个方向：两张表都在 ARRAY_STORES 里，
+    // 导入侧 clears 的判据都是「备份里真有这个数组才清」。所以同样是两个「0」、两种相反处置：
+    // 文件里压根没有这一项（加报销单之前导出的老备份）→ 恢复时本机报销单原样保留；
+    // 文件里有这一项但是空的 → 本机报销单会被清空。只显示张数的话，用户在点
+    // 「确认覆盖并恢复」之前分不出自己那份报销单会不会没。
+    const reimbursementsText = summary.hasReimbursements
+      ? String(summary.reimbursements)
+      : '不包含（保留本机现有报销单）';
     // 图片这一行的判据必须与 backup-store 的 clears 严丝合缝地一致：
     //   clears 里加 invoiceFiles 的条件是 `arrayOrEmpty(data.invoiceFiles).length > 0`，
     //   也就是「没有**可恢复的**图片就一个字都不动本机」。
@@ -415,6 +423,10 @@ export function openBackupSheet({ onChanged } = {}) {
         el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '发票图片' }),
           el('span', { class: summary.invoiceFiles > 0 ? 'num' : '', text: filesText })
+        ]),
+        el('div', { class: 'row' }, [
+          el('span', { class: 'muted tiny', text: '报销单' }),
+          el('span', { class: summary.hasReimbursements ? 'num' : '', text: reimbursementsText })
         ]),
         el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '背景照片' }),

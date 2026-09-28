@@ -247,8 +247,31 @@ test('buildBackup：reimbursements 是深拷贝，改包内数据不影响原数
 test('summarizeBackup：数出报销单条数', () => {
   const s = summarizeBackup({ data: { reimbursements: [{ id: 'r1' }, { id: 'r2' }] } });
   assert.equal(s.reimbursements, 2);
+  assert.equal(s.hasReimbursements, true, '带了这个键的备份必须报「有」');
   const none = summarizeBackup({ data: {} });
   assert.equal(none.reimbursements, 0);
+  // 没有这个键（加报销单之前导出的老备份）必须是 false，界面才会提示「保留本机现有报销单」。
+  // 报成 true 就是告诉用户「本机报销单会被清空」，而导入侧实际会原样保留——两个方向都会读错。
+  assert.equal(none.hasReimbursements, false, '没有这个键时必须为 false');
+  const empty = summarizeBackup({ data: { reimbursements: [] } });
+  // 键在、值是空数组：导入侧 clears 的判据是 `Array.isArray(data[name])`，这张表**会**被清空。
+  assert.equal(empty.hasReimbursements, true, '键在就是 true，哪怕一张报销单都没有');
+});
+
+// 与发票那一条（上面）同一个理由：条数都是 0，处置却完全相反——文件里没有这一项时导入会**保留**
+// 本机报销单，文件里有但是空的时导入会把本机报销单清空。界面只能靠 hasReimbursements 分开说，
+// 所以这里用 deepEqual 把「老包与新空包在摘要层可区分」钉死：计数一模一样，布尔必须相反。
+test('summarizeBackup：能分辨「文件里没有报销单」与「文件里有 0 张报销单」', () => {
+  const oldFile = buildBackup(payload, 1);
+  delete oldFile.data.reimbursements;
+  const old = summarizeBackup(oldFile);
+  const newFile = summarizeBackup(buildBackup({ ...payload, reimbursements: [] }, 1));
+
+  assert.deepEqual(
+    [old.reimbursements, old.hasReimbursements, newFile.reimbursements, newFile.hasReimbursements],
+    [0, false, 0, true],
+    '计数都是 0，但老包（无键，导入保留本机）与新空包（有键，导入清空本机）不能长得一样'
+  );
 });
 
 test('REQUIRED_ARRAYS 不含 reimbursements：老备份不能被判成坏文件', () => {
