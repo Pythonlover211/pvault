@@ -46,7 +46,7 @@ async function putBackground({ overlay = 45, createdAt = 1700000000000 } = {}) {
 
 // 把库清成空的（保留表结构）。db.js 把连接缓存在模块级，换成「重建库」会让缓存指向旧 store。
 async function clearAll() {
-  await db.replaceAll({ clears: Object.keys(STORES), puts: [] });
+  await db.replaceAllRecords({ clears: Object.keys(STORES), puts: [] });
 }
 
 // assets 表里现在有哪些 id。**「只删 'bg' 这一条」与「整表清空」在只放了一条记录时结果一样**，
@@ -250,7 +250,7 @@ test('导入带背景的备份：assets 里**别的**资源记录不受影响（
   // 换成 `clears.push('assets')` → 实测红（7 条，含本文件里两条 assets 断言）。
   // **如实说明一个抓不住的**：去掉 `if (!bgBlob)` 条件、改成无条件 `deletes.push(...)` 同一条 key
   // → 实测**一条都不红**，因为它是**等价变异**：deletes 只删主键 'bg' 那一条，而备份带背景时
-  // 紧接着的 put 会把它写回来（db.replaceAll 的执行顺序是 clear → delete → put），最终结果一样。
+  // 紧接着的 put 会把它写回来（db.replaceAllRecords 的执行顺序是 clear → delete → put），最终结果一样。
   // 也就是说，「条件」在新实现下不是行为契约，真正被守的是**「只删那一条、不整表清」**这件事；
   // 想让「条件」本身可观察，得让被删的键与写回的键不是同一个——那不是一个真实场景，不做。
   await putBackground({ overlay: 45 });

@@ -11,7 +11,7 @@
 //    用同一把密钥，那就等于把「一次泄露 = 全部历史文件可解」写死进格式里。
 // 2. 导出的加密与导入的解密都以文件里 kdf.salt / kdf.iterations 为准：迭代次数会随版本涨，
 //    老备份必须按它当初写下的轮数解开。
-// 3. 导入必须先「解密 + 校验」全部通过，才允许碰现有数据；覆盖动作收在 db.replaceAll 的
+// 3. 导入必须先「解密 + 校验」全部通过，才允许碰现有数据；覆盖动作收在 db.replaceAllRecords 的
 //    一个事务里——中途失败绝不能留下「旧数据已清、新数据没写进去」的空库。
 // 4. 备份里没有密码箱时，**保留**目标设备现有的密码箱。删掉它等于顺手毁掉用户设备上
 //    唯一一份密码箱密文，而备份文件里根本没有它的替补。
@@ -36,7 +36,7 @@
 //      · 备份带图、而备份的 settings 里没有那一行（源机器上就是「图在库里、没人引用」——而这种
 //        状态会被 encodeBackground 原样导出，于是它**自我复制**下去）→ 用背景包里的 overlay /
 //        createdAt **现造一行补上**，让「图 + 引用」一起落地；
-//      · 备份没带图 → 把本机那条记录**按主键删掉**（走 db.replaceAll 的 deletes，不是 clears——
+//      · 备份没带图 → 把本机那条记录**按主键删掉**（走 db.replaceAllRecords 的 deletes，不是 clears——
 //        assets 是通用资源表，这里要动的只有 'bg' 一条），并跳过备份 settings 里那一行。
 //    离开一半的状态在这一层是不允许存在的，两个方向都要堵。
 //
@@ -582,7 +582,7 @@ export async function importBackup(text, password) {
   }
 
   // settings 是 { key, value } 形状、以 keyPath 为主键，所以 key 不是字符串时 put() 会**同步**
-  // 抛 DataError。这种异常不会自动中止事务（见 db.replaceAll），因此必须在入队之前就拦下来：
+  // 抛 DataError。这种异常不会自动中止事务（见 db.replaceAllRecords），因此必须在入队之前就拦下来：
   // 文件里有一行坏设置，不该换来一个清了一半的库。
   for (const row of data.settings) {
     if (typeof row?.key !== 'string' || !row.key) {
@@ -637,7 +637,7 @@ export async function importBackup(text, password) {
   if (!bgBlob) deletes.push({ store: 'assets', key: BACKGROUND_ASSET_ID });
 
   // 清空、删除与写入必须在同一个事务里，否则中途失败会留下一个空库（或半截状态）。
-  await db.replaceAll({ clears, puts, deletes });
+  await db.replaceAllRecords({ clears, puts, deletes });
 
   // 覆盖进来的密码箱多半属于**另一个**密码箱（另一把 DEK），而内存里的会话还是老的。
   // 不在这里上锁的话，此后任何一次 saveItems 都会用老 DEK 加密后写进新记录——

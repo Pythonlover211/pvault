@@ -93,7 +93,7 @@ export async function put(store, value) {
 // 为什么必须这么写：事务只对**异步**失败有效。objectStore.put() / .delete() / .clear()
 // **同步**抛出的 DataError（value 不是对象、取不出 keyPath、key 类型不合法）不会自动中止
 // 事务，先前入队的操作会照常提交——调用方以为「整批要么全成、要么全不成」，实际拿到的是
-// 半截数据（putAll 写交易、replaceAll 清库重写、removeAll 撤销导入都吃这一口）。
+// 半截数据（putAll 写交易、replaceAllRecords 清库重写、removeAll 撤销导入都吃这一口）。
 // 所以同步抛错时显式 abort() 整批回滚，再把原始错误原样抛给调用方。
 // abort 自己也可能抛（事务已经不在活动态时抛 InvalidStateError）：那种情况下原始错误
 // 信息比回滚失败重要得多，吞掉它，别让调用方看到一个假的失败原因。
@@ -133,7 +133,7 @@ export async function putAll(entries) {
 //
 // 执行顺序是 clear → delete → put：同一个 key 不会既删又写（调用方按「有没有可恢复的值」二选一），
 // 真出现时 put 在最后，写进去的那条赢。
-export async function replaceAll({ clears = [], puts = [], deletes = [] }) {
+export async function replaceAllRecords({ clears = [], puts = [], deletes = [] }) {
   const db = await open();
   const names = [...new Set([...clears, ...puts.map(e => e.store), ...deletes.map(e => e.store)])];
   const tx = db.transaction(names, 'readwrite');
@@ -196,7 +196,7 @@ export async function remove(store, key) {
 // 批量删除：与 putAll 对称，同样在一个事务里跨仓库删除。entries 形如 [{ store, key }]。
 // 这里的 try/abort 不是照抄：store.delete() 同步抛 DataError（key 类型不合法）时事务不会
 // 自动中止，前面已入队的 delete 照常提交，于是「撤销一次导入」变成半截删除——用户看到的
-// 是记录还在，而浮层已经说了撤销成功。走 enqueue 与 putAll / replaceAll 保持同一处置。
+// 是记录还在，而浮层已经说了撤销成功。走 enqueue 与 putAll / replaceAllRecords 保持同一处置。
 export async function removeAll(entries) {
   const db = await open();
   const names = [...new Set(entries.map(e => e.store))];

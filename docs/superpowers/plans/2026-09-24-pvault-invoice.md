@@ -1069,7 +1069,7 @@ export async function summary(now = Date.now()) {
 
 - [ ] **步骤 2：** 给 `app/db.js` 新增 `getAllByIndex`
 
-已核实：`app/db.js` 现有 `put` / `putAll` / `replaceAll` / `get` / `getAll` / `getByRange` / `remove` / `removeAll`，**没有** `getByIndex` 一类的按索引取值函数——本任务与任务 8 都要用，必须新增一个。不写「单条版 `getByIndex`」：`by_txn` 索引下一笔账可能挂多张票，`index().get()` 只会返回第一条，那样「这笔账有几张票」永远显示 1。统一用返回数组的 `getAllByIndex`，查重处取 `hits[0]` 即可。
+已核实：`app/db.js` 现有 `put` / `putAll` / `replaceAll` / `get` / `getAll` / `getByRange` / `remove` / `removeAll`，**没有** `getByIndex` 一类的按索引取值函数——本任务与任务 8 都要用，必须新增一个。不写「单条版 `getByIndex`」：`by_txn` 索引下一笔账可能挂多张票，`index().get()` 只会返回第一条，那样「这笔账有几张票」永远显示 1。统一用返回数组的 `getAllByIndex`，查重处取 `hits[0]` 即可。**（后记：上面这句里列的 `replaceAll` 后来改名成 `replaceAllRecords`——它与 `String.prototype.replaceAll`（Chrome 85+）同名，会让「扫运行时代码里有没有目标设备不支持的 API」那条语法守卫必须为它开一条按名字的白名单例外；改名之后那条例外整个删掉了。改名的落点与理由见 `tests/legacy-syntax.test.js`。）**
 
 在 `app/db.js` 的 `getByRange` 之后插入：
 
