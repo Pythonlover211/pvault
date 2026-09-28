@@ -424,3 +424,17 @@ test('计划任务 13 的 js 代码块与仓库代码逐字符一致', () => {
       + '在 app/backup.js 与 app/backup-store.js 里都找不到逐字符匹配——两边有一处漂移了');
   });
 });
+
+test('ARRAY_STORES 覆盖 reimbursements：导出带上、导入清空', async () => {
+  await db.putAll([
+    { store: 'reimbursements', value: { id: 'r1', title: '9月报销 · 1 张', status: 'draft', createdAt: 1 } }
+  ]);
+  const out = await exportBackup('pw-123456', 1700000000000);
+  await db.replaceAllRecords({ clears: ['reimbursements'], puts: [], deletes: [] });
+  assert.equal(await db.get('reimbursements', 'r1'), undefined, '前置：已经清干净');
+
+  await importBackup(out.text, 'pw-123456');
+  const back = await db.get('reimbursements', 'r1');
+  assert.equal(back?.title, '9月报销 · 1 张', '报销单必须能从备份里恢复');
+  assert.equal(back?.status, 'draft');
+});

@@ -87,10 +87,13 @@ const MAX_INLINE_FILES_BYTES = 45 * 1024 * 1024;   // 原图字节，约合 base
 // 新字段进去就会把既有备份全部判成坏文件（见那边的注释）。
 //
 // invoices 现在在这里（发票条目是纯 JSON，能进备份包）。
+// **reimbursements 也在这里**：报销单本身是纯 JSON，但它与发票的**归属关系**靠
+// invoices.reimbursementId 表达，而 invoices 也在同一个清单里 —— 两者必须同进同出，
+// 少一个就会恢复出「报销单在、票不知道属不属于它」或者反过来的悬空状态。
 // **invoiceFiles 不在这里**：它的 blob / thumbBlob 是 Blob，JSON.stringify(blob) 得到 `{}`，
 // 直接进下面那个循环只会往备份里塞一堆空壳，恢复出来就是「有记录、没图片」。
 // 它由 encodeFiles() 单独转成 base64 再打包，导入时由 base64ToBlob() 单独反解。
-const ARRAY_STORES = ['txns', 'accounts', 'categories', 'receivables', 'invoices'];
+const ARRAY_STORES = ['txns', 'accounts', 'categories', 'receivables', 'invoices', 'reimbursements'];
 
 // 背景照片那一对名字。图片本身存在 assets 表里（见 schema.js），设置里那一行只存引用与遮罩强度
 // （`{ assetId, overlay, createdAt }`，见 theme-store.js 的 setPhoto）。

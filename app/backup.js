@@ -31,6 +31,11 @@ export function buildBackup(payload, now = Date.now()) {
       settings: deepClone(payload.settings ?? []),
       // 发票条目本身是纯 JSON（号码/金额/时间戳），与上面几张表一样深拷贝。
       invoices: deepClone(payload.invoices ?? []),
+      // 报销单与发票条目同源（纯 JSON、与库存数据解耦），一起深拷贝。
+      // 它必须**始终**是个数组（哪怕是空的）：导入侧 clears 的判据是 `Array.isArray(data[name])`，
+      // 给 undefined 就等于告诉导入「这份备份没带报销单」，本机那些上一份数据的报销单不会被清掉，
+      // 恢复出来的库里会混着两份数据。
+      reimbursements: deepClone(payload.reimbursements ?? []),
       // 发票图片已经是 base64 字符串（Blob 进不了 JSON，见 backup-store 的 encodeFiles），
       // 所以这里**刻意不深拷贝**：一份带几百张图的备份光 base64 就有几十上百 MB，
       // structuredClone 会把它整份复制一遍，手机上这一下就够触发内存告警。
@@ -81,6 +86,7 @@ export function summarizeBackup(obj) {
     // 发票张数与发票图片张数。恢复前那一屏是用户唯一一次机会判断「选中的这份文件对不对」，
     // 至少要能看出里面有没有发票。
     invoices: countOf(data.invoices),
+    reimbursements: countOf(data.reimbursements),
     invoiceFiles: countOf(data.invoiceFiles),
     // 光有张数不够：0 有两种完全不同的含义。文件里**压根没有**这一项（加发票之前导出的老备份）时，
     // 恢复会保留本机现有的发票与图片；文件里**有这一项但是空的**时，恢复会把本机发票清空。

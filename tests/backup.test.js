@@ -20,8 +20,12 @@ test('buildBackup 带上格式标识、版本与时间戳', () => {
   // 判断要不要清本机的表，靠「值是什么」判断要不要清本机那条背景。所以加一个键就该在这里显式
   // 改一次，顺手想清楚「导入端认不认它、老备份里没有它怎么办」。改宽成「包含」等于让新键悄悄
   // 溜进备份包（`invoiceFiles` 那次漏掉 name 字段是同一种病的另一面）。
+  //
+  // **reimbursements 是计划 5（报销流程）加进来的**：加它之前 ARRAY_STORES 里没有这张表，
+  // 于是导出备份**不带报销单**——换机恢复之后报销单直接没了，且整个过程不报错。
+  // 这条断言当初写的是 5 张表，它守的正是「哪些表进备份」这件事，所以随着那次改动一起变 6 张。
   assert.deepEqual(Object.keys(b.data).sort(),
-    ['accounts', 'background', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'settings', 'txns', 'vault']);
+    ['accounts', 'background', 'categories', 'invoiceFiles', 'invoices', 'receivables', 'reimbursements', 'settings', 'txns', 'vault']);
 });
 
 // background 与 invoiceFiles 有一处关键差别：它是**对象或 null**，不是数组。
@@ -218,4 +222,39 @@ test('buildBackup 是深拷贝：改原对象不影响备份内容', () => {
   assert.deepEqual(b.data.txns[0].tags, ['x']);
   assert.equal(b.data.accounts[0].name, '现金');
   assert.equal(b.data.vault.ciphertext, 'abc');
+});
+
+test('buildBackup：reimbursements 进备份包，且老备份读出空数组', () => {
+  const reimb = [{ id: 'r1', title: '9月报销 · 2 张', status: 'submitted', createdAt: 1 }];
+  const pkg = buildBackup({ reimbursements: reimb }, 1700000000000);
+  assert.deepEqual(pkg.data.reimbursements, reimb);
+
+  // 老备份（没有这个键）必须是空数组而不是 undefined：
+  // importBackup 的 clears 判据是 `Array.isArray(data[name])`，
+  // 给 undefined 就变成「这份备份没带报销单」→ 表不会被清空，
+  // 于是恢复出来的库里混着上一份数据的报销单。
+  const old = buildBackup({}, 1700000000000);
+  assert.deepEqual(old.data.reimbursements, []);
+});
+
+test('buildBackup：reimbursements 是深拷贝，改包内数据不影响原数组', () => {
+  const src = [{ id: 'r1', title: 'x' }];
+  const pkg = buildBackup({ reimbursements: src }, 1);
+  pkg.data.reimbursements[0].title = '改过了';
+  assert.equal(src[0].title, 'x', '备份包与调用方的数组必须解耦');
+});
+
+test('summarizeBackup：数出报销单条数', () => {
+  const s = summarizeBackup({ data: { reimbursements: [{ id: 'r1' }, { id: 'r2' }] } });
+  assert.equal(s.reimbursements, 2);
+  const none = summarizeBackup({ data: {} });
+  assert.equal(none.reimbursements, 0);
+});
+
+test('REQUIRED_ARRAYS 不含 reimbursements：老备份不能被判成坏文件', () => {
+  // 这条是防回归的闸门。REQUIRED_ARRAYS 的含义是「老备份**必须**也有」，
+  // 把 reimbursements 加进去会让所有既有备份在 validateBackup 那一步直接被拒，
+  // 而「恢复备份」是用户保住账目的唯一通道。发票那次踩过同一个坑（backup.js:4 有注释）。
+  const check = validateBackup(buildBackup({}, 1));
+  assert.equal(check.ok, true, '没有 reimbursements 键的备份必须是合法的');
 });
