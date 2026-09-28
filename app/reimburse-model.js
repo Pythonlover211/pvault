@@ -23,11 +23,15 @@ export const STATUS = Object.freeze({
 // freeze 是必要的：模块级共享数组，任何 import 方 push 一下就会污染全网校验。
 export const STATUS_IDS = Object.freeze([STATUS.DRAFT, STATUS.SUBMITTED, STATUS.SETTLED]);
 
-export const STATUS_LABELS = Object.freeze({
+// 用无原型对象：这张表是**导出的**，将来有人直接 STATUS_LABELS[x] 是迟早的事，
+// 而 x 命中 'constructor' / 'toString' 会返回函数而不是 undefined——
+// statusLabel 里那个 includes 守卫只保护 statusLabel 自己，保护不了裸查的人。
+// （这正是 baa3bf7 修掉的那个 bug 的原形。）
+export const STATUS_LABELS = Object.freeze(Object.assign(Object.create(null), {
   [STATUS.DRAFT]: '待提交',
   [STATUS.SUBMITTED]: '已提交',
   [STATUS.SETTLED]: '已到账'
-});
+}));
 
 export function isStatus(v) {
   return STATUS_IDS.includes(v);
@@ -35,11 +39,12 @@ export function isStatus(v) {
 
 export function statusLabel(v) {
   // 判据必须与 isStatus **同源**（都用 STATUS_IDS.includes），不能直接写 STATUS_LABELS[v]。
-  // 后者是属性查找、会命中**原型链**：statusLabel('constructor') 会返回一个函数
-  // 而不是兜底文案，statusLabel('toString') / '__proto__' 同理——备份文件里的脏 status、
-  // 手改过的记录都可能带上这类字符串，界面上就会出现 function Object(){[native code]}。
-  // 两个函数对「不认识的值」的口径也不能分叉：isStatus 说不认识、statusLabel 却给出别的东西，
-  // 排查时会把人带到错的方向去。
+  // 后者是属性查找、给不出「未知状态」这句兜底。这张表早期还是普通字面量时更糟：
+  // 它会命中**原型链**——statusLabel('constructor') 返回的是一个函数
+  // （function Object(){[native code]}），'toString' / '__proto__' 同理，而备份文件里的脏 status、
+  // 手改过的记录都可能带上这类字符串。表现在已经改成 Object.create(null) 的无原型对象，
+  // 但这条守卫要留着：两个函数对「不认识的值」的口径不能分叉——isStatus 说不认识、
+  // statusLabel 却给出别的东西，排查时会把人带到错的方向去。
   return STATUS_IDS.includes(v) ? STATUS_LABELS[v] : '未知状态';
 }
 
@@ -66,7 +71,11 @@ export function canSettle(reimb) {
 export function canDelete() {
   // 任何状态都能删。删不掉才是真的把用户卡住——一张填错的单子如果
   // 因为「已到账」而永远留在列表里，他就只剩下忍着这一条路。
-  // 已生成收入账时的额外确认在界面层（见 reimburse-view.js），不在这里。
+  // 已生成收入账时的额外确认在界面层（reimburse-view.js 的 confirmDelete），不在这里。
+  //
+  // 它是**零参**的、恒为 true：别用它做可删性判断（`if (!canDelete(...))` 是装饰）。
+  // 它在这里的意义是给 canEdit / canSubmit / canSettle / canDelete 这一套判据留个齐整的
+  // 落点——「删除不受状态限制」这个决策得有个地方写着。
   return true;
 }
 
@@ -76,12 +85,20 @@ export function isActive(reimb) {
 
 // ===== 计算与推导 =====
 
-// 默认标题「9月报销 · 3 张」。用**本地时间**取月份：UTC 会比东八区早 8 小时，
-// 9 月 30 日晚上 8 点之后导出的单会被写成「10月报销」，而用户手里的单明明是 9 月的。
+// 默认标题「9月报销 · 3 张」。用**本地时间**取月份：UTC 读数落后东八区 8 小时，
+// 北京时间 10 月 1 日凌晨（00:00–07:59）那一刻 UTC 还停在 9 月 30 日，
+// 用 UTC 会把「10月报销」写成「9月报销」——而用户明明是在 10 月建的单。
+//
+// 用 isSafeInteger 而不是 isFinite：8.7e15 也是有限数，但 new Date(8.7e15) 是 Invalid Date，
+// getMonth() 得到 NaN，标题就写成「NaN月报销 · 3 张」——而标题是要存库、要显示的。
+// isSafeInteger 仍挡不住 8.64e15 ~ 9.007e15 那一段，所以再验一次取回的毫秒数。
+// 口径与 invoice-model.js 对 issuedAt 的校验一致（那里也是被脏时间戳坑过才改的）。
 export function autoTitle(monthTs, count) {
-  const d = new Date(Number.isFinite(monthTs) ? monthTs : Date.now());
+  const ts = Number.isSafeInteger(monthTs) ? monthTs : Date.now();
+  const d = new Date(ts);
+  const when = Number.isNaN(d.getTime()) ? new Date() : d;
   const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
-  return `${d.getMonth() + 1}月报销 · ${n} 张`;
+  return `${when.getMonth() + 1}月报销 · ${n} 张`;
 }
 
 // 差额 = 实际到账 − 发票合计。
@@ -102,8 +119,10 @@ export function diffCents(settledCents, invoices) {
 export function invoiceStatus(inv, reimb) {
   if (inv?.archived) return 'stored';
   if (!inv?.reimbursementId) return 'pending';
-  // reimb 传进来了就顺带校验它确实对应这张票；不匹配时按「已报销」处理，
-  // 不因为一次读库的时序问题把票退回待报销。
+  // reimb 这个参数**刻意不用**：筛选发生在发票列表页，那里只查了 invoices 表，
+  // 手里没有报销单，传 null 是常态。保留形参只是为了与 invoiceBadge 同形，
+  // 不是做「这张票属于哪张单」的归属校验——归属校验在数据层（reimburse-store），
+  // 这里不做，因为没有它也不会把一张已报出去的票算成待报销。
   void reimb;
   return 'reimbursed';
 }

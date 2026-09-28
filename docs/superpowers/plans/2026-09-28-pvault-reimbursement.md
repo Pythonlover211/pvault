@@ -64,7 +64,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  STATUS, STATUS_IDS, STATUS_LABELS, isStatus, statusLabel,
+  STATUS, STATUS_IDS, isStatus, statusLabel,
   canEdit, canSubmit, canSettle, canDelete, isActive,
   autoTitle, diffCents, invoiceStatus, invoiceBadge
 } from '../app/reimburse-model.js';
@@ -87,6 +87,10 @@ test('isStatus / statusLabel：认识的三项，不认识的给兜底', () => {
   assert.equal(isStatus(null), false);
   assert.equal(isStatus(undefined), false);
   assert.equal(statusLabel('settled'), '已到账');
+  // 三个文案都要钉住：只断言 settled 的话，把 draft / submitted 的文案改错（变异实验里
+  // 改成「草稿箱」「送审中」）测试照样全绿，而任务 7/8/9 的界面正是用它们渲染列表的。
+  assert.equal(statusLabel('draft'), '待提交');
+  assert.equal(statusLabel('submitted'), '已提交');
   assert.equal(statusLabel('nope'), '未知状态');
   // 属性查找会命中原型链：这几行曾经拿不到兜底文案——statusLabel('constructor')
   // 返回的是一个函数（function Object(){[native code]}），'toString' / '__proto__' 同理。
@@ -129,13 +133,25 @@ test('isActive：草稿与已提交算进行中', () => {
 });
 
 test('autoTitle：月份与张数拼成默认标题', () => {
-  // 用本地时间的月份（不是 UTC）：东八区 9 月 30 日晚上 8 点后 UTC 已经是 10 月 1 日，
-  // 用 UTC 会把「9月报销」写成「10月报销」，而用户手里的单明明是 9 月的。
+  // 用本地时间的月份（不是 UTC）：UTC 读数落后东八区 8 小时，
+  // 北京时间 10 月 1 日凌晨（00:00–07:59）那一刻 UTC 还停在 9 月 30 日，
+  // 用 UTC 会把「10月报销」写成「9月报销」，而用户明明是在 10 月建的单。
   const sep = new Date(2026, 8, 15, 12, 0, 0).getTime();   // 2026-09-15 本地
   assert.equal(autoTitle(sep, 3), '9月报销 · 3 张');
   assert.equal(autoTitle(sep, 0), '9月报销 · 0 张');
   const jan = new Date(2026, 0, 1, 0, 30, 0).getTime();
   assert.equal(autoTitle(jan, 12), '1月报销 · 12 张', '1 月不能写成 0 月（getMonth 从 0 起）');
+
+  // 时间戳脏值一律退回当前月，绝不产出「NaN月报销」——那会被存进 reimb.title 显示给用户。
+  const nowMonth = new Date().getMonth() + 1;
+  for (const bad of [undefined, null, NaN, Infinity, '1700000000000', 1e300, 8640000000000001, 8.7e15]) {
+    assert.equal(autoTitle(bad, 3), `${nowMonth}月报销 · 3 张`, `monthTs=${String(bad)} 应当退回当前月`);
+  }
+  // count 脏值一律按 0 张计。
+  assert.equal(autoTitle(sep, -5), '9月报销 · 0 张');
+  assert.equal(autoTitle(sep, '3'), '9月报销 · 0 张', '字符串张数不算数');
+  assert.equal(autoTitle(sep, 1.5), '9月报销 · 0 张');
+  assert.equal(autoTitle(sep, NaN), '9月报销 · 0 张');
 });
 
 test('diffCents：还没到账时没有差额可谈', () => {
@@ -145,15 +161,26 @@ test('diffCents：还没到账时没有差额可谈', () => {
   assert.equal(diffCents(1238, invoices), -12, '公司抹零：差额是负的');
   assert.equal(diffCents(1300, invoices), 50, '多打了也算差额');
   assert.equal(diffCents(0, []), 0);
+  // 脏值一律返回 null（而不是拿 NaN 或字符串去参与减法）：这几个值会从备份文件、
+  // 手改过的记录里来，一旦漏出去，界面上那一行会显示成「差额 ¥NaN」，
+  // 而 JSON.stringify 会把 NaN 变成 null 跟着下一次备份跑到别的设备上。
+  assert.equal(diffCents('1250', invoices), null, '字符串不该被当成数字');
+  assert.equal(diffCents(1.5, invoices), null, '小数分不存在');
+  assert.equal(diffCents(NaN, invoices), null);
+  assert.equal(diffCents(undefined, invoices), null);
+  assert.equal(diffCents(9007199254740993, invoices), null, '超出安全整数范围');
+  assert.equal(diffCents(Infinity, invoices), null);
 });
 
 test('invoiceStatus：筛选用的三态', () => {
   assert.equal(invoiceStatus({ archived: true }, null), 'stored');
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }, null), 'pending');
   // reimb 参数允许为 null：列表页只查 invoices 表，那一刻拿不到报销单。
   // 拿不到时按「有 reimbursementId 就是已报销」判定，不能因此把它算成待报销。
   assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }, null), 'pending');
+  // reimb 传进来但不匹配（这张票属于别的单）时仍判「已报销」：
+  // 一次读库的时序问题不该把一张已经报出去的票退回待报销，那会让用户重复报销同一张票。
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, { id: 'OTHER', status: 'draft' }), 'reimbursed');
   // 脏组合（既存档又在单里）优先按「仅存档」显示——它本不该存在，
   // 但显示成一个没法解释的东西更糟。
   assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }, null), 'stored');
@@ -207,11 +234,15 @@ export const STATUS = Object.freeze({
 // freeze 是必要的：模块级共享数组，任何 import 方 push 一下就会污染全网校验。
 export const STATUS_IDS = Object.freeze([STATUS.DRAFT, STATUS.SUBMITTED, STATUS.SETTLED]);
 
-export const STATUS_LABELS = Object.freeze({
+// 用无原型对象：这张表是**导出的**，将来有人直接 STATUS_LABELS[x] 是迟早的事，
+// 而 x 命中 'constructor' / 'toString' 会返回函数而不是 undefined——
+// statusLabel 里那个 includes 守卫只保护 statusLabel 自己，保护不了裸查的人。
+// （这正是 baa3bf7 修掉的那个 bug 的原形。）
+export const STATUS_LABELS = Object.freeze(Object.assign(Object.create(null), {
   [STATUS.DRAFT]: '待提交',
   [STATUS.SUBMITTED]: '已提交',
   [STATUS.SETTLED]: '已到账'
-});
+}));
 
 export function isStatus(v) {
   return STATUS_IDS.includes(v);
@@ -219,11 +250,12 @@ export function isStatus(v) {
 
 export function statusLabel(v) {
   // 判据必须与 isStatus **同源**（都用 STATUS_IDS.includes），不能直接写 STATUS_LABELS[v]。
-  // 后者是属性查找、会命中**原型链**：statusLabel('constructor') 会返回一个函数
-  // 而不是兜底文案，statusLabel('toString') / '__proto__' 同理——备份文件里的脏 status、
-  // 手改过的记录都可能带上这类字符串，界面上就会出现 function Object(){[native code]}。
-  // 两个函数对「不认识的值」的口径也不能分叉：isStatus 说不认识、statusLabel 却给出别的东西，
-  // 排查时会把人带到错的方向去。
+  // 后者是属性查找、给不出「未知状态」这句兜底。这张表早期还是普通字面量时更糟：
+  // 它会命中**原型链**——statusLabel('constructor') 返回的是一个函数
+  // （function Object(){[native code]}），'toString' / '__proto__' 同理，而备份文件里的脏 status、
+  // 手改过的记录都可能带上这类字符串。表现在已经改成 Object.create(null) 的无原型对象，
+  // 但这条守卫要留着：两个函数对「不认识的值」的口径不能分叉——isStatus 说不认识、
+  // statusLabel 却给出别的东西，排查时会把人带到错的方向去。
   return STATUS_IDS.includes(v) ? STATUS_LABELS[v] : '未知状态';
 }
 
@@ -250,7 +282,11 @@ export function canSettle(reimb) {
 export function canDelete() {
   // 任何状态都能删。删不掉才是真的把用户卡住——一张填错的单子如果
   // 因为「已到账」而永远留在列表里，他就只剩下忍着这一条路。
-  // 已生成收入账时的额外确认在界面层（见 reimburse-view.js），不在这里。
+  // 已生成收入账时的额外确认在界面层（reimburse-view.js 的 confirmDelete），不在这里。
+  //
+  // 它是**零参**的、恒为 true：别用它做可删性判断（`if (!canDelete(...))` 是装饰）。
+  // 它在这里的意义是给 canEdit / canSubmit / canSettle / canDelete 这一套判据留个齐整的
+  // 落点——「删除不受状态限制」这个决策得有个地方写着。
   return true;
 }
 
@@ -260,12 +296,20 @@ export function isActive(reimb) {
 
 // ===== 计算与推导 =====
 
-// 默认标题「9月报销 · 3 张」。用**本地时间**取月份：UTC 会比东八区早 8 小时，
-// 9 月 30 日晚上 8 点之后导出的单会被写成「10月报销」，而用户手里的单明明是 9 月的。
+// 默认标题「9月报销 · 3 张」。用**本地时间**取月份：UTC 读数落后东八区 8 小时，
+// 北京时间 10 月 1 日凌晨（00:00–07:59）那一刻 UTC 还停在 9 月 30 日，
+// 用 UTC 会把「10月报销」写成「9月报销」——而用户明明是在 10 月建的单。
+//
+// 用 isSafeInteger 而不是 isFinite：8.7e15 也是有限数，但 new Date(8.7e15) 是 Invalid Date，
+// getMonth() 得到 NaN，标题就写成「NaN月报销 · 3 张」——而标题是要存库、要显示的。
+// isSafeInteger 仍挡不住 8.64e15 ~ 9.007e15 那一段，所以再验一次取回的毫秒数。
+// 口径与 invoice-model.js 对 issuedAt 的校验一致（那里也是被脏时间戳坑过才改的）。
 export function autoTitle(monthTs, count) {
-  const d = new Date(Number.isFinite(monthTs) ? monthTs : Date.now());
+  const ts = Number.isSafeInteger(monthTs) ? monthTs : Date.now();
+  const d = new Date(ts);
+  const when = Number.isNaN(d.getTime()) ? new Date() : d;
   const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
-  return `${d.getMonth() + 1}月报销 · ${n} 张`;
+  return `${when.getMonth() + 1}月报销 · ${n} 张`;
 }
 
 // 差额 = 实际到账 − 发票合计。
@@ -286,8 +330,10 @@ export function diffCents(settledCents, invoices) {
 export function invoiceStatus(inv, reimb) {
   if (inv?.archived) return 'stored';
   if (!inv?.reimbursementId) return 'pending';
-  // reimb 传进来了就顺带校验它确实对应这张票；不匹配时按「已报销」处理，
-  // 不因为一次读库的时序问题把票退回待报销。
+  // reimb 这个参数**刻意不用**：筛选发生在发票列表页，那里只查了 invoices 表，
+  // 手里没有报销单，传 null 是常态。保留形参只是为了与 invoiceBadge 同形，
+  // 不是做「这张票属于哪张单」的归属校验——归属校验在数据层（reimburse-store），
+  // 这里不做，因为没有它也不会把一张已报出去的票算成待报销。
   void reimb;
   return 'reimbursed';
 }
