@@ -64,7 +64,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  STATUS, STATUS_IDS, isStatus, statusLabel,
+  STATUS, STATUS_IDS, STATUS_LABELS, isStatus, statusLabel,
   canEdit, canSubmit, canSettle, canDelete, isActive,
   autoTitle, diffCents, invoiceStatus, invoiceBadge
 } from '../app/reimburse-model.js';
@@ -77,6 +77,15 @@ test('状态枚举有三项且冻结', () => {
   // 模块级共享数组必须冻结：任何 import 方 push 一下就会污染全网校验，
   // 而这种污染在测试里跑不出错（同进程内先污染后校验），排查极费劲。
   assert.ok(Object.isFrozen(STATUS_IDS), 'STATUS_IDS 应当是冻结的');
+
+  assert.ok(Object.isFrozen(STATUS_LABELS), 'STATUS_LABELS 也应当是冻结的');
+  // 这张表是**导出的**：将来有人图省事直接 STATUS_LABELS[x]，而 x 命中原型链上的
+  // 'constructor' / 'toString' 会返回函数而不是 undefined，`??` 也兜不住（非 nullish）——
+  // 那正是 baa3bf7 修掉的那个 bug 的原形。无原型对象让裸查也安全，这条断言钉住它。
+  // （statusLabel('constructor') 的兜底文案已在上面那条测试里钉过，这里不重复。）
+  assert.equal(STATUS_LABELS['constructor'], undefined, '原型链不该漏进来');
+  assert.equal(STATUS_LABELS['toString'], undefined);
+  assert.equal(STATUS_LABELS['__proto__'], undefined);
 });
 
 test('isStatus / statusLabel：认识的三项，不认识的给兜底', () => {
