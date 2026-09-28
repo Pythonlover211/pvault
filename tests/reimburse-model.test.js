@@ -1,0 +1,101 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  STATUS, STATUS_IDS, STATUS_LABELS, isStatus, statusLabel,
+  canEdit, canSubmit, canSettle, canDelete, isActive,
+  autoTitle, diffCents, invoiceStatus, invoiceBadge
+} from '../app/reimburse-model.js';
+
+const r = (status) => ({ id: 'r1', status });
+
+test('状态枚举有三项且冻结', () => {
+  assert.deepEqual(STATUS_IDS, ['draft', 'submitted', 'settled']);
+  assert.equal(STATUS.DRAFT, 'draft');
+  // 模块级共享数组必须冻结：任何 import 方 push 一下就会污染全网校验，
+  // 而这种污染在测试里跑不出错（同进程内先污染后校验），排查极费劲。
+  assert.ok(Object.isFrozen(STATUS_IDS), 'STATUS_IDS 应当是冻结的');
+});
+
+test('isStatus / statusLabel：认识的三项，不认识的给兜底', () => {
+  assert.equal(isStatus('draft'), true);
+  assert.equal(isStatus('submitted'), true);
+  assert.equal(isStatus('settled'), true);
+  assert.equal(isStatus('cancelled'), false);
+  assert.equal(isStatus(null), false);
+  assert.equal(isStatus(undefined), false);
+  assert.equal(statusLabel('settled'), '已到账');
+  assert.equal(statusLabel('nope'), '未知状态');
+});
+
+test('canEdit：只有草稿能改', () => {
+  assert.equal(canEdit(r('draft')), true);
+  assert.equal(canEdit(r('submitted')), false, '提交给公司之后票不该再动');
+  assert.equal(canEdit(r('settled')), false);
+  // 脏状态（读库读到一个不认识的 status）一律按「不能改」处理：
+  // 宁可让用户发现异常，也不要在一个状态不明的时候放行写入。
+  assert.equal(canEdit(r('nope')), false);
+  assert.equal(canEdit(null), false);
+});
+
+test('canSubmit / canSettle：各自只放行前一个状态', () => {
+  assert.equal(canSubmit(r('draft')), true);
+  assert.equal(canSubmit(r('submitted')), false);
+  assert.equal(canSubmit(r('settled')), false);
+
+  assert.equal(canSettle(r('submitted')), true);
+  assert.equal(canSettle(r('draft')), false, '草稿不能直接到账：没提交就谈不到到账');
+  assert.equal(canSettle(r('settled')), false);
+});
+
+test('canDelete：任何状态都能删', () => {
+  for (const s of STATUS_IDS) assert.equal(canDelete(r(s)), true, `${s} 应当可删`);
+  assert.equal(canDelete({ id: 'r1' }), true, '脏记录也允许删——删不掉才是真的把用户卡住');
+});
+
+test('isActive：草稿与已提交算进行中', () => {
+  assert.equal(isActive(r('draft')), true);
+  assert.equal(isActive(r('submitted')), true);
+  assert.equal(isActive(r('settled')), false);
+});
+
+test('autoTitle：月份与张数拼成默认标题', () => {
+  // 用本地时间的月份（不是 UTC）：东八区 9 月 30 日晚上 8 点后 UTC 已经是 10 月 1 日，
+  // 用 UTC 会把「9月报销」写成「10月报销」，而用户手里的单明明是 9 月的。
+  const sep = new Date(2026, 8, 15, 12, 0, 0).getTime();   // 2026-09-15 本地
+  assert.equal(autoTitle(sep, 3), '9月报销 · 3 张');
+  assert.equal(autoTitle(sep, 0), '9月报销 · 0 张');
+  const jan = new Date(2026, 0, 1, 0, 30, 0).getTime();
+  assert.equal(autoTitle(jan, 12), '1月报销 · 12 张', '1 月不能写成 0 月（getMonth 从 0 起）');
+});
+
+test('diffCents：还没到账时没有差额可谈', () => {
+  const invoices = [{ amountCents: 1000 }, { amountCents: 250 }];
+  assert.equal(diffCents(null, invoices), null, '没到账就返回 null，界面据此不显示差额行');
+  assert.equal(diffCents(1250, invoices), 0);
+  assert.equal(diffCents(1238, invoices), -12, '公司抹零：差额是负的');
+  assert.equal(diffCents(1300, invoices), 50, '多打了也算差额');
+  assert.equal(diffCents(0, []), 0);
+});
+
+test('invoiceStatus：筛选用的三态', () => {
+  assert.equal(invoiceStatus({ archived: true }, null), 'stored');
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }, null), 'pending');
+  // reimb 参数允许为 null：列表页只查 invoices 表，那一刻拿不到报销单。
+  // 拿不到时按「有 reimbursementId 就是已报销」判定，不能因此把它算成待报销。
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
+  // 脏组合（既存档又在单里）优先按「仅存档」显示——它本不该存在，
+  // 但显示成一个没法解释的东西更糟。
+  assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }, null), 'stored');
+});
+
+test('invoiceBadge：列表上那一行标签的五种文案', () => {
+  assert.equal(invoiceBadge({ archived: true }, null), '仅存档');
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: null }, null), '待报销');
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, { status: 'draft' }), '报销中');
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, { status: 'submitted' }), '已提交');
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, { status: 'settled' }), '已到账');
+  // 拿不到报销单（列表页）时退回中性说法，不猜它到哪一步了。
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, null), '已报销');
+  assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, { status: 'nope' }), '已报销');
+});
