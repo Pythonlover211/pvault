@@ -438,3 +438,44 @@ test('ARRAY_STORES 覆盖 reimbursements：导出带上、导入清空', async (
   assert.equal(back?.title, '9月报销 · 1 张', '报销单必须能从备份里恢复');
   assert.equal(back?.status, 'draft');
 });
+
+test('报销单：老包（无 reimbursements 键）导入后本机报销单保留，新空包则清空', async () => {
+  // 两种包在摘要上都可能显示「0」，处置却**相反**，所以这一条必须两个方向并排跑：
+  //   · 老包（加报销单之前导出的，包里压根没有 reimbursements 键）→ 本机报销单**保留**；
+  //   · 新空包（包里有这个键、值是 []）→ 本机报销单**被清空**。
+  // 判据只有一行，在 app/backup-store.js 的 clears 里：
+  //   `ARRAY_STORES.filter(name => Array.isArray(data[name]))`
+  // **缺键就不进 clears**，于是本机那几张原样留着；键在（哪怕是空数组）就进，整表被覆盖掉。
+  // 为什么值得单独钉住：老包被导入到的往往是一台**已经在用新版本、库里已经有报销单**的设备，
+  // 谁哪天把这一行改成无条件清空（`const clears = [...ARRAY_STORES]`），上面的第一条断言必须红——
+  // 那一下把「恢复备份」这条唯一的救命通道变成了一把毁数据的开关，而备份文件里根本没有
+  // 本机那几张报销单的替补。这与文件头第 6 条（invoiceFiles）和第 4 条（vault）是同一条纪律：
+  // **没有替补的东西，一律不删**（docs/手动验证清单.md 的原话）。
+  // 摘要侧靠 hasReimbursements 把这两种包分开说（见 app/backup.js 与 tests/backup.test.js），
+  // 但摘要说对话不等于导入做对——那两件事各有各的测试，这一条守的是导入侧的行为。
+  const oldPkg = backupData();                             // 加报销单之前导出的老备份：没有这个键
+  const newEmptyPkg = backupData({ reimbursements: [] });  // 新格式，但导出那一刻库里没有报销单
+
+  const cases = [
+    { name: '老包（包里没有这个键）', data: oldPkg, kept: true },
+    { name: '新空包（键在、值是空数组）', data: newEmptyPkg, kept: false }
+  ];
+
+  for (const { name, data, kept } of cases) {
+    await clearAll();
+    // 同一个夹具、同一台「已经有报销单」的设备。
+    await db.putAll([
+      { store: 'reimbursements', value: { id: 'r-local', title: '本机那张', status: 'draft', createdAt: 1 } }
+    ]);
+    assert.ok(await db.get('reimbursements', 'r-local'), '前置条件：这台设备上本来就有一张报销单');
+
+    await importBackup(await seal(data), PASSWORD);
+
+    const after = await db.get('reimbursements', 'r-local');
+    assert.equal(Boolean(after), kept,
+      `${name}导入后本机报销单${after ? '还在' : '没了'}，期望${kept ? '保留' : '清空'}`
+      + '——判据是 clears 里有没有 reimbursements（缺键就不清）');
+    // 保留的那一半还要连内容一起对：只判「记录还在」而内容被换成空的壳，也是丢数据。
+    if (kept) assert.equal(after?.title, '本机那张', '保留下来的必须是本机原本那张，不是空壳');
+  }
+});
