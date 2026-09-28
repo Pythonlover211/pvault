@@ -2058,9 +2058,12 @@ let themeReady = null;
 ——都**在它之后**）：
 
 ```js
-  await (themeReady ??= initTheme().catch(err => {
-    console.error('主题初始化失败，用默认外观', err);
-  }));
+  if (!themeReady) {
+    themeReady = initTheme().catch(err => {
+      console.error('主题初始化失败，用默认外观', err);
+    });
+  }
+  await themeReady;
 ```
 
 - [ ] **步骤 3：静态核对「主题先于首屏」（本机没法渲染，这一步改成静态核对）**
@@ -2083,25 +2086,29 @@ let themeReady = null;
 仍然逐条对得上（那一步只改了它第 33 行那一句注释、行数没变），而 `sw.js` 的两处紧接着就失效了
 （同一步往 `sw.js` 的注释里加了 5 行）——它们已经改成锚点定位、不再写死行号。行号在这种文件上是消耗品：
 **能写锚点就别写行号**。**任务 12 又验证了一次这条规矩**：那一步把 `main.js` 第 33 行那句注释从 1 行补成
-3 行（`setPreset / setMode` 的调用方接上了），于是 `let themeReady` 从第 35 行挪到第 37 行、那次
-`await (themeReady ??= …)` 从第 44 行挪到第 46 行（实测：`sw.js` 的 `const CACHE` 也从第 76 行挪到第 77 行）
+3 行（`setPreset / setMode` 的调用方接上了），于是 `let themeReady` 从第 35 行挪到第 37 行、
+那次主题初始化从第 44 行挪到第 46 行（实测：`sw.js` 的 `const CACHE` 也从第 76 行挪到第 77 行；那一步的
+写法是 `await (themeReady ??= …)`，**这个写法后来被换掉了**——`??=` 在 Chrome 83 的系统 WebView 上解析期
+就失败、整页白屏，现在写成 if 形式，见下面第 1 / 3 条与 `tests/legacy-syntax.test.js`）
 ——下面第 1 / 3 / 4 条里写死的行号**当场全部失效**，已改成锚点描述；**核对时不要拿行号去对，拿锚点**。
 （第 5 条那两处本来就是锚点定位，任务 12 之后仍对得上：`'./app/theme-store.js'` 之后紧跟 `'./app/theme.js'`。）
 
-1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：`render()` 里那行 `await (themeReady ??= …)`
-   （锚点：`await (themeReady ??= initTheme().catch(`）在 `mount(view, …)`（视图渲染失败那条路）与
+1. **`initTheme()` 先于 `render()` 自己的两次 `mount()`**：`render()` 里那次主题初始化
+   （锚点：`if (!themeReady) {` … `await themeReady;`）在 `mount(view, …)`（视图渲染失败那条路）与
    `mount(app, view, renderTabBar(id))` 之前；各视图内部的 `mount(root, …)` 都由那行 `await fn(view)`
    间接调用，同样晚于它。
-2. **`.catch` 兜底在**：`render()` 里那次主题初始化整个表达式就是
+2. **`.catch` 兜底在**：那次初始化里的调用就是
    `initTheme().catch(err => { console.error('主题初始化失败，用默认外观', err); })`——主题初始化失败
    既不会冒成未处理的拒绝，也不会挡住渲染。
-3. **只初始化一次**：`themeReady` 在 `main.js` 的**代码**里只出现 **2 处**——`let themeReady = null;` 那行
-   与上面那次 `await (themeReady ??= …)`（`??=` 同时是读与写，同一个变量名只写一次，所以那行只算一处）。
+3. **只初始化一次**：`themeReady` 在 `main.js` 的**代码**里出现在 **4 行**——`let themeReady = null;`、
+   `if (!themeReady) {`、`themeReady = initTheme()…`、`await themeReady;`（换成 if 形式之前只算 **2 处**：
+   声明 + 那次 `await (themeReady ??= …)`，因为 `??=` 同时是读与写，同一个变量名只写一次）。
    **口径要说清**：`Select-String -Path app\main.js -Pattern themeReady`
-   返回的是 **3 行**——注释里「themeReady 从此 settled…」那句也含这个词（**别拿行号
+   返回的是 **5 行**——注释里「themeReady 从此 settled…」那句也含这个词（**别拿行号
    去找它**，任务 11 与任务 12 都在附近加过话，行号就是这么飘的）。文本层的行数与
    代码层的处数不是一回事，`tests/boot-order.test.js` 那条断言数的是**剥掉注释之后**的代码行。
-   `??=` 是「读-判断-写」的同步整体，并发的第二次 `render()` 只会复用同一个 promise，不会把 `initTheme()`
+   「读-判断-写」这层保证与写法无关：`if (!themeReady)` 到那次赋值之间**没有 await**，并发的第二次
+   `render()` 只会复用同一个 promise，不会把 `initTheme()`
    跑两遍。
 4. **没有 TDZ 陷阱**：`let themeReady = null;` 那行在 `render()` 之前，而 `render()` 的第一次调用来自文件
    末尾的 `onChange(render)`（`router.js` 的 `onChange` 会**同步**调一次 `handler(currentTab())`），
@@ -2131,8 +2138,8 @@ let themeReady = null;
 
 **这一节核不到什么**（与任务 9 那节同一个边界，如实写）：
 
-- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。`render()` 里那行
-  `await (themeReady ??= …)` 只保证「**内容被挂载之前**主题已应用」；在它之前浏览器可能已经画过一到几帧，
+- 「第一眼看到的就是已选皮肤」里的「第一眼」，静态核对一个字都证明不了。`render()` 里那次
+  `await themeReady;` 只保证「**内容被挂载之前**主题已应用」；在它之前浏览器可能已经画过一到几帧，
   那几帧的底色走 `styles/base.css` 的 `:root` 兜底（默认皮肤的浅 / 深），不是用户选的那套。**改前改后都是
   这样**——区别在于改前连「内容挂载时」都还是默认色。这条边界只能靠真机看（任务 15）。
 - 「任何 mount 之前」这个全称**有一个反例**，先列出来再落笔：`main.js` 末尾那行裸调用
@@ -2168,8 +2175,16 @@ let themeReady = null;
 
 **为什么非加不可（实测）**：加它之前把三个变异逐个做在仓库外的副本上——A 把那次 `await` 挪到
 `mount(app, …)` 之后、B 删掉 `.catch`、C 把 `??=` 改成 `=`——**在那之前全量测试与静态核验都是全绿的**
-（零告警）。原因是 `tests/` 里唯一碰 `main.js` 的是 `dev-server.test.js`（只断言 200 与 MIME），
+（零告警）。原因是 `tests/` 里唯一碰 `main.js` 的是 `dev-server.test.js`
+（只断言 200 与 MIME），
 而核验脚本当时不读 `ASSETS` / `CACHE`（它现在读了：⑬ 是后来补的）。首屏关键路径不能这么裸着走。
+
+> **后记（本轮补，连同口径一起写清）**：第三个变异里的 `??=` 写法后来被换成了 if 形式——它在 Chrome 83
+> 的系统 WebView 上解析期就失败、整页白屏（见 `tests/legacy-syntax.test.js`）。那之后与 C 对应的退化
+> 变异变成「**删掉 `if (!themeReady) {` 与配对的 `}` 这两行**」（`themeReady = initTheme()…` 与
+> `await themeReady;` 原样保留），实测 **3 fail**：形状断言、`if` 锚点找不到、`themeReady` 行数 4→3。
+> **这里原先写的「2 fail」是照旧口径估的，实测是 3** —— 数字与「改了哪几行」的口径必须一起写，
+> 只改数字等于把复现条件留给下一个人猜。
 
 **守卫自己也要能被证伪（返工第二轮的教训）**：第一版守卫的抽取正则只认双引号，兜底又只有
 「引用数 ≥ 5」，于是「一个模块都没抽到、断言照样全绿」——实测：把 `index.html` 的 `src` 改成单引号之后，
@@ -2179,19 +2194,26 @@ let themeReady = null;
 新文件做**不依赖 DOM 的文本级断言**（读文件、定位行、按结构断言），七条：
 
 1. **守卫自身的前提**：剥注释不改变 `main.js` 的行数；`index.html` 的引用里必须抽到入口
-   `./app/main.js`；首屏闭包里的 `.js` 数不得低于 45（实测基线 50，少 5 个就得来查）；
-2. `initTheme()` 在**代码**里只出现一次，且必须写成 `await (themeReady ??= initTheme().catch(…))`
-   （`??=` 与 `.catch` 少一个就红）；
-3. 那次 `await` 的行号 < 第一处 `mount(` 的行号、也 < `mount(app,` 的行号（顺序反了就红）；
-4. `themeReady` 只有「一次声明 + 一次使用」（多一处说明有人在渲染路径上又调了一次）；
+   `./app/main.js`；首屏闭包里的 `.js` 数不得低于 45（实测基线 **51**，少 6 个就得来查）；
+2. `initTheme()` 在**代码**里只出现一次，且那次初始化必须带上判断层，写成
+   `if (!themeReady) { themeReady = initTheme().catch(…) }` + `await themeReady;`
+   （判断层与 `.catch` 少一个就红；判据**容许 `if (themeReady === null)` 这种等价写法**——`themeReady`
+   的可达值只有 `null` 与 Promise，两种判据在全部可达状态上等价，锁死字面只会造出假红）；
+3. 那次判断的行号 < `await themeReady;` 的行号 < 第一处 `mount(` 的行号、也 < `mount(app,` 的行号
+   （顺序反了就红。**「把 `await` 提到 `if` 之前」是复审实测出来的缺口**：那时整份守卫全绿，而首次
+   render 等的是一个 `null`、`initTheme()` 根本没被等）；
+4. `themeReady` 只有「一次声明 + 一次初始化 + 一次 await」（多一处初始化说明有人在渲染路径上又调了一次）；
 5. `sw.js` 的 `ASSETS` 里有 `'./app/theme-store.js'` 与 `'./app/theme.js'`，`CACHE` 是单处 `const` 声明；
 6. **首屏资源集合 ⊆ `ASSETS`**（`index.html` 的引用 + 入口的 `import` 闭包，逐个查清单）——
    这条正是本轮那个缺口的守卫：将来任务 11 / 12 往首屏链上挂新文件时，它也会先红一次；
 7. `sw.js` 里带引号的相对路径集合 ⇄ `ASSETS` 清单集合（**双向**；与核验脚本的 ⑬ 同一条，两个入口）。
 
 **边界（都写在文件注释里）**：只认静态 `from '…'` / `from "…"`，动态 `import('…')` 看不见——那是漏检，
-不是误报；剥注释是字符串感知的（`'http://…'` 里的 `//` 不当注释，仓库里真有这种行），但不解析正则字面量
-内部、也不展开模板串的 `${}`；第 7 条**故意不剥注释**——注释里举例写的带引号路径正是它要抓的东西。
+不是误报；剥注释是字符串感知的（`'http://…'` 里的 `//` 不当注释，仓库里真有这种行），**也解析正则字面量**
+（不解析的话，正则体里的引号会被当成字符串起点，从那一行起后面的注释全都不再被剥——`app/file-info.js` 的
+Windows 非法字符集正则里就有一个 `"`，实测能让它后面 7 行注释失明；这条守卫的兄弟 `tests/legacy-syntax.test.js`
+里有一条专门的失明检测盯着它），但不展开模板串的 `${}`；第 7 条**故意不剥注释**——注释里举例写的带引号
+路径正是它要抓的东西。
 
 **A/B/C 三个变异（首屏顺序那三个，返工第一轮）**——副本建在仓库外，跑完删掉，`runBASE` 是未变异的对照：
 
@@ -2200,7 +2222,7 @@ let themeReady = null;
 | `runBASE` | 无（对照） | 272 pass / 0 fail |
 | `runA` | 把那次 `await` 挪到 `mount(app, …)` 之后 | 271 pass / **1 fail**：「主题那次 await 在 render() 的两次 mount() 之前」 |
 | `runB` | 删掉 `.catch` | 270 pass / **2 fail**：「main.js 里主题初始化只有一处…」+ 上面那条（锚点失效） |
-| `runC` | `??=` 改成 `=` | 270 pass / **2 fail**：同上两条 |
+| `runC` | `??=` 改成 `=` | 270 pass / **2 fail**：同上两条。**后记**：`??=` 这层写法后来换成了 if 形式（Chrome 83 的系统 WebView 解析期就失败 → 整页白屏），那之后与它对应的退化变异是「**删掉 `if (!themeReady) {` 与配对的 `}` 两行**」（`themeReady = initTheme()…` 与 `await themeReady;` 原样保留；后果相同：每次 render 都重跑 `initTheme`），实测 **3 fail**（形状断言、`if` 锚点找不到、`themeReady` 行数 4→3） |
 
 **守卫自身的变异（返工第二轮，证的是「修好了」而不是「看起来绿」）**：
 
@@ -3085,7 +3107,7 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
 **文件：**
 - 修改：`app/backup.js`（`buildBackup` 带 `background`；`summarizeBackup` 加 `hasBackground`）
 - 修改：`app/backup-store.js`（导出侧编码、导入侧成对处理）
-- 修改：`app/db.js`（`replaceAll` 加 `deletes` 通道，见下第 2 条）
+- 修改：`app/db.js`（`replaceAllRecords` 加 `deletes` 通道，见下第 2 条）
 - 修改：`app/theme-store.js`、`app/ui/appearance-sheet.js`（注释与用户文案的同步）
 - 修改：`app/ui/backup-view.js`（导出结果里的背景通道 + 摘要页那两处文案）
 - 新增：`tests/helpers/fake-browser.js`（内存版 IndexedDB + FileReader 桩，本步为了能自动测）
@@ -3113,7 +3135,7 @@ git commit -m 'docs(appearance): 任务 12 收尾——镜像核对口径与行�
      `overlay`/`createdAt` **现造一行补上**（这也正是 `data.background.overlay` 存在的意义：
     在此之前它没有任何消费方，是空转的）；
    · 备份不带图 → 把本机那条**按主键删掉**，并跳过备份 `settings` 里那一行。
-   为此给 `app/db.js` 的 `replaceAll` 加了 `deletes: [{ store, key }]` 通道（与 `clears` 同事务）：
+   为此给 `app/db.js` 的 `replaceAllRecords` 加了 `deletes: [{ store, key }]` 通道（与 `clears` 同事务）：
    第一轮用的是 `clears.push('assets')`＝**整表清空**，在 `assets` 真多出第二条资源记录时会把它
    一起端掉，而代码注释、规格、本计划三处都写着「清单不该靠『现在只有一条』活着」——说一套做一套。
    （真要在「备份不带背景」时保住本机背景，得把设置行也一起保留、两处都不动——像 `vault` 那样；
@@ -3366,7 +3388,7 @@ async function encodeBackground(settings) {
   if (!bgBlob) deletes.push({ store: 'assets', key: BACKGROUND_ASSET_ID });
 
   // 清空、删除与写入必须在同一个事务里，否则中途失败会留下一个空库（或半截状态）。
-  await db.replaceAll({ clears, puts, deletes });
+  await db.replaceAllRecords({ clears, puts, deletes });
 ```
 
 **注意**：`assets` 那条 delete 是**有条件的**（只在备份没带背景时可恢复时删），而且**按主键删**，
@@ -3375,7 +3397,7 @@ id 覆盖掉了）；整表清在 `assets` 里多出第二条资源记录时会�
 理由与 `invoiceFiles` 那句 `if (arrayOrEmpty(...))` 同构：**清空要么是为覆盖、要么是为不留下上一份
 数据的残留，两件事都得先有「可覆盖的东西」。**
 
-**另外**：这个代码块里那个 `deletes` 通道是任务 13 给 `app/db.js` 的 `replaceAll` 新加的
+**另外**：这个代码块里那个 `deletes` 通道是任务 13 给 `app/db.js` 的 `replaceAllRecords` 新加的
 （`{ clears = [], puts = [], deletes = [] }`，执行顺序 clear → delete → put，与 `clears` 同事务）。
 那里有一句注释解释为什么不能拿 `clears` 顶替它，改这一层时要两边一起看。
 
@@ -3385,11 +3407,16 @@ id 覆盖掉了）；整表清在 `assets` 里多出第二条资源记录时会�
 
 **实测（两个时点各测一次，口径写在一起）：**
 
-- **返工后（当前状态）：296 pass / 0 fail，exit=0，duration ≈ 17.0s**；
+- **返工后：296 pass / 0 fail，exit=0，duration ≈ 17.0s**；
+- **本轮（`??=` 白屏修复之后）的当前状态：305 pass / 0 fail，exit=0，≈17.5s**——比上面多 **9** 条，
+  全部来自本轮**新增**的守卫 `tests/legacy-syntax.test.js`（9 个 `test(`：扫描范围前提、剥注释对账、
+  规则表自检、lastIndex 幂等、正则字面量方向、除法/正则方向断言、跨行写法、运行时代码零违规、
+  每条带 `allow` 的规则都至少有一次放行命中）。**这条守卫是本轮新增的**——此前它只在 `:2092` /
+  `:2179` / `:2209` 被当作既存事实引用过，整份计划此前没有一处记录它的加入与这 9 条测试。
 - 第一轮落地时：285 pass / 0 fail，≈11.1s；基线（任务 12 收尾）是 273 pass / 0 fail、≈0.8s。
 - 新增 **23** 条 = `tests/backup-store.test.js` 的 **21** 条 + `tests/backup.test.js` 的 2 条
   （第一轮那两份分别是 10 与 2；返工把 backup-store 那一份从 10 加到 21，见下面的补充）。
-  口径：`273 + 21 + 2 = 296`，与总数对得上。
+  口径：`273 + 21 + 2 = 296`，与总数对得上；**再加本轮那 9 条是 305**。
 - 耗时涨在 PBKDF2 上：`exportBackup` 与 `importBackup` 都按 600000 轮跑，这是真机口径，
   不为了测试快而调低；返工新增的导出侧用例（遮罩夹紧三例、`backgroundSkipped` 等）又跑了几次 600000 轮。
 

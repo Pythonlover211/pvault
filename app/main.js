@@ -43,9 +43,18 @@ let renderSeq = 0;
 
 async function render(id) {
   const seq = ++renderSeq;
-  await (themeReady ??= initTheme().catch(err => {
-    console.error('主题初始化失败，用默认外观', err);
-  }));
+  // 「只初始化一次」写成 if，不写 `??=`：`??=` 是 ES2021（Chrome 85+），而安卓系统 WebView 的版本由
+  // 设备决定——实测在 Chrome 83 的 WebView 上它在**解析阶段**就抛 `SyntaxError: Unexpected token '='`，
+  // 整个模块图加载不起来、整页白屏，连下面这个 `.catch` 兜底的机会都没有（比缺一个 API 更凶：那种还能
+  // try/catch）。守卫见 tests/legacy-syntax.test.js。
+  // 与 `??=` 语义等价：判断与赋值之间没有 await，并发进来的第二次 render() 看到的仍是第一次写下的
+  // 那个 promise，不会重跑 initTheme()。
+  if (!themeReady) {
+    themeReady = initTheme().catch(err => {
+      console.error('主题初始化失败，用默认外观', err);
+    });
+  }
+  await themeReady;
   const renderers = { ledger: renderLedgerHome, invoice: renderInvoices, stats: renderStats, vault: renderVault };
   // 未注册的 Tab id 落到记账页，而不是抛 undefined is not a function。
   // （原来的 PLACEHOLDER 占位表在密码箱接上真实视图后就空了，已删掉。）

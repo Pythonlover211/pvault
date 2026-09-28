@@ -2,7 +2,10 @@
 //
 // 为什么需要它：这一步动的是首屏关键路径，而它在 Node 里**看不见**。加它之前实测（三个变异逐个做在
 // 仓库外的副本上）：把那次 `await` 挪到 `mount` 之后、删掉 `.catch`、把 `??=` 改成 `=`——**全量测试
-// 266 条全绿、check-theme-css.mjs 59 项全过**，零告警。原因是 tests/ 里唯一碰 main.js 的是
+// 266 条全绿、check-theme-css.mjs 59 项全过**，零告警。（后记：`??=` 那层写法后来换成了
+// `if (!themeReady) { … }`——它在 Chrome 83 的系统 WebView 上解析期就失败、整页白屏，见
+// tests/legacy-syntax.test.js；与上面第三个变异对应的退化现在是「删掉 `if (!themeReady)` 那一层」。）
+// 原因是那时 `tests/` 里唯一碰 main.js 的是
 // dev-server.test.js（只断言 200 与 MIME），而那个静态核验脚本当时不读 ASSETS / CACHE（它现在读了：
 // ⑬ 是后来补的，见 scripts/check-theme-css.mjs）。
 //
@@ -23,16 +26,43 @@ const read = rel => readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, 
 const mainSrc = read('app/main.js');
 const swSrc = read('sw.js');
 
-// 剥掉 JS 注释（字符串感知），**保留换行**——行号必须对得上。
+// `/` 是正则起点还是除法？按它**前面最近的那个 token** 判（`a = /re/` 对 `a = b / c`）。判错的代价见
+// 下面那段注释：正则体里的引号会被当成字符串起点，从那一行起后面的注释全都不再被剥。
+// 判据：标识符 / 数字 / 字符串 / 正则 / `]` 之后是除法；`if (…)` 这类**控制语句头**的收尾括号之后是
+// 语句位置（正则）；关键字（`return` `typeof` `throw` `case` …）与运算符、`(` `,` `=` `:` `[` `{` `;`
+// 之后是正则。
+// **判据的边界（实测过，别把它当完备的解析器）**：只看得见前一个 token，因此 `}` 之后（对象字面量收尾是
+// 除法、块收尾是正则）与后缀 `++` / `--` 之后判不出来——分清它们需要「`{}` 是块还是对象」的上下文栈。
+// 这两类有意不修；防线在兄弟守卫 `tests/legacy-syntax.test.js` 的**对账检测**（判错的表现是「这行有注释
+// 却没被剥」，对账当场报红）。
+function startsRegex(prev) {
+  if (prev === '') return true; // 文件或语句的开头
+  // `)stmt` = 控制语句头的收尾括号（见 stripComments 里的括号栈）：`if (x) /re/` 之后是语句位置。
+  if (prev === ')stmt') return true;
+  if (prev === ')') return false;
+  if (/[\w$\]'"`]/.test(prev)) {
+    return /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await|throw|debugger)$/.test(prev);
+  }
+  return true;
+}
+
+// 剥掉 JS 注释（字符串感知 + 正则字面量感知），**保留换行**——行号必须对得上。
 // 为什么不能按行切 `//`：`'http://…'` 这种字符串里的 `//` 不是注释起点，按行切会把那一行后面的代码
 // 一起吃掉。仓库里真有这种行（`app/ui/stats-view.js` 的 `SVG_NS`），所以「仓库里没有字符串含 `//` 的行」
 // 这种前提是假的，不能拿来当剥离实现的依据。
-// **边界**：不解析正则字面量内部（app/ 与 sw.js 里没有以 `//` 或 `/*` 开头的正则），也不展开模板串的
-// `${}`。真出现那两种写法时，由下面那条「剥注释不改变行数」的自检兜住形态。
+// **这份实现与 `tests/legacy-syntax.test.js` 里那份是逐字相同的两份副本，改一处必须改两处**（那边的
+// 「失明检测」与「对账检测」断言扫的是全部运行时代码，也包含 `main.js`，所以这里不再重复一遍）。
+// 为什么必须解析正则字面量：不解析的话，正则体里的引号会被当成字符串起点，**从那一行起、后面所有行的
+// 注释都不再被剥**——`app/file-info.js` 里那个 Windows 非法字符集正则（字符类中含一个双引号）实测能让
+// 它后面 7 行注释失明：注释里的东西被当违规报（假红），注释之后的真违规被整段吃掉（假绿）。
+// **边界**：不展开模板串的 `${}`（整串当字符串跳过）；正则没闭合时按「其实不是正则」处理，不吞掉后面
+// 的代码。
 function stripComments(src) {
   let out = '';
   let i = 0;
   const n = src.length;
+  let prev = ''; // 上一个 token：标识符（整词）、字面量/正则结束（记作 ')'）、或单个符号
+  const parens = []; // 每个 `(` 是不是控制语句头（if/while/for/with/switch/catch），供 `)` 收尾时打标
   while (i < n) {
     const c = src[i], d = src[i + 1];
     if (c === '/' && d === '/') {
@@ -48,6 +78,22 @@ function stripComments(src) {
       i += 2;
       continue;
     }
+    if (c === '/' && startsRegex(prev)) {
+      out += c; i++;
+      let inClass = false;
+      while (i < n) {
+        const ch = src[i];
+        if (ch === '\\') { out += ch + (src[i + 1] ?? ''); i += 2; continue; }
+        if (ch === '\n') break; // 没闭合：当它其实是除法，别再吞
+        if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '/' && !inClass) { out += ch; i++; break; }
+        out += ch; i++;
+      }
+      while (i < n && /[a-z]/i.test(src[i])) { out += src[i]; i++; } // flags
+      prev = ')';
+      continue;
+    }
     if (c === "'" || c === '"' || c === '`') {
       const q = c;
       out += c; i++;
@@ -58,8 +104,23 @@ function stripComments(src) {
         i++;
         if (done) break;
       }
+      prev = ')';
       continue;
     }
+    if (/[\w$]/.test(c)) {
+      let w = '';
+      while (i < n && /[\w$]/.test(src[i])) { w += src[i]; out += src[i]; i++; }
+      prev = w;
+      continue;
+    }
+    if (/[0-9]/.test(c)) {
+      while (i < n && /[\w.]/.test(src[i])) { out += src[i]; i++; }
+      prev = ')';
+      continue;
+    }
+    if (c === '(') { parens.push(/^(?:if|while|for|with|switch|catch)$/.test(prev)); prev = '('; out += c; i++; continue; }
+    if (c === ')') { prev = parens.pop() === true ? ')stmt' : ')'; out += c; i++; continue; }
+    if (!/\s/.test(c)) prev = c;
     out += c; i++;
   }
   return out;
@@ -124,26 +185,42 @@ test('守卫自身的前提：剥注释不改变行数，抽取能抽到入口�
     `index.html 的引用里没抽到入口脚本 ./app/main.js（抽到 ${refs.length} 条）——抽取失效了，别当成通过`);
   const jsCount = [...firstPaintRefs()].filter(p => p.endsWith('.js')).length;
   assert.ok(jsCount >= 45,
-    `首屏闭包里只走到 ${jsCount} 个 .js 模块（实测基线 50，下限取 45）——抽取多半失效了`);
+    `首屏闭包里只走到 ${jsCount} 个 .js 模块（实测基线 51，下限取 45）——抽取多半失效了`);
 });
 
-test('main.js 里主题初始化只有一处，且是 `await (themeReady ??= initTheme().catch(…))`', () => {
+test('main.js 里主题初始化只有一处，且是「只跑一次 + .catch 兜底」的 if 形式', () => {
   const calls = mainCode.match(/initTheme\s*\(/g) ?? [];
   assert.equal(calls.length, 1,
     `initTheme() 在 main.js 的代码里出现了 ${calls.length} 次（期望恰好 1 次）。`
     + '它挂在模块级的 themeReady 上，就是为了「一次冷启动只跑一遍、且先于挂载」。');
-  // `??=` 是「读-判断-写」的同步整体：并发进来的第二次 render() 复用同一个 promise。
-  // 改成 `=` 就没有这层保证（每次 render 都重新调一次 initTheme）；漏掉 `.catch` 则会让主题失败
-  // 直接抛在 render() 的 try 之外——一个 mount 都不会发生，页面纯空白。
-  assert.match(mainCode, /await\s*\(\s*themeReady\s*\?\?=\s*initTheme\(\)\s*\.catch\(/,
-    '首屏那次主题初始化必须写成 `await (themeReady ??= initTheme().catch(...))`：'
-    + '`??=` 保证只跑一次、`.catch` 保证主题失败不拖垮整页（少了它连 mount 都不会发生）。');
+  // 形状从 `await (themeReady ??= …)` 改成 if（真机实测：`??=` 是 ES2021，Chrome 83 的系统 WebView 在
+  // **解析阶段**就抛 SyntaxError → 整个模块图起不来、整页白屏，连 `.catch` 都进不去）。这个形状由
+  // tests/legacy-syntax.test.js 守着；这里守的是它没被顺手改坏的那两半：
+  // 判据**容许两种等价写法**：`themeReady` 的可达值只有 `null`（初始）与 Promise（赋值之后），
+  // 所以 `if (!themeReady)` 与 `if (themeReady === null)` 对它完全等价——把字面锁死会把一次正确的等价
+  // 改写判红，那种假红的下场是有人干脆把这条删掉。
+  // `if (…)` 是「读-判断-写」的同步整体（判断与赋值之间没有 await，并发进来的第二次 render() 复用
+  // 同一个 promise，不会重跑 initTheme）；`.catch` 保证主题失败不拖垮整页。
+  assert.match(mainCode,
+    /if\s*\(\s*(?:!\s*themeReady|themeReady\s*===\s*null)\s*\)\s*\{\s*\n\s*themeReady\s*=\s*initTheme\(\)\s*\.catch\(/,
+    '首屏那次主题初始化必须写成 `if (!themeReady) { themeReady = initTheme().catch(…) }`'
+    + '（或等价的 `if (themeReady === null) { … }`）+ `await themeReady;`：'
+    + '少了这层判断（直接 `themeReady = …`）每次 render 都会重跑一次 initTheme；'
+    + '漏掉 `.catch` 则会让主题失败直接抛在 render() 的 try 之外——一个 mount 都不会发生，页面纯空白。');
 });
 
-test('主题那次 await 在 render() 的两次 mount() 之前', () => {
-  const awaitLine = lineNo(/await \(themeReady \?\?= initTheme\(\)\.catch\(/);
+test('主题那次 await 在 render() 的两次 mount() 之前，且排在那次判断之后', () => {
+  const assignLine = lineNo(/if\s*\(\s*(?:!\s*themeReady|themeReady\s*===\s*null)\s*\)/);
+  const awaitLine = lineNo(/await themeReady\s*;/);
   const firstMountLine = lineNo(/mount\(/);
   const appMountLine = lineNo(/mount\(app,/);
+  // 复审实测的缺口：把 `await themeReady;` **提到** `if (!themeReady) {…}` 之前时，这条测试当时是全绿的。
+  // 后果不是小事——首次 render 时 `await null` 立即放行，`initTheme()` 根本没被等，冷启动会先闪一下
+  // 默认色（那正是当初把它挂在渲染路径上的原因）。⑮ 只是**偶然**兜住了它（完整计划块不再 `includes`
+  // 于 main.js），不该靠那种巧合。
+  assert.ok(assignLine < awaitLine,
+    `\`if (!themeReady)\` 在第 ${assignLine} 行、\`await themeReady;\` 在第 ${awaitLine} 行——顺序反了：`
+    + '先 await 再初始化，首次 render 等的是一个 null（立即放行），initTheme() 没被等，冷启动会闪默认色。');
   assert.ok(awaitLine < firstMountLine,
     `主题 await 在第 ${awaitLine} 行、第一处 mount() 在第 ${firstMountLine} 行。`
     + '挪到挂载之后就是「先把内容画出来、再上色」——冷启动会闪一下默认色。');
@@ -151,13 +228,22 @@ test('主题那次 await 在 render() 的两次 mount() 之前', () => {
     `主题 await 在第 ${awaitLine} 行、mount(app, …) 在第 ${appMountLine} 行——顺序反了。`);
 });
 
-test('themeReady 只有「一次声明 + 一次使用」', () => {
+test('themeReady 只有「一次声明 + 一次初始化 + 一次 await」', () => {
   const decl = mainCodeLines.filter(l => /let\s+themeReady\s*=\s*null\s*;/.test(l)).length;
-  const used = mainCodeLines.filter(l => /themeReady/.test(l)).length;
   assert.equal(decl, 1, `themeReady 的声明有 ${decl} 处（期望 1 处）`);
-  assert.equal(used, 2,
-    `themeReady 在代码里出现在 ${used} 行（期望 2 行：声明 + 唯一那次使用）。`
-    + '多出来的那一行通常意味着有人在渲染路径上又调了一次 initTheme——那会让「只跑一遍」失效。');
+  // 形状改成 if 之后，同一个变量出现在 **4** 行：声明、`if (!themeReady)`、那次赋值、`await themeReady;`。
+  // 「出现几行」不再是「只跑一遍」的证据（`??=` 那版恰好是 2 行），所以拆成三条量得准的：
+  // 初始化赋值恰好 1 处、await 恰好 1 处、总行数恰好 4 行（多出来的行会先在上面那条 `initTheme()` 只出现
+  // 1 次的断言上红）。
+  const assigned = mainCodeLines.filter(l => /themeReady\s*=\s*initTheme\(\)/.test(l)).length;
+  assert.equal(assigned, 1,
+    `themeReady 的初始化赋值有 ${assigned} 处（期望 1 处）——多一处就是有人在渲染路径上又调了一次 initTheme。`);
+  const awaited = mainCodeLines.filter(l => /^\s*await\s+themeReady\s*;/.test(l)).length;
+  assert.equal(awaited, 1, `\`await themeReady;\` 有 ${awaited} 处（期望 1 处）`);
+  const used = mainCodeLines.filter(l => /themeReady/.test(l)).length;
+  assert.equal(used, 4,
+    `themeReady 在代码里出现在 ${used} 行（期望 4 行：声明 + if 判断 + 赋值 + await）。`
+    + '数目变了就一起改这条——但别只把数字放大当成通过，它守着的是「形状没被改成又读又写的新花样」。');
 });
 
 test('sw.js 的 ASSETS 里有首屏依赖链上的 theme-store.js 与 theme.js，且 CACHE 是单处 const', () => {
@@ -177,7 +263,7 @@ test('首屏会用到的资源全部在 ASSETS 里（index.html 的引用 + 入�
   const seen = firstPaintRefs();
   const jsCount = [...seen].filter(p => p.endsWith('.js')).length;
   assert.ok(jsCount >= 45,
-    `闭包里只有 ${jsCount} 个 .js（实测基线 50，下限取 45）——抽取多半失效了，这一条不能当成通过`);
+    `闭包里只有 ${jsCount} 个 .js（实测基线 51，下限取 45）——抽取多半失效了，这一条不能当成通过`);
   const items = new Set(assetsItems().map(normalize));
   const missing = [...seen].filter(r => !items.has(normalize(r))).sort();
   assert.deepEqual(missing, [],

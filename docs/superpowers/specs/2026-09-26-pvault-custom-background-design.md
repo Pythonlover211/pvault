@@ -275,7 +275,16 @@ export function currentTheme()             // 同步读当前已应用的状态�
 let themeReady = null;
 async function render(id) {
   // 主题必须在 render 这条路径上先于它的 mount 应用：晚一帧就是「先闪一下默认蓝，再变成暖纸」。
-  await (themeReady ??= initTheme().catch(err => { console.error('主题初始化失败，用默认外观', err); }));
+  // 不写 `??=`：它是 ES2021（Chrome 85+），而安卓系统 WebView 的版本由设备决定——实测在 Chrome 83 上
+  // 它在**解析阶段**就抛 `SyntaxError: Unexpected token '='`，整个模块图加载不起来、整页白屏
+  // （连这个 `.catch` 兜底都进不去）。if 形式与它等价：判断与赋值之间没有 await，并发进来的第二次
+  // render() 看到的仍是第一次写下的那个 promise。
+  if (!themeReady) {
+    themeReady = initTheme().catch(err => {
+      console.error('主题初始化失败，用默认外观', err);
+    });
+  }
+  await themeReady;
   ...
 }
 ```
