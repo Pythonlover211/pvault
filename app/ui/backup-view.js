@@ -369,8 +369,18 @@ export function openBackupSheet({ onChanged } = {}) {
     // 文件里压根没有这一项（加报销单之前导出的老备份）→ 恢复时本机报销单原样保留；
     // 文件里有这一项但是空的 → 本机报销单会被清空。只显示张数的话，用户在点
     // 「确认覆盖并恢复」之前分不出自己那份报销单会不会没。
+    //
+    // 但**光有发票那种「计数 / 不包含」两分支还不够**：hasReimbursements 为真就说明包里带着
+    // 这个键，导入侧 clears 碰到这个键就会清空本机再写入——所以条数为 0 那一格本身是「会清」
+    // 的那一侧，只给一个 0 会与上面「交易 0」「账户 0」长得一模一样，而那几行是纯计数、
+    // 没有任何后果。这一屏是他点「确认覆盖并恢复」之前**唯一**一次知情机会，后果必须写在
+    // 这行字上，不能让用户靠「跟别的行一样」去外推。与下面 filesText 那段是同一条理由、
+    // 同一个页面、同一类风险：「只给一个数字，用户在确认页上没法判断恢复之后自己的还在不在」。
+    // 两个方向的代价都是不可逆的——他可能因此不敢用这份备份，也可能以为本机报销单还在而被清掉。
     const reimbursementsText = summary.hasReimbursements
-      ? String(summary.reimbursements)
+      ? (summary.reimbursements > 0
+        ? String(summary.reimbursements)
+        : '0（本机现有报销单会被清空）')
       : '不包含（保留本机现有报销单）';
     // 图片这一行的判据必须与 backup-store 的 clears 严丝合缝地一致：
     //   clears 里加 invoiceFiles 的条件是 `arrayOrEmpty(data.invoiceFiles).length > 0`，
@@ -426,7 +436,9 @@ export function openBackupSheet({ onChanged } = {}) {
         ]),
         el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '报销单' }),
-          el('span', { class: summary.hasReimbursements ? 'num' : '', text: reimbursementsText })
+          // 判据是「张数 > 0」而不是 hasReimbursements：与上面发票图片那一行同一种写法——
+          // 只有真的是个数字时才用 .num（那两格是纯计数），带后果短语的那两格走普通字色。
+          el('span', { class: summary.reimbursements > 0 ? 'num' : '', text: reimbursementsText })
         ]),
         el('div', { class: 'row' }, [
           el('span', { class: 'muted tiny', text: '背景照片' }),
@@ -447,9 +459,12 @@ export function openBackupSheet({ onChanged } = {}) {
       // **背景那一行是反的**（任务 13）：它写着「不包含」时本机那张会被清掉，不是保留。
       // 所以这里必须点名它，不能让用户拿「不包含就保留」这条规律去推背景——两行文案相邻，
       // 一旦推错，代价是本机唯一一份照片。
+      // 枚举里必须**逐个点出**会被替换的那几张表（发票、报销单也是）：用户是拿这句话去划
+      // 「哪些东西会被动」的，名单上没写到的，他就默认它不在覆盖范围里——而他脑补不出来的
+      // 那几项恰恰是最容易被漏掉、也最容易在恢复之后才发现没了的。
       el('div', {
         class: 'vault-warn',
-        text: '导入会替换手机上现有的账目、账户、分类与设置，这一步不能撤销。'
+        text: '导入会替换手机上现有的账目、账户、分类、发票、报销单与设置，这一步不能撤销。'
           + '上面写着「不包含（保留本机现有…）」的那几项，本机现有的数据会保留；'
           + '只有背景照片那一行是反的：写着「不包含」时，本机那张背景会被一起清掉，不会保留。'
       }),

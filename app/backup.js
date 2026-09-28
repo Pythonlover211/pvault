@@ -91,18 +91,20 @@ export function summarizeBackup(obj) {
     // 至少要能看出里面有没有发票。
     invoices: countOf(data.invoices),
     reimbursements: countOf(data.reimbursements),
-    // 与 hasInvoices / hasInvoiceFiles 同一条判据、同一个理由：光看张数，0 有两种完全相反的含义。
-    // 文件里**压根没有**这个键（加报销单之前导出的老备份）→ 导入保留本机现有报销单；
-    // 文件里**有**这个键但是空的 → 导入把本机报销单清空（两条由 backup-store.js 的 clears 派生，
-    // 见那里的注释）。少了这个字段，两种包在摘要层长得一模一样（计数都是 0），
-    // 用户在点「确认覆盖并恢复」之前无法知道自己的报销单会不会没——那是他唯一一次知情机会。
-    hasReimbursements: Array.isArray(data.reimbursements),
     invoiceFiles: countOf(data.invoiceFiles),
     // 光有张数不够：0 有两种完全不同的含义。文件里**压根没有**这一项（加发票之前导出的老备份）时，
     // 恢复会保留本机现有的发票与图片；文件里**有这一项但是空的**时，恢复会把本机发票清空。
     // 界面据此显示「不包含（保留本机现有发票）」，不能让用户在这两件处置相反的事之间猜。
     hasInvoices: Array.isArray(data.invoices),
     hasInvoiceFiles: Array.isArray(data.invoiceFiles),
+    // 与 hasInvoices / hasInvoiceFiles 同一条判据、同一个理由：光看张数，0 有两种完全相反的含义。
+    // 文件里**压根没有**这个键（加报销单之前导出的老备份）→ 导入保留本机现有报销单；
+    // 文件里**有**这个键但是空的 → 导入把本机报销单清空（两条由 backup-store.js 的 clears 派生，
+    // 见那里的注释）。少了这个字段，两种包在摘要层长得一模一样（计数都是 0），
+    // 用户在点「确认覆盖并恢复」之前无法知道自己的报销单会不会没——那是他唯一一次知情机会。
+    // 位置跟在 hasInvoiceFiles 后面、和上面那两个 has 排在一起：计数一簇、has 一簇，
+    // 插在计数中间会把「这一簇都是同一个判据派生的」这个分组读断（纯排列，字段本身没变）。
+    hasReimbursements: Array.isArray(data.reimbursements),
     hasVault: Boolean(data.vault),
     // 背景照片。**它的方向与上面那几行相反**：备份不带背景时，导入会把**本机那张删掉**
     // （见 backup-store.js 文件头第 7 条），所以界面那一行不能写成「不包含（保留本机现有的…）」。

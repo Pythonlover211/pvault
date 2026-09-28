@@ -108,6 +108,37 @@ test('validateBackup：data 缺关键数组时报错', () => {
   assert.ok(r.errors.some(e => e.includes('txns')));
 });
 
+// 上面那条只验了 txns 一个成员，于是「这份清单本身被改小」是没有守卫的：
+// 实测把 settings 从 REQUIRED_ARRAYS 里删掉，全量测试零红——也就是说一个少了设置项的备份
+// 会被判成合法并照常导入，恢复出来的库里设置全是空的，而用户看到的是一句「已恢复」。
+// 所以这里对每一个成员各删一次，逐条断言「拒绝」且「错误信息点到那个键名」。
+//
+// 清单是**手抄**的，刻意不从 app/backup.js import：那个常量没有导出，导出它等于把一份内部清单
+// 变成对外接口（以后想调整它就得先考虑兼容）。手抄不会漏掉变异——某个成员真从实现里被删掉时，
+// 这里为它准备的那一次 delete 就不再产生任何错误，断言当场变红；反方向（有人把非必需的键
+// 写成必需）由这条末尾那组反向断言钉住。
+const REQUIRED_ARRAY_KEYS = ['txns', 'accounts', 'categories', 'receivables', 'settings'];
+
+test('validateBackup：REQUIRED_ARRAYS 逐成员缺一个都不行，可选扩展缺了仍合法', () => {
+  for (const key of REQUIRED_ARRAY_KEYS) {
+    const b = buildBackup(payload, 1);
+    delete b.data[key];
+    const r = validateBackup(b);
+    assert.equal(r.ok, false, `少了 ${key} 的备份必须被拒`);
+    assert.ok(r.errors.some(e => e.includes(key)),
+      `错误信息要点到 ${key}，实际是：${JSON.stringify(r.errors)}`);
+  }
+
+  // 反方向：可选扩展（加发票/加报销单时新增的字段）缺了必须仍然合法。
+  // 少了这一半，把任意一个新字段顺手写进 REQUIRED_ARRAYS —— 发票那次踩过的坑 ——
+  // 在这条测试里看不出来，而后果是所有既有备份被整批判成「内容不完整」，用户的唯一救命通道断掉。
+  for (const key of ['invoices', 'invoiceFiles', 'reimbursements']) {
+    const b = buildBackup(payload, 1);
+    delete b.data[key];
+    assert.equal(validateBackup(b).ok, true, `${key} 是可选的：老备份没有它也必须能导入`);
+  }
+});
+
 test('validateBackup：vault 可以为 null（没设过密码箱）', () => {
   const b = buildBackup({ ...payload, vault: null }, 1);
   assert.equal(validateBackup(b).ok, true);
@@ -242,6 +273,10 @@ test('buildBackup：reimbursements 是深拷贝，改包内数据不影响原数
   const pkg = buildBackup({ reimbursements: src }, 1);
   pkg.data.reimbursements[0].title = '改过了';
   assert.equal(src[0].title, 'x', '备份包与调用方的数组必须解耦');
+  // 与上面发票条目那条同一种写法（backup.test.js 里那条也断言了引用不等）：再加一层最直接的
+  // 引用断言。上面那半是靠「改包内的值」间接体现解耦的，这半直接把「包里的数组就是调用方那个
+  // 数组」这件事挡住——将来有人把 deepClone 换成别的手法（比如返回只读视图）时，先红在这里。
+  assert.notEqual(pkg.data.reimbursements, src, '备份包里必须是另一个数组，不是调用方那个');
 });
 
 test('summarizeBackup：数出报销单条数', () => {
@@ -278,6 +313,15 @@ test('REQUIRED_ARRAYS 不含 reimbursements：老备份不能被判成坏文件'
   // 这条是防回归的闸门。REQUIRED_ARRAYS 的含义是「老备份**必须**也有」，
   // 把 reimbursements 加进去会让所有既有备份在 validateBackup 那一步直接被拒，
   // 而「恢复备份」是用户保住账目的唯一通道。发票那次踩过同一个坑（backup.js:4 有注释）。
-  const check = validateBackup(buildBackup({}, 1));
+  //
+  // **必须先 delete 再校验**（与上面发票那条同一种形状）：buildBackup 用 `?? []` 兜底，
+  // 它写出来的包**从来都带这个键**，直接拿它去校验，验的是「带这个键的新包合法」——
+  // 与这里要守的「老包（压根没这个键）合法」是相反的两件事，靠的只是「buildBackup 碰巧写了
+  // 这个键」这个巧合，被测的兼容性语义根本没被碰到。那样写的话，把 reimbursements 加进
+  // REQUIRED_ARRAYS，这条测试照样绿——它就不再是闸门了。
+  const oldFile = buildBackup({}, 1);
+  delete oldFile.data.reimbursements;   // 加报销单之前导出的那份文件长这样
+  const check = validateBackup(oldFile);
   assert.equal(check.ok, true, '没有 reimbursements 键的备份必须是合法的');
+  assert.deepEqual(check.errors, []);
 });
