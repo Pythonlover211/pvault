@@ -88,6 +88,13 @@ test('isStatus / statusLabel：认识的三项，不认识的给兜底', () => {
   assert.equal(isStatus(undefined), false);
   assert.equal(statusLabel('settled'), '已到账');
   assert.equal(statusLabel('nope'), '未知状态');
+  // 属性查找会命中原型链：这几行曾经拿不到兜底文案——statusLabel('constructor')
+  // 返回的是一个函数（function Object(){[native code]}），'toString' / '__proto__' 同理。
+  // 判据必须与 isStatus 同源（都用 STATUS_IDS.includes），两处口径不能分叉。
+  assert.equal(statusLabel('constructor'), '未知状态');
+  assert.equal(statusLabel('toString'), '未知状态');
+  assert.equal(statusLabel('__proto__'), '未知状态');
+  assert.equal(statusLabel('hasOwnProperty'), '未知状态');
 });
 
 test('canEdit：只有草稿能改', () => {
@@ -211,7 +218,13 @@ export function isStatus(v) {
 }
 
 export function statusLabel(v) {
-  return STATUS_LABELS[v] ?? '未知状态';
+  // 判据必须与 isStatus **同源**（都用 STATUS_IDS.includes），不能直接写 STATUS_LABELS[v]。
+  // 后者是属性查找、会命中**原型链**：statusLabel('constructor') 会返回一个函数
+  // 而不是兜底文案，statusLabel('toString') / '__proto__' 同理——备份文件里的脏 status、
+  // 手改过的记录都可能带上这类字符串，界面上就会出现 function Object(){[native code]}。
+  // 两个函数对「不认识的值」的口径也不能分叉：isStatus 说不认识、statusLabel 却给出别的东西，
+  // 排查时会把人带到错的方向去。
+  return STATUS_IDS.includes(v) ? STATUS_LABELS[v] : '未知状态';
 }
 
 // ===== 状态机 =====

@@ -34,7 +34,13 @@ export function isStatus(v) {
 }
 
 export function statusLabel(v) {
-  return STATUS_LABELS[v] ?? '未知状态';
+  // 判据必须与 isStatus **同源**（都用 STATUS_IDS.includes），不能直接写 STATUS_LABELS[v]。
+  // 后者是属性查找、会命中**原型链**：statusLabel('constructor') 会返回一个函数
+  // 而不是兜底文案，statusLabel('toString') / '__proto__' 同理——备份文件里的脏 status、
+  // 手改过的记录都可能带上这类字符串，界面上就会出现 function Object(){[native code]}。
+  // 两个函数对「不认识的值」的口径也不能分叉：isStatus 说不认识、statusLabel 却给出别的东西，
+  // 排查时会把人带到错的方向去。
+  return STATUS_IDS.includes(v) ? STATUS_LABELS[v] : '未知状态';
 }
 
 // ===== 状态机 =====
