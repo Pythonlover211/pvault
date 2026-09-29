@@ -1548,7 +1548,24 @@ let selecting = null;
     // 报销单那一段整块交给 reimburse-view，本文件不掺和它的内部结构。
     const { renderReimbursements } = await import('./reimburse-view.js');
     if (currentTab() !== 'invoice' || seq !== viewSeq) return;
-    await renderReimbursements(root, { onSwitchToInvoices: () => { segment = 'list'; selecting = null; renderInvoices(root); } });
+    await renderReimbursements(root, {
+      // 这个回调**带参数**，别写成无参的箭头函数：报销单列表的空状态会用
+      // `onSwitchToInvoices?.({ startSelecting: true })` 请我们直接进入多选（那个按钮的
+      // 文案是「去发票里选几张」）。不收参数的话它只会切段、不进多选，用户点完发现
+      // 还停在普通列表上，得自己再找一次「选择」——按钮说了谎。
+      onSwitchToInvoices: ({ startSelecting = false } = {}) => {
+        segment = 'list';
+        if (startSelecting) {
+          // 与「选择」按钮同一套动作：进多选 + 切到「待报销」（已经报出去的票会被
+          // createReimbursement 跳过，白选一场）。
+          selecting = [];
+          filter = 'pending';
+        } else {
+          selecting = null;
+        }
+        renderInvoices(root);
+      }
+    });
     return;
   }
 ```
@@ -1697,6 +1714,24 @@ import { sumCents } from '../invoice-model.js';
 
 - [ ] **步骤 5：补 CSS**
 
+> **本仓 CSS 的真实令牌**（已对着 `styles/base.css:1-107` 核过，下面的代码块别照抄兜底值）：
+> `--bg` `--surface` `--surface-2` **`--border`** `--text` `--text-2` `--text-3` `--accent`
+> `--accent-weak` `--success` `--warning` `--error` `--radius` `--radius-sm` `--radius-sheet`
+> `--font-xs/sm/md/lg/xl/display` `--on-accent` `--overlay` `--shadow` `--tab-h` `--bottom-inset`。
+>
+> 三处会静默出错的坑：
+> 1. **`--line` 不存在**。本仓画边框一律 `1px solid var(--border)`（全域 27 处用的都是它）。
+>    下面代码块里的 `var(--line, #d3d3d3)` 语法上合法，兜底会生效——所以它**不会报错**，
+>    只是深色皮肤下这圈边框不跟着变色，而另外 27 处都会变。
+> 2. **底部固定条不能写 `bottom: 12px`**：本仓有 `--bottom-inset`（= `--tab-h` 56px + 安全区），
+>    底部导航就压在那条线上。写死 12px 会让操作条**盖在 tabbar 上**（或反过来被遮住），
+>    而这取决于机型的安全区高度——正是那种只在别人手机上出现的问题。
+>    用 `bottom: calc(var(--bottom-inset) + 12px)`。
+> 3. `--accent` 在本仓是**蓝色**（浅色 `#0a6ef0` / 深色 `#3b8ef5`），不是代码块里兜底的暖橙
+>    `#c85a3f`。勾选态与差额用它即可，但心里要有数：这个 app 的强调色不是橙的。
+>
+> 追加位置：`styles/invoice.css`（发票相关的样式都在那里）。
+
 在发票相关的样式文件里追加（类名与颜色令牌沿用该文件已有的变量）：
 
 ```css
@@ -1723,7 +1758,7 @@ import { sumCents } from '../invoice-model.js';
 
 - [ ] **步骤 7：跑全量回归 + Commit**
 
-运行：`D:\node.exe --test --test-isolation=none`（预期 340 pass / 0 fail，本任务不动逻辑层）
+运行：`D:\node.exe --test --test-isolation=none`（预期不低于 355 pass / 0 fail，本任务不动逻辑层）
 
 ```bash
 git add app/ui/invoice-view.js styles/ app/reimburse-model.js
@@ -1940,7 +1975,7 @@ function confirmDelete(r, onDone) {
 
 - [ ] **步骤 2：补 CSS**
 
-在发票样式文件末尾追加（同样请先把 `--surface` / `--text-2` 等换成项目里**实际存在**的令牌）：
+在发票样式文件末尾追加（追加到 `styles/invoice.css`）。**令牌清单与三个坑见任务 7 步骤 5 的说明框**——尤其：`--line` 在本仓不存在，边框用 `var(--border)`；`--accent` 是蓝色不是橙色。
 
 ```css
 .reimb-card { display: block; width: 100%; text-align: left; padding: 12px 14px; margin-bottom: 8px; background: var(--surface, #fff); border: 1px solid var(--line, #d3d3d3); border-radius: 10px; }
@@ -1974,7 +2009,7 @@ function confirmDelete(r, onDone) {
 
 - [ ] **步骤 4：跑全量回归 + Commit**
 
-运行：`D:\node.exe --test --test-isolation=none`（预期 340 pass / 0 fail）
+运行：`D:\node.exe --test --test-isolation=none`（预期不低于 355 pass / 0 fail）
 
 ```bash
 git add app/ui/reimburse-view.js styles/
