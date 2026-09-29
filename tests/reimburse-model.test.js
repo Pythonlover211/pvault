@@ -119,17 +119,14 @@ test('diffCents：还没到账时没有差额可谈', () => {
 });
 
 test('invoiceStatus：筛选用的三态', () => {
-  assert.equal(invoiceStatus({ archived: true }, null), 'stored');
-  // reimb 参数允许为 null：列表页只查 invoices 表，那一刻拿不到报销单。
-  // 拿不到时按「有 reimbursementId 就是已报销」判定，不能因此把它算成待报销。
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }, null), 'pending');
-  // reimb 传进来但不匹配（这张票属于别的单）时仍判「已报销」：
-  // 一次读库的时序问题不该把一张已经报出去的票退回待报销，那会让用户重复报销同一张票。
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, { id: 'OTHER', status: 'draft' }), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: true }), 'stored');
+  // 这个判据只看发票自身的两个字段，不看报销单：列表页只查 invoices 表，那一刻拿不到报销单。
+  // 有 reimbursementId 就判「已报销」，不能因为读不到报销单就把它算成待报销。
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }), 'pending');
   // 脏组合（既存档又在单里）优先按「仅存档」显示——它本不该存在，
   // 但显示成一个没法解释的东西更糟。
-  assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }, null), 'stored');
+  assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }), 'stored');
 });
 
 test('invoiceBadge：列表上那一行标签的五种文案', () => {
@@ -159,6 +156,19 @@ test('matchFilter：五个筛选各自的判据', () => {
   assert.equal(matchFilter(pending, 'unlinked'), true);
   assert.equal(matchFilter(stored, 'stored'), true);
   assert.equal(matchFilter(pending, 'stored'), false);
+
+  // 脏组合「既存档、又在单里」：三态判据以 archived 优先（见 invoiceStatus 的注释），
+  // 所以它既不算待报销、也不算已报销——两个筛选都要把它排除掉。
+  // 这几条不能省：把 case 'reimbursed' 换成手写 `!!inv?.reimbursementId`（丢掉 archived 优先）
+  // 时，其余 11 条断言全绿——夹具里从来没有这个组合，洞就是这么留下的。
+  const dirty = { archived: true, reimbursementId: 'r1', txnId: null };
+  assert.equal(matchFilter(dirty, 'pending'), false, '仅存档的票不该出现在待报销里');
+  assert.equal(matchFilter(dirty, 'reimbursed'), false, '仅存档的票不参与报销追踪');
+
+  // 仅存档 ∩ 未挂账：**照旧算「未挂账」**（控制者裁定，理由见 matchFilter 的注释）。
+  // 这条同样不能省：夹具原本只覆盖了「存档且已挂账」，把 unlinked 改成排除 archived 也是全绿。
+  assert.equal(matchFilter({ archived: true, reimbursementId: null, txnId: null }, 'unlinked'), true);
+
   // 不认识的筛选 id 一律放行（等于「全部」），不把列表变成空白。
   assert.equal(matchFilter(pending, 'nope'), true);
 });

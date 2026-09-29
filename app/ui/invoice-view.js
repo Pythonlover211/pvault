@@ -260,9 +260,7 @@ export function openInvoiceLinkSheet({ txn, categoryName = '', onChanged } = {})
         el('span', { text: inv.seller || inv.number || '未命名发票' }),
         el('span', { class: 'muted tiny', text: `${inv.number || '无号码'} · ${formatCents(inv.amountCents ?? 0, { symbol: true })}` })
       ]),
-      inv.archived
-        ? el('span', { class: 'inv-tag stored', text: invoiceBadge(inv, null) })
-        : el('span', { class: 'inv-tag pending', text: invoiceBadge(inv, null) })
+      el('span', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: invoiceBadge(inv, null) })
     ]));
 
     mount(body,

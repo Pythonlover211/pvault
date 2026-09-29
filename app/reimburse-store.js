@@ -401,9 +401,10 @@ export async function settleReimbursement(id, {
  *  1. deleteTxn:false 时留下的那笔收入仍带 `reimbursementId: <已删单>`，是个悬空指针。
  *     今天无消费方——任务 8 的删除保护读的是**正向**的 `reimb.txnId`，不读这个反向指针。
  *  2. 另一个标签页在 listInvoicesOf 之后才挂到本单上的票，会带着指向已删单的 reimbursementId
- *     留在库里；而 invoiceStatus 只要票上有 reimbursementId 就判成「已报销」（它刻意不看
- *     报销单对象），那张票从此回不到待报销列表，**没有自愈路径**。要关掉它就得把
- *     「读票列表 → 写删单」这一段锁起来，而这是无后端的 IndexedDB，做不到。
+ *     留在库里；而 invoiceStatus 只要票上有 reimbursementId 就判成「已报销」（它只看发票自身的
+ *     archived / reimbursementId 两个字段，压根不看报销单对象），那张票从此回不到待报销列表，
+ *     **没有自愈路径**。要关掉它就得把「读票列表 → 写删单」这一段锁起来，而这是无后端的
+ *     IndexedDB，做不到。
  */
 export async function deleteReimbursement(id, { deleteTxn = false } = {}) {
   const reimb = await getReimbursement(id);

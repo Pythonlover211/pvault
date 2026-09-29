@@ -183,17 +183,14 @@ test('diffCents：还没到账时没有差额可谈', () => {
 });
 
 test('invoiceStatus：筛选用的三态', () => {
-  assert.equal(invoiceStatus({ archived: true }, null), 'stored');
-  // reimb 参数允许为 null：列表页只查 invoices 表，那一刻拿不到报销单。
-  // 拿不到时按「有 reimbursementId 就是已报销」判定，不能因此把它算成待报销。
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, null), 'reimbursed');
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }, null), 'pending');
-  // reimb 传进来但不匹配（这张票属于别的单）时仍判「已报销」：
-  // 一次读库的时序问题不该把一张已经报出去的票退回待报销，那会让用户重复报销同一张票。
-  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }, { id: 'OTHER', status: 'draft' }), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: true }), 'stored');
+  // 这个判据只看发票自身的两个字段，不看报销单：列表页只查 invoices 表，那一刻拿不到报销单。
+  // 有 reimbursementId 就判「已报销」，不能因为读不到报销单就把它算成待报销。
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: 'r1' }), 'reimbursed');
+  assert.equal(invoiceStatus({ archived: false, reimbursementId: null }), 'pending');
   // 脏组合（既存档又在单里）优先按「仅存档」显示——它本不该存在，
   // 但显示成一个没法解释的东西更糟。
-  assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }, null), 'stored');
+  assert.equal(invoiceStatus({ archived: true, reimbursementId: 'r1' }), 'stored');
 });
 
 test('invoiceBadge：列表上那一行标签的五种文案', () => {
@@ -334,17 +331,13 @@ export function diffCents(settledCents, invoices) {
 
 // 发票在**报销追踪**里的状态，供筛选使用（发票规格 §7.2 的五个筛选里有三个用它）。
 //
-// reimb 允许为 null：发票列表页只查 invoices 表，那一刻手里没有报销单对象。
-// 拿不到时按「有 reimbursementId 就是 reimbursed」判定——绝不能因为读不到报销单
-// 就把一张已经报出去的票算成「待报销」，那会让用户重复报销同一张票。
-export function invoiceStatus(inv, reimb) {
+// 它**只看发票自身的两个字段**（archived / reimbursementId），不看报销单——因为筛选发生在
+// 发票列表页，那一刻手里没有报销单对象。有 reimbursementId 就判 'reimbursed'：绝不能因为
+// 读不到报销单就把一张已经报出去的票算成「待报销」，那会让用户重复报销同一张票。
+// （要看报销单状态的是 invoiceBadge，它管的是呈现，两者的分工见那个函数的注释。）
+export function invoiceStatus(inv) {
   if (inv?.archived) return 'stored';
   if (!inv?.reimbursementId) return 'pending';
-  // reimb 这个参数**刻意不用**：筛选发生在发票列表页，那里只查了 invoices 表，
-  // 手里没有报销单，传 null 是常态。保留形参只是为了与 invoiceBadge 同形，
-  // 不是做「这张票属于哪张单」的归属校验——归属校验在数据层（reimburse-store），
-  // 这里不做，因为没有它也不会把一张已报出去的票算成待报销。
-  void reimb;
   return 'reimbursed';
 }
 
@@ -1355,7 +1348,16 @@ git commit -m "feat(reimburse): 提交/到账/删除，到账三处写入单事�
 **文件：**
 - 修改：`app/reimburse-model.js`（加 `matchFilter`）
 - 修改：`app/ui/invoice-view.js:12-17`（FILTERS）、`:49-56`（inFilter）
+- 修改：`sw.js`（**ASSETS 补 `./app/reimburse-model.js`，`CACHE` 版本 +1**）
 - 测试：`tests/reimburse-model.test.js`
+
+> **为什么 `sw.js` 必须一起改**（实现时实测出来的，别漏）：`invoice-view.js` 静态 import
+> `reimburse-model.js` 之后，后者成了**首屏静态依赖**，而 `tests/boot-order.test.js` 的守卫
+> 要求的正是「`sw.js` 的 ASSETS 覆盖首屏 import 闭包」。不补的后果不是「少缓存一份」，
+> 而是**已经装着旧缓存的设备离线启动会整页白屏**。守卫的失败信息里就写着「把它加进 ASSETS，
+> 版本号跟产生依赖的那次提交一起走（见 sw.js 里 v14 / v16 / v17 三段）」。
+> `CACHE` 要 +1 而不是复用旧名：往一个**服役中**的缓存名里 `addAll`，中途失败会留下
+> 半新半旧的缓存（见 `sw.js` 开头的边界说明）。
 
 - [ ] **步骤 1：编写失败的测试**
 
@@ -1378,6 +1380,19 @@ test('matchFilter：五个筛选各自的判据', () => {
   assert.equal(matchFilter(pending, 'unlinked'), true);
   assert.equal(matchFilter(stored, 'stored'), true);
   assert.equal(matchFilter(pending, 'stored'), false);
+
+  // 脏组合「既存档、又在单里」：三态判据以 archived 优先（见 invoiceStatus 的注释），
+  // 所以它既不算待报销、也不算已报销——两个筛选都要把它排除掉。
+  // 这几条不能省：把 case 'reimbursed' 换成手写 `!!inv?.reimbursementId`（丢掉 archived 优先）
+  // 时，其余 11 条断言全绿——夹具里从来没有这个组合，洞就是这么留下的。
+  const dirty = { archived: true, reimbursementId: 'r1', txnId: null };
+  assert.equal(matchFilter(dirty, 'pending'), false, '仅存档的票不该出现在待报销里');
+  assert.equal(matchFilter(dirty, 'reimbursed'), false, '仅存档的票不参与报销追踪');
+
+  // 仅存档 ∩ 未挂账：**照旧算「未挂账」**（控制者裁定，理由见 matchFilter 的注释）。
+  // 这条同样不能省：夹具原本只覆盖了「存档且已挂账」，把 unlinked 改成排除 archived 也是全绿。
+  assert.equal(matchFilter({ archived: true, reimbursementId: null, txnId: null }, 'unlinked'), true);
+
   // 不认识的筛选 id 一律放行（等于「全部」），不把列表变成空白。
   assert.equal(matchFilter(pending, 'nope'), true);
 });
@@ -1394,17 +1409,35 @@ test('matchFilter：五个筛选各自的判据', () => {
 在 `app/reimburse-model.js` 末尾追加：
 
 ```js
+// 发票筛选行的 id 清单，与 app/ui/invoice-view.js 里那份 `FILTERS` 字面量**逐项对应（含顺序）**。
+// 两份副本没法用 import 对账——invoice-view.js 静态 import invoice-store → IndexedDB，Node 里根本
+// import 不了——所以一致性由 tests/invoice-view-filters.test.js 读文件 + 正则来守。
+export const FILTER_IDS = Object.freeze(['all', 'pending', 'reimbursed', 'unlinked', 'stored']);
+
 // 发票列表的筛选判据。**放在这里而不是 invoice-view.js 里**，是为了能脱离 DOM 单测——
 // 「已报销」这一个筛选正是本次要补的缺口（发票规格 §7.2 写了五个，实现只有四个），
 // 而它最容易写错的地方是「仅存档的票算不算已报销」（不算：它压根不参与报销追踪）。
-export const FILTER_IDS = Object.freeze(['all', 'pending', 'reimbursed', 'unlinked', 'stored']);
-
+//
+// 已知边界：`matchFilter(null, 'pending')` / `matchFilter(undefined, 'pending')` 都返回 true——
+// `invoiceStatus(null)` 判 'pending'，于是「不存在的票」算待报销。这是继承自 invoiceStatus 的既有
+// 边界，当前调用点（listInvoices() 的产物）不可达，所以**不改行为，只记在这里**。
 export function matchFilter(inv, filterId) {
   switch (filterId) {
-    case 'pending': return !inv?.archived && !inv?.reimbursementId;
-    case 'reimbursed': return !inv?.archived && Boolean(inv?.reimbursementId);
+    // 改动前，发票列表的手写判据在 app/ui/invoice-view.js 的 `inFilter` 里，与本文件的
+    // invoiceStatus 在重叠的三个态上**等价、互为副本**——而两份等价判据迟早漂移
+    // （有人给「仅存档」加一条例外、只改了一处），漂移不报错、只是筛选结果对不上。
+    // 现在这三个态**复用 invoiceStatus**：一处定义、一处复用。
+    //
+    // 这三个筛选 id 与 invoiceStatus 的三态值**同名**，是有意的契约：
+    // 合并写一次，就从结构上消灭「case 名与比较值写不一致」这种错。
+    case 'pending':
+    case 'reimbursed':
+    case 'stored':
+      return invoiceStatus(inv) === filterId;
+    // 仅存档 ∩ 未挂账：**照旧算「未挂账」**。archived 说的是「不参与报销追踪」，
+    // txnId 为空说的是「没挂到账目上」——两件事互不包含；把归档的票从「未挂账」里藏起来，
+    // 只会让用户找不到那些还没挂账的存档票。
     case 'unlinked': return !inv?.txnId;
-    case 'stored': return Boolean(inv?.archived);
     default: return true;   // 'all' 与任何不认识的 id
   }
 }
@@ -1445,9 +1478,7 @@ import { matchFilter, invoiceBadge } from '../reimburse-model.js';
 ```
 
 ```js
-      inv.archived
-        ? el('span', { class: 'inv-tag stored', text: invoiceBadge(inv, null) })
-        : el('span', { class: 'inv-tag pending', text: invoiceBadge(inv, null) })
+      el('span', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: invoiceBadge(inv, null) })
 ```
 
 **注意**：`invoiceBadge(inv, null)` 传 null 是因为这两处手里没有报销单对象（列表只查了 invoices 表）。它会返回「已报销」这个中性说法，而不是猜「已到账」——猜错的代价是用户以为钱已经到了。
@@ -1462,7 +1493,11 @@ import { matchFilter, invoiceBadge } from '../reimburse-model.js';
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：340 pass / 0 fail。
+预期：350 pass / 0 fail（基线 349 + 本任务新增 1 条）。
+
+（后记：其后的质检轮又补了 `tests/invoice-view-filters.test.js` 的 1 条守卫测试——它把界面那份
+`FILTERS` 字面量与 `reimburse-model.js` 的 `FILTER_IDS` 对账，因为这个模块在 Node 里 import 不了。
+全量因此从 350 变成 351 pass。）
 
 - [ ] **步骤 6：界面实测**
 

@@ -144,10 +144,10 @@ STATUS = { DRAFT: 'draft', SUBMITTED: 'submitted', SETTLED: 'settled' }
 | `autoTitle(monthTs, count)` | 时间戳 + 张数 → 「9月报销 · 3 张」 |
 | `sumInvoiceCents(invoices)` | 发票数组 → 整数分。**空数组得 0** |
 | `diffCents(settledCents, invoices)` | 实际到账 − 发票合计。`settledCents` 为 null 时返回 null（还没到账，没有差额可谈） |
-| `invoiceStatus(inv, reimb)` | 三态：`'stored'`（archived）/ `'reimbursed'`（有 reimbursementId）/ `'pending'`。**这是筛选用的判据** |
+| `invoiceStatus(inv)` | 三态：`'stored'`（archived）/ `'reimbursed'`（有 reimbursementId）/ `'pending'`。**这是筛选用的判据**，只看发票自身的两个字段 |
 | `invoiceBadge(inv, reimb)` | 显示文案：`仅存档` / `待报销` / `报销中`(draft) / `已提交`(submitted) / `已到账`(settled) |
 
-**三态与五文案为什么分开**：筛选只需要知道「在不在报销单里」（§7.2 的五个筛选），而列表上那一行标签要回答的是「报出去了吗、到哪一步了」。前者是判据、后者是呈现，合成一个函数会让筛选依赖报销单状态，而报销单状态在筛选那一刻未必读得到（列表页只查 invoices 表时拿不到报销单）。`invoiceStatus` 的 `reimb` 参数因此**允许为 null**：拿不到报销单时一律按「有 reimbursementId 就是 reimbursed」判定。
+**三态与五文案为什么分开**：筛选只需要知道「在不在报销单里」（§7.2 的五个筛选），而列表上那一行标签要回答的是「报出去了吗、到哪一步了」。前者是判据、后者是呈现，合成一个函数会让筛选依赖报销单状态，而报销单状态在筛选那一刻未必读得到（列表页只查 invoices 表时拿不到报销单）。所以 `invoiceStatus(inv)` **不接报销单参数**：拿不到报销单，判据就只能建立在发票自己的 `archived` / `reimbursementId` 两个字段上——有 `reimbursementId` 就是 `'reimbursed'`，绝不能退回「待报销」，那会让用户重复报销同一张票。（要看报销单状态的是 `invoiceBadge(inv, reimb)`，它才需要第二个参数。）
 
 **「仅存档」的优先序**：一张票若同时 `archived` 且有 `reimbursementId`，`invoiceStatus` 返回 `'stored'`。但**这种状态本不该存在**（§6.4 明令禁止），返回 stored 只是让界面不至于显示成一个无法解释的东西。
 
@@ -270,10 +270,14 @@ export async function addTransaction(input, { extraEntries = [] } = {})
 | id | 判据 |
 |---|---|
 | `all` | 全部 |
-| `pending` | `!archived && !reimbursementId`（既有，改用 `invoiceStatus`） |
-| `reimbursed` | **新增**：`!!reimbursementId` |
+| `pending` | `invoiceStatus(inv) === 'pending'`（既有，改用 `invoiceStatus`） |
+| `reimbursed` | **新增**：`invoiceStatus(inv) === 'reimbursed'` |
 | `unlinked` | `!txnId`（既有） |
-| `stored` | `archived`（既有） |
+| `stored` | `invoiceStatus(inv) === 'stored'`（既有） |
+
+三个三态判据一律**复用 §5.2 的 `invoiceStatus`**，不各写一遍 `archived` / `reimbursementId`：两份等价判据迟早漂移。因此 §5.2 的优先序在筛选上一体适用——脏组合「既存档、又在单里」判 `stored`，**既不算待报销、也不算已报销**。
+
+`unlinked` 是独立的判据，**不看 `archived`**：一张仅存档、又没挂到任何账目上的票，照旧算「未挂账」。`archived` 说的是「不参与报销追踪」，`txnId` 为空说的是「没挂到账目上」——两件事互不包含，把归档的票从「未挂账」里藏起来只会让用户找不到那些还没挂账的存档票。（这条曾无人定义过，2026-09-28 质检后在此定案。）
 
 ### 7.4 报销单列表与详情（规格 §7.5）
 
@@ -334,7 +338,7 @@ export async function addTransaction(input, { extraEntries = [] } = {})
 
 | 层 | 方式 |
 |---|---|
-| 纯逻辑 | `node --test --test-isolation=none` 新增 `tests/reimburse-model.test.js`：状态机每个函数的**真值与假值两侧**、`autoTitle` 的跨年/跨月/0 张、`sumInvoiceCents` 的脏数据（`null` / 字符串 / `NaN` 成分）、`diffCents` 的正负与 null、`invoiceStatus` / `invoiceBadge` 的六种组合（含 `reimb` 为 null） |
+| 纯逻辑 | `node --test --test-isolation=none` 新增 `tests/reimburse-model.test.js`：状态机每个函数的**真值与假值两侧**、`autoTitle` 的跨年/跨月/0 张、`sumInvoiceCents` 的脏数据（`null` / 字符串 / `NaN` 成分）、`diffCents` 的正负与 null、`invoiceStatus` / `invoiceBadge` 的六种组合（`invoiceBadge` 那侧含 `reimb` 为 null） |
 | 存储层 | 新增 `tests/reimburse-store.test.js`，用 `tests/helpers/fake-browser.js` 装内存环境：创建/加票/移票/提交/到账/删除的完整流转、**发票回退到待报销**、跳过已在别单的票、拒绝仅存档、删除保护的两个分支、以及**事务原子性**（注入一次写失败，确认库里没有半截状态） |
 | 备份 | 扩 `tests/backup.test.js` / `backup-store.test.js`：`reimbursements` 进包、老备份（无该键）导入**不报错且本机报销单被保留**（缺键即不进 `clears`，与其余所有表一致）、往返后字段一致 |
 | 真实渲染 | CDP 驱动（模拟器或本机无头浏览器，后者更轻，见 `pvault-tools/accept-backup.mjs` 的做法）：列表分组、多选、发起报销、到账 sheet、差额行 |
