@@ -308,7 +308,26 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   const buyerTitleInput = el('input', { type: 'text', oninput: (e) => { state.buyerTitle = e.target.value; } });
   const buyerTaxIdInput = el('input', { type: 'text', oninput: (e) => { state.buyerTaxId = e.target.value; } });
   const noteInput = el('input', { type: 'text', oninput: (e) => { state.note = e.target.value; } });
-  const archivedCheck = el('input', { type: 'checkbox', onchange: (e) => { state.archived = e.target.checked; } });
+  const archivedCheck = el('input', {
+    type: 'checkbox',
+    onchange: async (e) => {
+      // 互斥保护（发票规格 §6.1）：一张票不能同时是「在一张报销单里」和「仅存档」。
+      // 判据要**现查库**，不能用 state 里那份副本——state 可能是这张票进报销单**之前**
+      // 载入的（面板一直开着，另一个标签页/另一个入口把它加进了单里），拿旧副本判会放行，
+      // 于是库里出现一张既属于某单、又标着仅存档的票。
+      if (e.target.checked && state.id) {
+        const cur = await invoiceStore.getInvoice(state.id);
+        if (cur?.reimbursementId) {
+          // 弹回未勾而不是只弹个提示：勾选框是这张票当前状态的**显示**，留着勾就等于
+          // 屏幕上写着「仅存档」而库里不是，用户会带着一个错印象离开这个面板。
+          e.target.checked = false;
+          errorNode.textContent = '这张票在一张报销单里，请先把它从报销单里移出，再标为「仅存档」';
+          return;
+        }
+      }
+      state.archived = e.target.checked;
+    }
+  });
 
   async function submit() {
     // 两道锁放最前面（与 entry-panel.js 一致）：saving 期间连查重都不必再跑一遍，
@@ -327,6 +346,21 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     try {
       const check = validateInvoice(state);
       if (!check.ok) { errorNode.textContent = check.errors.join('；'); return; }
+
+      // 互斥兜底（发票规格 §6.1）：上面那个 onchange 是**异步**的（查库要一个事务的时间），
+      // 用户在它落定之前就点「保存」是完全可能的，而且更早之前的 onchange 也拦不住
+      // 「勾完之后票才被加进某张单」这条竞态。这里再查一次库。
+      //
+      // 位置是刻意的：排在 validateInvoice 之后（一张连号码都非法的票，先报互斥是答非所问），
+      // 排在查重之前——互斥是**硬**拦截（这张票归谁管是事实问题），查重是**软**提示
+      // （两段式，第一次点只提示）。顺序反了，用户得在同一个按钮上按两次才被告知真正的问题。
+      if (state.archived && state.id) {
+        const cur = await invoiceStore.getInvoice(state.id);
+        if (cur?.reimbursementId) {
+          errorNode.textContent = '这张票在一张报销单里，不能标为「仅存档」。请先从报销单里把它移出。';
+          return;
+        }
+      }
 
       // 查重：**只提示、不阻止**（规格第 5 节）。号码为空时不查。
       // 两段式：第一次点「保存」只提示，再点一次才真的存进去。直接用 return 拦住是不对的——
