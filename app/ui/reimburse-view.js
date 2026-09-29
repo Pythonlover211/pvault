@@ -15,8 +15,11 @@ import { el, mount } from './dom.js';
 import { currentTab } from '../router.js';
 import { formatCents } from '../money.js';
 import { invoiceTitle, sumCents } from '../invoice-model.js';
+// 按 id 取那一笔收入账，只为回答「它还在不在」（规格 §8 的「那笔收入已被删除」）。
+// 走仓库层：视图不直接碰 db.js（见 store.js 文件头那句「所有视图只通过本模块读写数据」）。
+import { getTransaction } from '../store.js';
 import {
-  STATUS, statusLabel, isActive, canEdit, canSubmit, canSettle, diffCents
+  STATUS, statusLabel, isActive, canEdit, canSubmit, canSettle, diffCents, hasSettledCents
 } from '../reimburse-model.js';
 import {
   listReimbursements, listInvoicesOf, getReimbursement, renameReimbursement,
@@ -100,12 +103,12 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
   function card(r, invoices) {
     // 差额行只在**已到账**、**填了金额**、且**与合计不同**时出现。三个条件各有各的道理：
     //  · 没到账就没有「实际到账」这回事；
-    //  · settledCents 为 null（只标记到账、没填金额）时 diffCents 本来就返回 null，这里的
-    //    `!== null` 是一道**护栏**——不写它也能对，但那样就是把「不显示 ¥0.00」押在 diffCents
-    //    的实现细节上了（它哪天改成对 null 返回 0，屏幕上就会冒出一行假差额）；
+    //  · 没有可用金额（null / 缺字段 / 非整数）时 diffCents 本来就返回 null，这里的
+    //    `hasSettledCents` 是一道**护栏**——不写它也能对，但那样就是把「不显示 ¥0.00」押在
+    //    diffCents 的实现细节上了（它哪天改成对 null 返回 0，屏幕上就会冒出一行假差额）；
     //  · 差额为 0 不显示：没有差额就没有信息，一行「差额 ¥0.00」只是噪音。
     //    **所以这里判的是 diff 的真值，不是 `diffCents(...) !== null`**——后者会让 0 也渲染。
-    const diff = (r.status === STATUS.SETTLED && r.settledCents !== null)
+    const diff = (r.status === STATUS.SETTLED && hasSettledCents(r.settledCents))
       ? diffCents(r.settledCents, invoices)
       : null;
 
@@ -113,13 +116,16 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
     //  · 「实到多少」对已到账的单是**无条件**的——规格那句「（若有）」紧跟在「差额」后面，
     //    管的是差额（差额为 0 时没有信息，不显示）；实到金额无论是否与合计一致都该看得见，
     //    否则「公司正好给对」的单看上去跟没记到账金额一样，用户会以为自己没填过。
-    //  · settledCents 为 null（只标记到账、没记金额）显示「未填」，**不能**走 formatCents：
-    //    它对 null 安静地返回 '¥0.00'，屏幕上就变成「公司给了 0 元」。详情页同一处也是这么处置的。
+    //  · settledCents 没有可用值（null = 只标记到账没记金额，或**缺字段**——老备份 / 手改过的
+    //    记录，见 hasSettledCents 的注释）显示「未填」，**不能**走 formatCents：
+    //    它对 null 安静地返回 '¥0.00'，屏幕上就变成「公司给了 0 元」；对 undefined 更糟——
+    //    它会输出 `¥NaN.NaN` 直接上屏，而金额是规格 §5.3 明令不许出现 NaN 的地方。
+    //    判据必须是**正向**的 hasSettledCents（0 是合法值，不能被 falsy 判断吃掉）。详情页同一处同样处置。
     let settledText = null;
     if (r.status === STATUS.SETTLED) {
-      settledText = r.settledCents === null
-        ? '实际到账 未填'
-        : `实际到账 ${formatCents(r.settledCents, { symbol: true })}`;
+      settledText = hasSettledCents(r.settledCents)
+        ? `实际到账 ${formatCents(r.settledCents, { symbol: true })}`
+        : '实际到账 未填';
     }
 
     // 列表上要短，所以用 toLocaleDateString（只到日）；详情页时间线那边用 toLocaleString，
@@ -190,6 +196,24 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
   if (!r) { openId = null; return renderReimbursements(root, { onSwitchToInvoices }); }
 
   const invoices = await listInvoicesOf(id);
+  if (currentTab() !== 'invoice' || seq !== viewSeq) return;
+
+  // 这一单生成过的那笔收入**还在不在**（规格 §8：收入被删之后，详情页要说「那笔收入已被删除」，
+  // 而不是显示一个点不开的链接）。
+  //  · `txnId` 为 null（「只标记到账、不记收入」那条路）：没生成过收入，**不查也不显示**——
+  //    少这一次读库，也少一句对用户没有信息量的话；
+  //  · 查不到就是被删了（用户从记账侧删的，那是允许的）。读库**失败**也按「不在」处置并记一条
+  //    console：一次读失败不该把整页详情炸掉（renderDetail 的 rejection 会一路冒到 renderReimbursements），
+  //    而对着一笔来路不明的收入说「已被删除」也说不上是错。
+  let txnMissing = false;
+  if (r.txnId) {
+    try {
+      txnMissing = !(await getTransaction(r.txnId));
+    } catch (err) {
+      console.error('读取报销单的那笔收入失败', err);
+      txnMissing = true;
+    }
+  }
   if (currentTab() !== 'invoice' || seq !== viewSeq) return;
 
   const total = sumCents(invoices);
@@ -305,13 +329,24 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
     ]),
     r.status === STATUS.SETTLED ? el('div', { class: 'rd-total' }, [
       el('span', { text: '实际到账' }),
-      // settledCents 为 null = 这单是「只标记到账、不记收入」标掉的，用户从没填过金额。
+      // settledCents 没有可用值 = 这单是「只标记到账、不记收入」标掉的（用户从没填过金额），
+      // 或是缺字段的脏记录（老备份 / 手改过）。
       // **不能写成 `?? 0`**：那会让详情页写着「实际到账 ¥0.00」，而用户一个字都没输过。
       // 在记账 app 里「没填」与「是 0 元」必须能分开——settledCents 的默认值当初从 0 改成
       // null 就是为这件事（reimburse-store 里有一行又把它们合并回去过，已被任务 9 的审查修掉）。
-      el('span', { text: r.settledCents === null ? '未填' : formatCents(r.settledCents, { symbol: true }) })
+      // 判据用 hasSettledCents 而不是 `=== null`：只判 null 时，缺字段的已到账单会走到
+      // formatCents(undefined) → 屏幕上出现 `¥NaN.NaN`（规格 §5.3 禁止 NaN 上屏）。
+      el('span', {
+        text: hasSettledCents(r.settledCents)
+          ? formatCents(r.settledCents, { symbol: true })
+          : '未填'
+      })
     ]) : null,
     diff ? el('div', { class: 'rd-diff', text: `差额 ${formatCents(diff, { symbol: true })}` }) : null,
+    // 那笔收入被删了（用户在记账侧删的，删单时也选了「只删报销单，留下收入」的反面那条路）。
+    // 事实是「账目对不上了」，所以用错误色说出来，而不是塞一行灰字当作没事。
+    // 只有 `txnId` 存在且**查不到**时才出现；没生成过收入的单一个字都不加（见上面那段注释）。
+    txnMissing ? el('div', { class: 'form-error', text: '那笔收入已被删除' }) : null,
 
     el('div', { class: 'rd-timeline' }, nodes.map(n => el('div', {
       class: 'rd-node' + (n.ts ? '' : ' is-pending')

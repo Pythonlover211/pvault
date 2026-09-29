@@ -330,6 +330,14 @@ export async function settleReimbursement(id, {
   // 全程不报错。**0 只能由调用方显式传进来**（配合上面那个 null 默认值）。
   const hasCents = Number.isSafeInteger(settledCents);
   const missingCents = settledCents === null || settledCents === undefined;
+  // 负数不是合法的到账金额（规格 §8：「报销到账不会是负数；真填了负数只可能是误触了减号」）。
+  // **数据层必须自己挡**，不能指望界面：keypad 的正则输不出负号只是**当前那个输入控件**的巧合，
+  // 导入的备份、手改过的记录、将来换掉的输入控件都会撞上这条路。放行的代价是库里多一笔
+  // −100 的收入（还会被算进当月收支），而全程不报错——这正是「判据漏写不报错」那一类。
+  // 与上面那条金额校验同一口径（ReimburseError + BAD_INPUT），文案也同一个说法（「…，这次没记上」）。
+  if (hasCents && settledCents < 0) {
+    throw new ReimburseError('到账金额不能是负数，这次没记上', 'BAD_INPUT');
+  }
   if (!hasCents && (!missingCents || createTxn)) {
     throw new ReimburseError('到账金额不对，这次没记上', 'BAD_INPUT');
   }

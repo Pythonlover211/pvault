@@ -395,6 +395,32 @@ test('settleReimbursement：要记账时金额非法或缺失一律拒绝，且�
   assert.deepEqual(await db.getAll('txns'), [], '库里不该有任何交易');
 });
 
+test('settleReimbursement：金额为负数一律拒绝，且零写入（规格 §8）', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 1000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+
+  // UI 层碰不到负数（keypad 的正则输不出减号），所以这条路**只有数据层挡得住**：导入的备份、
+  // 手改过的记录、将来换掉的输入控件都会把负数送到这里。放行一次的代价是库里多一笔 −100 的收入
+  // （它会被算进当月收支、也会参加统计），而全程不报错——属于「判据漏写不报错」那一类。
+  // 两条分支都要拒：记不记账只决定要不要写交易，而 `settledCents: -100` 本身就是脏数据。
+  for (const createTxn of [true, false]) {
+    const before = transactionCount();
+    await assert.rejects(
+      () => settleReimbursement(r.id, { settledCents: -100, createTxn, now: NOW }),
+      err => {
+        assert.equal(err.code, 'BAD_INPUT', `createTxn:${createTxn} 时负数也要按 BAD_INPUT 拒绝`);
+        assert.match(err.message, /负数/, '文案要说清是「负数」这个原因，而不是笼统的「金额不对」');
+        return true;
+      }
+    );
+    assert.equal(transactionCount() - before, 0, `createTxn:${createTxn}：拒绝必须发生在写入之前`);
+  }
+
+  assert.equal((await getReimbursement(r.id)).status, 'submitted', '单子还停在已提交');
+  assert.deepEqual(await db.getAll('txns'), [], '库里不该多出任何交易');
+});
+
 test('settleReimbursement：显式传 0 是合法值（公司拒报），照记账', async () => {
   await mkInvoice({ id: 'i1', amountCents: 1000 });
   const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });

@@ -30,6 +30,7 @@ import { el } from '../app/ui/dom.js';
 import { saveInvoice } from '../app/invoice-store.js';
 import { createReimbursement } from '../app/reimburse-store.js';
 import { renderInvoices } from '../app/ui/invoice-view.js';
+import { openReimbursement } from '../app/ui/reimburse-view.js';
 
 installFakeBrowser();
 installFakeDom();
@@ -417,16 +418,25 @@ test('多选：点「发起报销」→ 面板改名 → 真的落库，标题�
 });
 
 test('加票：从详情页进多选，底部条写目标单标题、按下去票真的进了那一单', async () => {
+  // **这里必须有第二张单（A）**：只建一张单时，「加完停回那一单的详情」这条断言是**碰巧**通过的
+  // ——用户本来就是从那一单的详情点进来的，openId 早就是它了，把终点写坏也照样绿。
+  // 有了 A 做对照，下面那条「屏幕上不该有 A 的标题」才真的有牙。
   await mkInvoice('a1', 100000);
-  const { reimb } = await createReimbursement({ invoiceIds: ['a1'], title: '九月报销', now: NOW });
+  await createReimbursement({ invoiceIds: ['a1'], title: '八月报销', now: NOW - 1000 });
+  await mkInvoice('b0', 30000);
+  const { reimb } = await createReimbursement({ invoiceIds: ['b0'], title: '九月报销', now: NOW });
   await mkInvoice('b1', 202500);
   await mkInvoice('b2', 55500);
 
   await renderInvoices(view);
   await need(segButton('报销单'), '分段条上要有「报销单」这个按钮').click();
-  await waitFor(() => findByText(view, '九月报销') !== null, '报销单列表');
+  await waitFor(() => findByText(view, '八月报销') !== null && findByText(view, '九月报销') !== null,
+    '报销单列表');
   await cardByTitle('九月报销').click();
   await waitFor(() => buttonsIn(view, '← 报销单').length === 1, '报销单详情页');
+  // 前置断言：此刻在 **B**（九月报销）的详情里。少了它，下面「停在 B」在一个把票加进 A 的
+  // 实现上也是绿的（那样屏幕上会写着「八月报销」，而 user 以为自己加的是九月那一单）。
+  assert.equal(findByText(view, '八月报销'), null, '前置条件：进来的必须是九月那一单，不是八月那单');
 
   // 详情页的「加票」：它调的是 onSwitchToInvoices?.({ startSelecting: true, targetId: id })，
   // 也就是跨文件契约的另一半——少了这个按钮，addInvoicesTo 在用户那一侧根本不存在。
@@ -449,20 +459,25 @@ test('加票：从详情页进多选，底部条写目标单标题、按下去�
   // 加完停回**那一单**的详情（不是列表、也不是新建一张单）。
   await waitFor(() => view.textContent.includes('九月报销')
     && buttonsIn(view, '← 报销单').length === 1, '加完停在目标单的详情');
-  assert.equal((await db.getAll('reimbursements')).length, 1, '加票不该顺手建出新单');
+  assert.equal(findByText(view, '八月报销'), null, '终点是九月那一单，不是列表里的另一张单');
+  assert.equal((await db.getAll('reimbursements')).length, 2, '加票不该顺手建出新单');
 });
 
 test('加票：勾的票在别处进了别的单时，把话说清楚并把那张从勾选里摘掉', async () => {
   await mkInvoice('a1', 100000);
-  const { reimb } = await createReimbursement({ invoiceIds: ['a1'], title: '九月报销', now: NOW });
+  await createReimbursement({ invoiceIds: ['a1'], title: '八月报销', now: NOW - 1000 });
+  await mkInvoice('b0', 30000);
+  const { reimb } = await createReimbursement({ invoiceIds: ['b0'], title: '九月报销', now: NOW });
   await mkInvoice('b1', 202500);
   await mkInvoice('b2', 55500);
 
   await renderInvoices(view);
   await need(segButton('报销单'), '分段条上要有「报销单」这个按钮').click();
-  await waitFor(() => findByText(view, '九月报销') !== null, '报销单列表');
+  await waitFor(() => findByText(view, '八月报销') !== null && findByText(view, '九月报销') !== null,
+    '报销单列表');
   await cardByTitle('九月报销').click();
   await waitFor(() => buttonsIn(view, '← 报销单').length === 1, '报销单详情页');
+  assert.equal(findByText(view, '八月报销'), null, '前置条件：进来的是九月那一单');
   await button('加票').click();
   await waitFor(() => toolButton('取消') !== null, '回到发票段且进了多选');
 
@@ -510,4 +525,33 @@ test('跨文件契约：报销单空状态的「去发票里选几张」真的�
   assert.equal(selectedFilter(), '待报销', '筛选要跟着跳到「待报销」');
   assert.equal(findAll(view, n => n.classList.contains('inv-check')).length, 1,
     '列表项上要出现勾选框（真的进了多选，不是只切了段）');
+});
+
+test('openReimbursement：屏幕停在列表时打开某一单，下一次渲染真的进它的详情', async () => {
+  // 这条钉的是「发起报销」与「加票」两条路收尾时调用的那个导出（reimburse-view 的 openReimbursement）。
+  // 把它写成空壳（不写 openId）**不会报错**，而上面那两条加票用例**抓不住它**：用户本来就是从
+  // 某一单的详情点进加票的，openId 早就是那一单了，屏幕照样停在它身上。所以这里刻意从**列表**
+  // 出发——openId 为 null 时调用它，屏幕必须变成那一单的详情；空壳实现会留在列表上，这条立刻红。
+  await mkInvoice('a1', 100000);
+  await createReimbursement({ invoiceIds: ['a1'], title: '八月报销', now: NOW - 1000 });
+  await mkInvoice('b1', 202500);
+  const { reimb: B } = await createReimbursement({ invoiceIds: ['b1'], title: '九月报销', now: NOW });
+
+  await renderInvoices(view);
+  await need(segButton('报销单'), '分段条上要有「报销单」这个按钮').click();
+  await waitFor(() => buttonsIn(view, '← 报销单').length === 1 || cards().length > 0, '报销单那一段画出来');
+  // 先确保自己站在**列表**上：openId 是 reimburse-view 的模块状态，会跨用例残留（这是有意的设计——
+  // 切走再回来用户该还在那一单上），所以上一轮留下的详情页要先用返回按钮退掉。
+  if (buttonsIn(view, '← 报销单').length === 1) {
+    await buttonsIn(view, '← 报销单')[0].click();
+  }
+  await waitFor(() => cards().length === 2 && buttonsIn(view, '← 报销单').length === 0,
+    '回到报销单列表（两张卡）');
+
+  openReimbursement(B.id);
+  await renderInvoices(view);
+  await waitFor(() => buttonsIn(view, '← 报销单').length === 1, '被打开那一单的详情页');
+  assert.ok(findByText(view, '九月报销') !== null, '打开的必须是传进去的那一单（B）');
+  assert.equal(findByText(view, '八月报销'), null, '不该打开列表里的另一张单（A）');
+  assert.equal(cards().length, 0, '进了详情页，屏幕上不该还留着列表卡片');
 });

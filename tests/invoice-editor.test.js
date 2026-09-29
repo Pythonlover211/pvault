@@ -56,6 +56,16 @@ async function waitFor(pred, label, rounds = 80) {
   throw new Error(`等了 ${rounds} 轮，${label} 还没出现`);
 }
 
+// 等一个**异步**条件成立（判据本身要读库）。与 waitFor 分开是因为它的判据是 await 出来的，
+// 写死轮数去等库，红出来的时候说不清是「没发生」还是「库还没写完」（与 reimburse-view.test.js 同）。
+async function waitForGone(getter, label, rounds = 80) {
+  for (let i = 0; i < rounds; i += 1) {
+    if (!(await getter())) return;
+    await tick();
+  }
+  throw new Error(`等了 ${rounds} 轮，${label} 还没发生`);
+}
+
 // 取一个**必须存在**的节点。写成 `null.click()` 的话，还没实现时红出来的是
 // 「TypeError: Cannot read properties of null」——那是崩溃，说不清哪条断言没成立。
 function need(node, label) {
@@ -106,6 +116,25 @@ function archivedHintLine() {
 function saveButton() {
   const hit = findAll(panelRoot(), n => n.tagName === 'BUTTON' && n.textContent === '保存')[0];
   return need(hit, '面板里没有「保存」按钮');
+}
+
+// 删除按钮：面板里唯一那个危险色按钮（`.btn-danger` 是仓里的显示约定，与「保存」的区分靠它）。
+function deleteButton() {
+  const hit = findAll(panelRoot(), n => n.tagName === 'BUTTON' && n.classList.contains('btn-danger'))[0];
+  return need(hit, '面板里没有「删除这张发票」按钮');
+}
+
+// 删除确认态的就地提示：**紧跟在删除按钮之前**的那个 .vault-error。
+// 与 archivedHintLine 同一立场——不按下标取（面板里已经有三个 .vault-error 了），
+// 而「紧贴着删除按钮」恰恰就是这条提示存在的理由本身，断它等于断需求。
+function deleteHintLine() {
+  const beforeDeleteBtn = n => {
+    const siblings = n.parentNode?.childNodes ?? [];
+    const i = siblings.indexOf(n);
+    return i >= 0 && i + 1 < siblings.length && siblings[i + 1].classList.contains('btn-danger');
+  };
+  const hit = findAll(panelRoot(), n => n.classList.contains('vault-error') && beforeDeleteBtn(n))[0];
+  return need(hit, '删除按钮旁边没有提示节点');
 }
 
 async function mkInvoice(id, number = NUMBER) {
@@ -298,4 +327,48 @@ test('先被拒、票被移出报销单后再勾一次：上一次的提示必�
   await waitFor(() => saved.length === 1, '保存成功回调');
   const inv = await getInvoice('inv-retry');
   assert.equal(inv.archived, true, '提示清空之后，这一次勾选必须真的能存进库');
+});
+
+test('删除确认：票在一张报销单里时，提示要带上那张单的标题并说清后果', async () => {
+  await mkInvoice('inv-del');
+  await createReimbursement({ invoiceIds: ['inv-del'], title: '9月报销', now: NOW });
+  await openEditorOn('inv-del');
+
+  // 面板刚打开、还没点删除：一个字都不该有（这一行挂在面板最底下，留着就是一条没有来由的提示）。
+  assert.equal(deleteHintLine().textContent, '', '还没点删除时不该有任何提示');
+
+  // 第一下只进确认态。规格 §8：删一张属于某单的票时界面要提示
+  // 「这张票在「X 报销」里，删掉后那一单会少一张」——X 是那张单的标题，这句是**读到**的，
+  // 不是界面自己编的（编的话用户根本不知道会牵动哪一张单）。
+  await deleteButton().click();
+  await waitFor(() => deleteHintLine().textContent !== '', '删除确认态的报销提示');
+  assert.match(deleteHintLine().textContent, /9月报销/, '提示里要出现那张报销单的标题');
+  assert.match(deleteHintLine().textContent, /少一张/, '要说清后果：那一单会少一张');
+  assert.ok(await getInvoice('inv-del'), '第一下只是确认，不许真删');
+
+  // 第二下才真删——提示不许把删除本身挡住。
+  await deleteButton().click();
+  await waitForGone(async () => db.get('invoices', 'inv-del'), '票从库里消失');
+});
+
+test('删除确认：读不到那张报销单时退回原文案，且删除照常能走完', async () => {
+  await mkInvoice('inv-orphan');
+  const { reimb } = await createReimbursement({ invoiceIds: ['inv-orphan'], title: '9月报销', now: NOW });
+  // 造出「票还指着一张不存在的单」：把 reimbursements 表里那条记录删掉，票不动。
+  // 老备份导入、手工改过的数据都可能长这样；而发票规格那条互斥保护恰恰允许这种票存在。
+  await db.removeAll([{ store: 'reimbursements', key: reimb.id }]);
+  assert.equal((await getInvoice('inv-orphan')).reimbursementId, reimb.id,
+    '前置条件：票上仍留着指向已删单的 reimbursementId');
+
+  await openEditorOn('inv-orphan');
+  await deleteButton().click();
+  await flush(3);
+
+  // 这句提示是**附加信息**：读不到那张单就不写，绝不能因为它自己出问题把删除卡住
+  // （删除是用户明确按了两次的动作，没有理由为一句提示失败）。
+  assert.equal(deleteHintLine().textContent, '', '读不到那张单就不加这句提示');
+  assert.equal(topErrorLine().textContent, '', '读库失败也不该把错误糊到面板顶上（这是正常的缺单，不是异常）');
+
+  await deleteButton().click();
+  await waitForGone(async () => db.get('invoices', 'inv-orphan'), '票照样被删掉');
 });

@@ -101,15 +101,30 @@ export function autoTitle(monthTs, count) {
   return `${when.getMonth() + 1}月报销 · ${n} 张`;
 }
 
+// 「这一单有没有可用的实际到账金额」——**唯一**的判据，界面与 diffCents 共用它。
+//
+// 为什么必须是一个**正向**判断（`Number.isSafeInteger`），而不是 `x !== null`：
+//  · `settledCents === null` 只认 null，可**缺字段**（`undefined`）同样意味着「没有可用的金额」。
+//    缺字段不是假想的：老备份按老结构导出、或手改过的记录，都可能带着一张已到账却没有
+//    settledCents 的单（docs/手动验证清单.md 的「旧备份往返的核对」那条就承认这种包存在）。
+//    只判 null 时它会一路走到 `formatCents(undefined)`，实测输出 **`¥NaN.NaN`** 直接上屏——
+//    而这正是规格 §5.3 明令禁止的（NaN 还会被 JSON.stringify 变成 null 跟着备份跑）。
+//  · **0 是合法值**（公司拒报、一分没报回来），所以不能写成 `!settledCents` 那种 falsy 判断，
+//    也不能写成 `x > 0`——那会把「真的给了 0 元」显示成「未填」。
+export function hasSettledCents(v) {
+  return Number.isSafeInteger(v);
+}
+
 // 差额 = 实际到账 − 发票合计。
-// settledCents 为 null 表示**没有可用的实际到账金额**：还没到账，或已到账但没填金额
-// （「只标记到账、不记收入」那条路落的就是 null，见规格 §8 的四组合表）。
+// settledCents 为 null（或 undefined / 非安全整数）表示**没有可用的实际到账金额**：还没到账，
+// 或已到账但没填金额（「只标记到账、不记收入」那条路落的就是 null，见规格 §8 的四组合表）。
 // 两种情形都**没有差额可谈**，返回 null，
 // 界面据此不显示那一行（没有差额就没有信息，显示「差额 ¥0.00」只是噪音）。
 // 差额可以为负（公司少报、扣税、抹零），也可以为正（多打了），两者都要如实显示。
 export function diffCents(settledCents, invoices) {
-  if (settledCents === null || settledCents === undefined) return null;
-  if (!Number.isSafeInteger(settledCents)) return null;
+  // 判据与界面那两处**同源**（hasSettledCents）：一处宽松一处严格的话，会出现「界面认为有金额、
+  // diffCents 认为没有」这种谁也说不清的组合，而它不会报错、只是屏幕上少一行或多一行。
+  if (!hasSettledCents(settledCents)) return null;
   return settledCents - sumCents(invoices);
 }
 

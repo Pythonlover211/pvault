@@ -114,6 +114,25 @@ export async function deleteTransaction(id) {
   await db.removeAll(entries);
 }
 
+/**
+ * 按 id 取单笔交易；没这条记录返回 null。
+ *
+ * 存在的理由：**有些地方要问的不是「这段时间有哪些账」，而是「那一笔还在不在」**。
+ * 眼下唯一的调用点是报销单详情页——它要判断自己生成的那笔收入是不是已经被删掉了
+ * （规格 §8 要求显示「那笔收入已被删除」，而报销到账的那笔收入可能落在任何时间点上）。
+ *
+ * 在此之前，仓库层只有按时间范围取的口子，于是一模一样的问题在 invoice-editor.js 里
+ * 只能用一次 **120 个月**的时间窗去猜（见那里 LINKED_LOOKBACK_MONTHS 的注释：票往往是
+ * 过后才挂上去的，窗口开小了会把还在的账误报成「已不存在」——那是没有这条路时的退路）。
+ * 新调用点请用这个函数，别再拉一个宽到离谱的时间窗回来自己 find。
+ */
+export async function getTransaction(id) {
+  if (!id) return null;
+  // 空 id 直接返回，不把 undefined 当主键塞给 db.get：那是英文的 DataError，而调用方的
+  // 语义只是「没有 id 就没有这笔账」——与 reimburse-store.getReimbursement 同一处置。
+  return (await db.get('txns', id)) ?? null;
+}
+
 // end 为开上界，调用方应传「下月/次日 0 点」（与 dates.js 的 monthRange/dayRange 的 end 一致）
 export async function listTransactionsInRange(start, end) {
   return db.getByRange('txns', 'by_occurredAt', start, end);

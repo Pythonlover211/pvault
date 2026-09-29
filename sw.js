@@ -138,7 +138,19 @@
 // **通则**：改的不是 sw.js 自己（例外不适用），浏览器只认 sw.js 这个文件的字节变没变——
 // 不 +1 就永远不触发 install，装着 v24 的设备在线也一直吃旧缓存，这两条修补等于没上线。
 // v24 已在设备上服役过，不复用它的名字（理由同上：服役过的缓存名里 addAll 中途失败会留下半新半旧的一份）。
-const CACHE = 'pvault-v25';
+// v26：整分支终审后的最后一批修补。改的**不是清单**，而是几个**已经在清单里**的文件的内容：
+//  · `app/ui/reimburse-view.js`（「实际到账」的两处判据改成 `hasSettledCents` 的正向判断——缺
+//    `settledCents` 字段的脏记录曾会让 `¥NaN.NaN` 真上屏；详情页新增「那笔收入已被删除」的提示）；
+//  · `app/ui/invoice-editor.js`（删除确认态里补一句「这张票在「X」里，删掉后那一单会少一张」）；
+//  · `app/reimburse-store.js`（`settleReimbursement` 拒绝负数金额）；
+//  · `app/reimburse-model.js`（新增导出 `hasSettledCents`，`diffCents` 改用它，行为不变）；
+//  · `app/store.js`（新增按 id 取单笔交易的 `getTransaction`——上面那条「收入还在不在」要用）。
+// **这一版没有任何一条新的 ASSETS**（这五个文件全都在清单里，`store.js` 与 `reimburse-model.js`
+// 从首屏就一直在）。所以 +1 的依据是开头那条**通则**：改的不是 `sw.js` 自己（例外不适用），
+// 而浏览器只认 `sw.js` 这个文件的字节变没变——不 +1 就永远不触发 install，已经装着 v25 的设备
+// 在线也一直吃旧缓存，这一批修补等于没上线（其中一条就是「NaN 不许上屏」）。
+// v25 已在设备上服役过，不复用它的名字（理由同上：服役过的缓存名里 addAll 中途失败会留下半新半旧的一份）。
+const CACHE = 'pvault-v26';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。

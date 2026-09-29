@@ -26,6 +26,7 @@ import {
 import * as db from '../app/db.js';
 import { STORES } from '../app/schema.js';
 import { saveInvoice } from '../app/invoice-store.js';
+import { deleteTransaction } from '../app/store.js';
 import {
   createReimbursement, submitReimbursement, settleReimbursement, getReimbursement
 } from '../app/reimburse-store.js';
@@ -609,4 +610,79 @@ test('详情：提交失败时把中文错误显示出来，而不是漏成 unha
     '提交失败不能漏成 unhandled rejection');
   await waitFor(() => findByText(document.body, '存储空间') !== null, '错误提示');
   assert.ok(findByText(document.body, '待提交'), '写失败时状态不能变');
+});
+
+test('脏数据：已到账但**缺 settledCents 字段**的单写「未填」，屏幕上不许出现 NaN', async () => {
+  await mkInvoice('i1', 302500);
+  const r = await mkDraft('缺金额的脏单', ['i1']);
+  await submitAndGet(r.id);
+  await settleAndGet(r.id, 302500);
+
+  // 造出「已到账、但整条 settledCents 字段都没有」的记录：老备份导入（backup-store 对
+  // invoices / reimbursements 没有字段级校验）、手改过的库都长这样——docs/手动验证清单.md
+  // 的「旧备份往返的核对」那条承认这种包存在。
+  // 它要的是 **undefined**（缺字段），而不是 null：diffCents 早就把两者都当成「没有可用的
+  // 实际到账金额」，而两处显示判据一度只写了 `=== null`，于是这条记录会走到
+  // formatCents(undefined) → 屏幕上出现 `¥NaN.NaN`，正是规格 §5.3 明令禁止上屏的东西。
+  const dirty = await getReimbursement(r.id);
+  delete dirty.settledCents;
+  await db.put('reimbursements', dirty);
+  assert.equal('settledCents' in (await getReimbursement(r.id)), false, '前置条件：字段真的没了');
+
+  await renderList();
+  // NaN 那条断言放在前面：它是**规格 §5.3 的硬要求**（NaN 不许上屏），而「未填」是呈现口径。
+  // 顺序反过来时，只判 `=== null` 的实现红出来的是「没找到『未填』」，看的人还得自己去猜
+  // 屏幕上到底写了什么；先断 NaN，红出来的就是根因本身。
+  assert.equal(findByText(document.body, 'NaN'), null,
+    `列表上不许出现 NaN，实际屏幕上是「${document.body.textContent}」`);
+  assert.ok(findByText(document.body, '未填'), '列表卡要写「实际到账 未填」');
+
+  await openDetail('缺金额的脏单');
+  assert.equal(findByText(document.body, 'NaN'), null,
+    `详情页不许出现 NaN，实际屏幕上是「${document.body.textContent}」`);
+  assert.ok(findByText(document.body, '未填'), '详情页也要写「未填」');
+  // 没有可用的实到金额就没有差额可谈（与 null 那条用例同一口径）。
+  assert.equal(findByText(document.body, '差额'), null, '缺字段时也不该冒出差额行');
+  // 0 是合法值，别把「没填」的修法做成 falsy 判断（那样真的 0 元会被显示成「未填」）。
+  const zero = await mkDraft('拒报的单', []);
+  await submitAndGet(zero.id);
+  await settleAndGet(zero.id, 0);
+  await backToList();
+  await openDetail('拒报的单');
+  assert.equal(findByText(document.body, '未填'), null, '显式的 0 元是合法值，不能显示成「未填」');
+});
+
+test('详情：那一单的收入账还在时不提示；被删掉之后显示「那笔收入已被删除」', async () => {
+  await mkInvoice('i1', 302500);
+  await mkInvoice('i2', 55500);
+  const withTxn = await mkDraft('收入被删的单', ['i1']);
+  await submitAndGet(withTxn.id);
+  await settleReimbursement(withTxn.id, {
+    settledCents: 302500, createTxn: true, now: NOW + 2000
+  });
+  const settled = await getReimbursement(withTxn.id);
+  assert.ok(settled.txnId, '前置：这一单生成过收入账（否则测的是另一条分支）');
+
+  // ① 收入还在：一个字都不该说。少了这一条，「永远显示那句提示」的实现也是绿的。
+  await renderList();
+  await openDetail('收入被删的单');
+  assert.equal(findByText(document.body, '那笔收入已被删除'), null,
+    '收入账还在时不该说它被删了（那会让用户以为账目对不上）');
+
+  // 用户从记账侧把那笔收入删掉——这是被允许的（规格 §8），此时报销单的 txnId 成了悬空引用。
+  await deleteTransaction(settled.txnId);
+  await backToList();
+  await openDetail('收入被删的单');
+  assert.ok(findByText(document.body, '那笔收入已被删除'),
+    'txnId 指向的交易不在了，详情页必须说出来（而不是显示一个点不开的链接）');
+
+  // ② 没生成过收入的单（createTxn:false 那条路 → txnId 为 null）：什么都不显示。
+  const noTxn = await mkDraft('只标记到账的单', ['i2']);
+  await submitAndGet(noTxn.id);
+  await settleAndGet(noTxn.id, null);
+  assert.equal((await getReimbursement(noTxn.id)).txnId, null, '前置：这一单没生成过收入');
+  await backToList();
+  await openDetail('只标记到账的单');
+  assert.equal(findByText(document.body, '那笔收入已被删除'), null,
+    '没生成过收入的单不该出现这句提示');
 });

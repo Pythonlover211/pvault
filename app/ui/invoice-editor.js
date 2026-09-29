@@ -13,6 +13,10 @@ import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
 // 关联账目要读流水与分类表，走仓库层（视图不直接碰 db.js）。
 import * as store from '../store.js';
+// 删除确认要说出「这张票在哪张报销单里」（规格 §8）。reimburse-store 早就在**首屏静态依赖闭包**里
+// ——ui/invoice-view.js 静态 import 了它（createReimbursement / addInvoicesTo / getReimbursement），
+// 而 invoice-view 又是本文件的父级，所以这一行不会让首屏多加载任何模块，也不必走动态 import。
+import { getReimbursement } from '../reimburse-store.js';
 
 let activeSheet = null;
 
@@ -106,6 +110,13 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
         onclick: () => { removeInvoice(); }
       })
     : null;
+  // 删除确认态的就地提示（规格 §8：这张票在「X」里时要说清「删掉后那一单会少一张」）。
+  // 为什么是**按钮旁边**的一个节点、而不是顶部的 errorNode：删除按钮在面板最底部，
+  // 而顶部那条在手机上落在视野之外——用户只会看到按钮文字变了、不知道这一下会牵动哪张单。
+  // 与「仅存档」互斥那条提示同一处置（见 archivedHint），类名复用 .vault-error（有现成规则，
+  // 新类名会被 scripts/check-theme-css.mjs 的 ⑭ 判成「app 里用到、styles 里没有规则」）。
+  // 内联 min-height:0 同理：不留着它的话，没提示时也会空出一行。
+  const deleteHint = id ? el('div', { class: 'vault-error', style: 'min-height:0' }) : null;
 
   const sheet = openSheet({
     title: id ? '编辑发票' : '新建发票',
@@ -559,6 +570,29 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     delArmed = false;
     if (delTimer) { clearTimeout(delTimer); delTimer = null; }
     if (deleteBtn) deleteBtn.textContent = '删除这张发票';
+    // 提示只在确认态那几秒里成立（它说的是「再点一次就会删掉那一单里的一张」）。
+    // 确认态一退，它就成了一句没有来由的话——按钮已经回到「删除这张发票」，旁边却还在说要少一张。
+    if (deleteHint) deleteHint.textContent = '';
+  }
+
+  // 确认态里补一句报销相关的提示（规格 §8）。它是**附加信息**：读不到那张单（被别处删了、
+  // 或库读失败）就直接不写，退回不带这句的原文案——绝不能因为一句提示把删除功能卡住。
+  async function warnIfInReimbursement() {
+    const reimbId = state.reimbursementId;
+    if (!reimbId || !deleteHint) return;
+    try {
+      const reimb = await getReimbursement(reimbId);
+      // 单读不到、或标题是空的（手改过的脏记录）：不加这句。
+      const title = String(reimb?.title ?? '').trim();
+      if (!title) return;
+      // 这句提示是**异步**回来的一小段之后才写的，而用户完全可能在那之前已经把确认态退掉了
+      // （3 秒超时、或点了第二次真的删了）。那时再写上去，屏幕上就是一句与当前状态相反的话，
+      // 比不提示更误导——所以写之前再确认一次「还在确认态里」。
+      if (!delArmed) return;
+      deleteHint.textContent = `这张票在「${title}」里，删掉后那一单会少一张`;
+    } catch (err) {
+      console.error('读取报销单失败（删除提示）', err);
+    }
   }
 
   async function removeInvoice() {
@@ -584,6 +618,11 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
     if (!delArmed) {
       delArmed = true;
       deleteBtn.textContent = '再点一次就删除';
+      // 上一次确认态残留的提示先清掉（进确认态时它一定已经被 disarmDelete 清过，这一行是护栏）。
+      if (deleteHint) deleteHint.textContent = '';
+      // 不 await：这句提示要读一次库，而**用户点第二下不该等它**（3 秒的确认窗口是给手指的，
+      // 不是给一次读库的）。它自己吞掉异常、也自己检查还在不在确认态。
+      warnIfInReimbursement();
       // 几秒后自动复原：用户点了第一次又去改别的字段、然后顺手点「保存」是常见路径，
       // 一个一直亮着「再点一次就删除」的按钮会让下一次误触直接删掉发票。
       delTimer = setTimeout(disarmDelete, 3000);
@@ -660,6 +699,8 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       txnBox
     ]),
     el('button', { class: 'btn btn-primary', type: 'button', text: '保存', onclick: submit }),
+    // 就地的报销提示紧贴在删除按钮上方（那一行才是用户此刻在看的地方）。
+    deleteHint,
     deleteBtn
   );
 
