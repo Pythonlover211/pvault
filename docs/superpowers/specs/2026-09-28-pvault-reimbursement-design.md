@@ -89,7 +89,15 @@
 - `app/backup.js` 的 `buildBackup` 打包它、`summarizeBackup` 计数它；
 - **不要**加进 `REQUIRED_ARRAYS`——那张表的含义是「老备份必须也有」，加进去会把所有既有备份判成坏文件（发票那次踩过同一个坑，`backup.js:4` 有注释）。
 
-**第二个坑（动手前核实出来的）**：`ARRAY_STORES` 里现在**没有** `reimbursements`。也就是说**今天导出的备份不带报销单**。计划 4 建了表、规格 8.1 要求进备份，但那一句没落地。本计划补上，并且要在手动验证清单里补一条**跨版本**的往返项：用**本计划之前**的版本导出一份备份（其中没有 `reimbursements` 键），导入新版本，确认报销单表被清空而不是报错（`arrayOrEmpty` 兜底）。
+**第二个坑（动手前核实出来的）**：`ARRAY_STORES` 里现在**没有** `reimbursements`。也就是说**今天导出的备份不带报销单**。计划 4 建了表、规格 8.1 要求进备份，但那一句没落地。本计划补上，并且要在手动验证清单里补一条**跨版本**的往返项：用**本计划之前**的版本导出一份备份（其中没有 `reimbursements` 键），导入新版本，确认**不报错**，且本机原有的报销单**被保留**。
+
+> **关于「保留」而不是「清空」（2026-09-28 实现时实测修正）**：本条最初写的是「确认报销单表**被清空**而不是报错」，**那句是错的**。导入侧的清空判据是 `Array.isArray(data[name])`（`backup-store.js` 的 `clears`），老备份里连这个键都没有 → 不进清理清单 → 本机现有的报销单**照旧留着**。这与 `invoices` / `receivables` 等**同属 `ARRAY_STORES` 的表**一致，也是 `docs/手动验证清单.md` 里白纸黑字那条纪律的体现：「没有替补的东西，一律不删」——把老备份导入一台已有数据的设备，不该把本机数据抹掉。
+>
+> **`settings` 是例外，别把它算进「一致」里**：它走的是无条件的 `clears.push('settings')`（`backup-store.js:637`），整表覆盖——导入一份老备份之后，本机多出来的设置行会被清掉。这条例外是有意的（设置是整表语义），但它意味着「所有表都保留本机」这句话是错的。
+>
+> 容易混的是 `arrayOrEmpty`：它只在两处起作用——导入循环里的 `for...of` 兜底（`:496`），以及 `invoiceFiles` 的清理判据（`:636`）；**对 `ARRAY_STORES` 里的表，它不参与 `clears`**（那里是 635 行的 `Array.isArray` 直接判）。所以别把两处判据混成一句。
+>
+> 还有一处容易推错方向：**老备份永远不会被「规范化」**，它是既成的密文。导出侧的 `buildBackup` 用 `?? []` 兜底，作用是**保证今后导出的每一份包都带这个键**（新包键在、值为 `[]` 时**会**清表，与老包处置相反）——这两种包不是一回事，也是 `hasInvoices` 那套字段存在的理由。
 
 ---
 
@@ -328,7 +336,7 @@ export async function addTransaction(input, { extraEntries = [] } = {})
 |---|---|
 | 纯逻辑 | `node --test --test-isolation=none` 新增 `tests/reimburse-model.test.js`：状态机每个函数的**真值与假值两侧**、`autoTitle` 的跨年/跨月/0 张、`sumInvoiceCents` 的脏数据（`null` / 字符串 / `NaN` 成分）、`diffCents` 的正负与 null、`invoiceStatus` / `invoiceBadge` 的六种组合（含 `reimb` 为 null） |
 | 存储层 | 新增 `tests/reimburse-store.test.js`，用 `tests/helpers/fake-browser.js` 装内存环境：创建/加票/移票/提交/到账/删除的完整流转、**发票回退到待报销**、跳过已在别单的票、拒绝仅存档、删除保护的两个分支、以及**事务原子性**（注入一次写失败，确认库里没有半截状态） |
-| 备份 | 扩 `tests/backup.test.js` / `backup-store.test.js`：`reimbursements` 进包、老备份（无该键）导入不报错且表被清空、往返后字段一致 |
+| 备份 | 扩 `tests/backup.test.js` / `backup-store.test.js`：`reimbursements` 进包、老备份（无该键）导入**不报错且本机报销单被保留**（缺键即不进 `clears`，与其余所有表一致）、往返后字段一致 |
 | 真实渲染 | CDP 驱动（模拟器或本机无头浏览器，后者更轻，见 `pvault-tools/accept-backup.mjs` 的做法）：列表分组、多选、发起报销、到账 sheet、差额行 |
 | 真机 | `docs/手动验证清单.md` 加「报销」小节 |
 
@@ -361,6 +369,6 @@ export async function addTransaction(input, { extraEntries = [] } = {})
 | 到账记出第二笔收入 | 三处写入收在一个事务（§6.3）；探针里专门注入失败验原子性 |
 | 发票被删后报销单合计与公司单据对不上 | 详情页的合计是**现算**的（`listInvoicesOf`），不做缓存——宁可显示当下的真相 |
 | 提交后想改票 | 本计划**不做撤回**：`canEdit` 只放 draft。理由见 §5.1；真需要时再加，代价是「用户提交错了只能删单重建」 |
-| `ARRAY_STORES` 补 reimbursements 影响既有备份 | 加键不改格式版本；老备份没这个键时 `arrayOrEmpty` 兜底成空数组、表被清空（与其他表一致），专门写测试钉住 |
+| `ARRAY_STORES` 补 reimbursements 影响既有备份 | 加键不改格式版本；老备份没这个键时**不进 `clears`**、本机报销单被保留——判据是 `Array.isArray(data[name])`（`backup-store.js:635`），缺键即不清，与 `invoices` / `receivables` 等同属该清单的表一致（**`settings` 是例外**，它无条件整表覆盖）。`arrayOrEmpty` 对这批表**不参与** `clears`，它只在导入循环的 `for...of` 兜底与 `invoiceFiles` 的判据（`:636`）处起作用。专门写测试钉住「导出带上」与「往返后字段一致」两端 |
 | 分段切换让顶部变挤 | 分段做得很矮（一行 pill），搜索框与筛选行不动；真机上实测后再调 |
 | 新增视图的渲染竞态 | 照 `invoice-view.js` 的 `viewSeq` 写法自带序号（§7.6） |
