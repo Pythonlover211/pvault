@@ -88,7 +88,18 @@
 // 检查拒绝），import 链一断是整个 app 白屏，不只是发票面板。
 // 版本号这次直接 +1：改的是 invoice-view.js、**不是 sw.js 自己**，开头那条例外不适用，按通则
 // 「每次改代码都必须把 CACHE +1」办即可。
-const CACHE = 'pvault-v19';
+// v20：报销单的界面与数据层进预缓存清单 —— 三个文件：ui/reimburse-view.js（任务 8）、
+// ui/settle-sheet.js（任务 9）、reimburse-store.js。**这三个与前几次的形状不一样**：
+// 它们不在首屏静态 import 闭包里 —— ui/reimburse-view.js 是被 ui/invoice-view.js **动态** import 的，
+// 而 boot-order.test.js 的守卫算的是静态 from 的闭包，所以它**不会**提醒你漏了谁（这正是这次差点漏掉的原因）。
+// 漏掉的后果与 v13 / v14 / v16 / v19 逐字相同，只是触发条件更窄：已经装着旧缓存的设备在**离线**时
+// 切到「报销单」那一段，动态 import 去取那个模块 → 缓存未命中 → 网络断 → 回退 index.html →
+// 模块脚本被 MIME 检查拒绝执行 → 整段打不开。在线能用、离线白屏，而用户只在没网的时候才碰上。
+// 三个一起补，与产生依赖的那次提交一起走（v14 / v16 / v17 / v19 同一条纪律），不等任务 11 的收尾。
+// CACHE 这次**必须** +1：改的是 ui/ 下的文件、不是 sw.js 自己，开头那条例外不适用；
+// 而且 v19 是任务 6 加进去的、已经在设备上服役过一轮，往那个名字里 addAll 中途失败会留下
+// 一份半新半旧的缓存（见开头那一段）。
+const CACHE = 'pvault-v20';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -131,6 +142,7 @@ const ASSETS = [
   './app/receivable.js',
   './app/recovery-code.js',
   './app/reimburse-model.js',
+  './app/reimburse-store.js',
   './app/router.js',
   './app/schema.js',
   './app/store.js',
@@ -154,7 +166,9 @@ const ASSETS = [
   './app/ui/keypad.js',
   './app/ui/ledger-home.js',
   './app/ui/receivable-view.js',
+  './app/ui/reimburse-view.js',
   './app/ui/settings-sheet.js',
+  './app/ui/settle-sheet.js',
   './app/ui/sheet.js',
   './app/ui/stats-view.js',
   './app/ui/vault-editor.js',

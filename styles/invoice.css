@@ -159,3 +159,58 @@
 .inv-link-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 金额那一格不参与压缩。 */
 .inv-link-row span:last-child { flex: none; }
+
+/* —— 报销单的列表与详情（app/ui/reimburse-view.js）——
+   列表按状态分组、每张单一张可点的卡；详情是「票 + 合计 + 时间线 + 操作」四段。
+   令牌只用 base.css 里**确实存在**的那几个：边框是 --border（本仓没有 --line，写不存在的
+   变量名不会报错，只在深色皮肤下静默不变色）。差额那两行用次要灰 --text-2 而不是 --accent：
+   差额为正为负都合法（抹零、扣税、多打），它不是错误、也不是要用户马上处理的事，
+   占掉强调色只会把真正该被看见的东西压下去；而且 --accent 在本仓是**蓝色**。 */
+.reimb-card {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.reimb-card:active { background: var(--surface-2); }
+.rc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rc-title { font-size: var(--font-md); }
+/* 状态、合计、差额是同一层级的次要信息，一起退到 --font-sm；标题那行才是主信息。 */
+.rc-status { flex: none; font-size: var(--font-sm); color: var(--text-2); }
+.rc-meta { margin-top: 4px; font-size: var(--font-sm); color: var(--text-2); }
+.rc-diff { margin-top: 4px; font-size: var(--font-sm); color: var(--text-2); }
+.rd-title { font-size: var(--font-lg); }
+/* 票一行一条，行间只用一条 --border 细线分开、不铺底色。 */
+.rd-inv { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+/* 整行可点的主按钮：清掉按钮默认底色、让字体继承（与 .inv-link-row 同理）。 */
+.rd-inv-main {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--font-md);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rd-inv-amt { flex: none; font-size: var(--font-sm); color: var(--text-2); }
+.rd-total { display: flex; justify-content: space-between; padding: 6px 0; font-size: var(--font-md); }
+.rd-diff { font-size: var(--font-sm); color: var(--text-2); }
+.rd-timeline { margin: 12px 0; }
+.rd-node { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: var(--font-sm); }
+/* 未发生的节点灰显：还没走到这一步，一眼看得出来。 */
+.rd-node.is-pending { opacity: .45; }
+.rd-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+/* 时间靠右：三个节点的时间右对齐才能一眼比出先后。 */
+.rd-time { margin-left: auto; font-size: var(--font-sm); color: var(--text-2); }
+/* 操作按钮不换行：手机上换行会把「删除」挤到下一行、离它要删的那张单更远。 */
+.rd-actions { display: flex; gap: 8px; flex-wrap: nowrap; margin-top: 12px; }
