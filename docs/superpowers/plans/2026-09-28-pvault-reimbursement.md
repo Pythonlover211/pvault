@@ -1772,6 +1772,18 @@ git commit -m "feat(invoice): 发票 Tab 加分段切换与多选发起报销"
 **文件：**
 - 创建：`app/ui/reimburse-view.js`
 - 修改：`styles/` 下发票相关的 CSS
+- 修改：`sw.js`（**ASSETS 补三个新模块，`CACHE` 再 +1 → `'pvault-v20'`**）
+
+> **为什么 sw.js 这一档必须跟着本提交走**（任务 9 的审查发现的）：`reimburse-view.js` 静态
+> import 了 `./settle-sheet.js` 与 `../reimburse-store.js`，而它自己是被 `invoice-view.js`
+> **动态** import 的——它**不在首屏 import 闭包里**，所以 `tests/boot-order.test.js` 的守卫
+> **不会**提醒你漏了它。但漏了的后果一样：已经装着旧缓存的设备**离线**切到「报销单」那一段时，
+> 动态 import 要去网络取一个没缓存的文件 → 整段打不开。在线能用、离线白屏，而用户只在没网的
+> 时候才会碰上，排查要绕一圈。
+> 三个都要补：`./app/ui/reimburse-view.js`、`./app/ui/settle-sheet.js`、`./app/reimburse-store.js`
+> （`./app/reimburse-model.js` 任务 6 已经加进去了）。`CACHE` 要 +1 而不是复用 `'pvault-v19'`
+> ——往服役中的缓存名里 `addAll`，中途失败会留下半新半旧的缓存（见 `sw.js` 开头那段）。
+> 任务 11 的收尾因此只剩**核对**。
 
 - [ ] **步骤 1：编写实现**
 
@@ -1928,7 +1940,11 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
     ]),
     r.status === STATUS.SETTLED ? el('div', { class: 'rd-total' }, [
       el('span', { text: '实际到账' }),
-      el('span', { text: formatCents(r.settledCents ?? 0, { symbol: true }) })
+      // settledCents 为 null = 这单是「只标记到账、不记收入」标掉的，用户从没填过金额。
+      // **不能写成 `?? 0`**：那会让详情页断言「实际到账 ¥0.00」，而用户一个字都没输过。
+      // 在记账 app 里「没填」与「是 0 元」必须能分开——settledCents 的默认值当初从 0 改成
+      // null 就是为这件事（任务 9 的审查发现 store 里有一行又把它们合并回去了，已修）。
+      el('span', { text: r.settledCents === null ? '未填' : formatCents(r.settledCents, { symbol: true }) })
     ]) : null,
     diff ? el('div', { class: 'rd-diff', text: `差额 ${formatCents(diff, { symbol: true })}` }) : null,
 
