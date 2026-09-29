@@ -774,7 +774,7 @@ test.beforeEach(async () => { await clearAll(); });
 test('createReimbursement：建单并把票挂上去', async () => {
   await mkInvoice({ id: 'i1' });
   await mkInvoice({ id: 'i2' });
-  const r = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: '9月报销 · 2 张', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: '9月报销 · 2 张', now: NOW });
 
   assert.ok(r.id, '要返回新建的报销单');
   assert.equal(r.status, 'draft');
@@ -803,12 +803,12 @@ test('createReimbursement：整批写入只发起一个事务', async () => {
 test('createReimbursement：已在别的报销单里的票被跳过，其余照常加入', async () => {
   await mkInvoice({ id: 'i1' });
   await mkInvoice({ id: 'i2' });
-  const first = await createReimbursement({ invoiceIds: ['i1'], title: '第一单', now: NOW });
-  const second = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: '第二单', now: NOW });
+  const { reimb: first } = await createReimbursement({ invoiceIds: ['i1'], title: '第一单', now: NOW });
+  const { reimb: second, skipped: secondSkipped } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: '第二单', now: NOW });
 
   assert.equal((await db.get('invoices', 'i1')).reimbursementId, first.id, 'i1 应当还在第一单里，不能被抢走');
   assert.equal((await db.get('invoices', 'i2')).reimbursementId, second.id);
-  assert.deepEqual(second.skipped, ['i1'], '被跳过的票要报出来，界面据此提示张数');
+  assert.deepEqual(secondSkipped, ['i1'], '被跳过的票要报出来，界面据此提示张数');
 });
 
 test('createReimbursement：仅存档的票被拒绝', async () => {
@@ -821,14 +821,14 @@ test('createReimbursement：仅存档的票被拒绝', async () => {
 });
 
 test('createReimbursement：一张票都没有也允许（用户可能先建单）', async () => {
-  const r = await createReimbursement({ invoiceIds: [], title: '空的', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: [], title: '空的', now: NOW });
   assert.ok(r.id);
   assert.deepEqual(await listInvoicesOf(r.id), []);
 });
 
 test('renameReimbursement：草稿能改名，提交后拒绝', async () => {
   await mkInvoice({ id: 'i1' });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: '旧名', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: '旧名', now: NOW });
   await renameReimbursement(r.id, '新名');
   assert.equal((await getReimbursement(r.id)).title, '新名');
 
@@ -839,7 +839,7 @@ test('renameReimbursement：草稿能改名，提交后拒绝', async () => {
 test('addInvoicesTo / removeInvoiceFrom：加票与移票', async () => {
   await mkInvoice({ id: 'i1' });
   await mkInvoice({ id: 'i2' });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
 
   const added = await addInvoicesTo(r.id, ['i2']);
   assert.deepEqual(added.skipped, []);
@@ -864,7 +864,7 @@ test('listPendingInvoices：排除仅存档与已在单里的票', async () => {
 test('listInvoicesOf / listReimbursements：排序稳定', async () => {
   await mkInvoice({ id: 'i1' });
   await mkInvoice({ id: 'i2' });
-  const r = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
   const two = await listInvoicesOf(r.id);
   assert.deepEqual(two.map(i => i.id), ['i2', 'i1'], '与 listInvoices 同一套排序：开票日期倒序、同日按录入时间倒序');
 
@@ -1081,7 +1081,7 @@ git commit -m "feat(reimburse): 报销单数据层的读写（建单/加票/移�
 ```js
 test('submitReimbursement：草稿→已提交，记下 submittedAt', async () => {
   await mkInvoice({ id: 'i1' });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   const after = await submitReimbursement(r.id, NOW + 1000);
 
   assert.equal(after.status, 'submitted');
@@ -1091,7 +1091,7 @@ test('submitReimbursement：草稿→已提交，记下 submittedAt', async () =
 
 test('submitReimbursement：已提交的不能再提交', async () => {
   await mkInvoice({ id: 'i1' });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
   await assert.rejects(() => submitReimbursement(r.id, NOW), /不能重复提交|已提交/);
 });
@@ -1099,7 +1099,7 @@ test('submitReimbursement：已提交的不能再提交', async () => {
 test('settleReimbursement：三处写入只发起一个事务，且都落地', async () => {
   await mkInvoice({ id: 'i1', amountCents: 300000 });
   await mkInvoice({ id: 'i2', amountCents: 2500 });
-  const r = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
   await db.put('accounts', { id: 'acc-1', name: '工资卡' });
 
@@ -1126,7 +1126,7 @@ test('settleReimbursement：三处写入只发起一个事务，且都落地', a
 
 test('settleReimbursement：只标记到账时不生成交易', async () => {
   await mkInvoice({ id: 'i1', amountCents: 1000 });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
   const settled = await settleReimbursement(r.id, {
     settledCents: 1000, accountId: null, categoryId: null, createTxn: false, now: NOW
@@ -1138,7 +1138,7 @@ test('settleReimbursement：只标记到账时不生成交易', async () => {
 
 test('settleReimbursement：草稿不能直接到账', async () => {
   await mkInvoice({ id: 'i1' });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await assert.rejects(
     () => settleReimbursement(r.id, { settledCents: 1, createTxn: false, now: NOW }),
     /还没提交|不能标记到账/
@@ -1148,7 +1148,7 @@ test('settleReimbursement：草稿不能直接到账', async () => {
 test('deleteReimbursement：发票回到待报销，报销单消失', async () => {
   await mkInvoice({ id: 'i1' });
   await mkInvoice({ id: 'i2' });
-  const r = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
 
   const before = transactionCount();
   await deleteReimbursement(r.id, { deleteTxn: false });
@@ -1162,7 +1162,7 @@ test('deleteReimbursement：发票回到待报销，报销单消失', async () =
 
 test('deleteReimbursement：deleteTxn 为真时连那笔收入一起删', async () => {
   await mkInvoice({ id: 'i1', amountCents: 5000 });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
   const settled = await settleReimbursement(r.id, {
     settledCents: 5000, accountId: null, categoryId: null, createTxn: true, now: NOW
@@ -1174,7 +1174,7 @@ test('deleteReimbursement：deleteTxn 为真时连那笔收入一起删', async 
 
 test('deleteReimbursement：deleteTxn 为假时留下那笔收入', async () => {
   await mkInvoice({ id: 'i1', amountCents: 5000 });
-  const r = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
   const settled = await settleReimbursement(r.id, {
     settledCents: 5000, accountId: null, categoryId: null, createTxn: true, now: NOW
@@ -2294,5 +2294,5 @@ git commit -m "chore(reimburse): SW 缓存升到 v19、手动验证清单加「�
 
 **占位符扫描**：无「待定 / TODO / 后续实现 / 类似任务 N」。唯一的「实现时先读该文件」出现在任务 10 步骤 1、2 与任务 7 步骤 5——它们的成对内容（要复用哪个已有机制、要把哪些变量名换成实际令牌）都写明了具体做法，不是「补充细节」。
 
-**类型一致性**：`createReimbursement` 返回 `{ reimb, skipped }` **两件**——任务 4 最初写的是 `{ ...reimb, skipped }`（把 skipped 并进实体），复审时改掉了：那会让同一个实体有两种形状（`getReimbursement` 读回来的是纯记录，规格字段表里没有 skipped），而照抄返回值字段去写库的代码（改名、改状态那类）会把 skipped 一起写进库，且没有任何地方会报错。现在测试也钉住了这一点（`Object.keys(created)` 与「库里那条没有 skipped」）。任务 7 只用它的返回对象存在与否，未读 `skipped`——**但界面应当读它**：若 `skipped` 非空要提示「N 张已经在别的报销单里」。任务 7 步骤 4 的代码块里已写明这一点。其余函数签名在本计划内前后一致：`settleReimbursement(id, opts)` 的参数名在任务 5 与任务 9 一致；`listInvoicesOf` / `listPendingInvoices` / `getReimbursement` 三处的用途与返回形状一致。另：复审后 `reimburse-store.js` 的四个写函数不再各自 `db.putAll`，统一走内部函数 `writeAll`（一处发起事务、一处把 `QuotaExceededError` 这类英文异常翻成中文，口径照 `invoice-store` 的 `putInvoice`），任务 5 的 submit / settle 也照这个走。
+**类型一致性**：`createReimbursement` 返回 `{ reimb, skipped }` **两件**——任务 4 最初写的是 `{ ...reimb, skipped }`（把 skipped 并进实体），复审时改掉了：那会让同一个实体有两种形状（`getReimbursement` 读回来的是纯记录，规格字段表里没有 skipped），而照抄返回值字段去写库的代码（改名、改状态那类）会把 skipped 一起写进库，且没有任何地方会报错。现在测试也钉住了这一点（`Object.keys(created)` 与「库里那条没有 skipped」）。任务 7 只用它的返回对象存在与否，未读 `skipped`——**但界面应当读它**：若 `skipped` 非空要提示「N 张已经在别的报销单里」。任务 7 步骤 4 的代码块里已写明这一点。计划里**所有** `createReimbursement` 的调用点都已按新形状解构：绑定返回值的地方一律是 `const { reimb: X } = await createReimbursement(...)`，后面的 `X.id` / `X.title` 一行都不用动；唯一还要读 `skipped` 的那处（任务 4 测试块「已在别的报销单里的票被跳过」）是 `const { reimb: second, skipped: secondSkipped } = ...`，把 `skipped` 拿到外层来断言——它验的仍是「被跳过的票要报出来」，语义没变。四处不绑定返回值的地方（任务 4 的「整批写入只发起一个事务」、「仅存档的票被拒绝」里的 `assert.rejects`、「listPendingInvoices」，以及任务 7 步骤 4）本来就只关心「它跑完没有」，不读返回值，因此不受形状影响。其余函数签名在本计划内前后一致：`settleReimbursement(id, opts)` 的参数名在任务 5 与任务 9 一致；`listInvoicesOf` / `listPendingInvoices` / `getReimbursement` 三处的用途与返回形状一致。另：复审后 `reimburse-store.js` 的四个写函数不再各自 `db.putAll`，统一走内部函数 `writeAll`（一处发起事务、一处把 `QuotaExceededError` 这类英文异常翻成中文，口径照 `invoice-store` 的 `putInvoice`），任务 5 的 submit / settle 也照这个走。
 
