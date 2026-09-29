@@ -1515,6 +1515,14 @@ git commit -m "feat(invoice): 补上第五个筛选「已报销」，状态标�
 
 ### 任务 7：发票 Tab 的分段切换与多选
 
+> **⚠️ 执行顺序修正（实机核对后加的）**：任务 7 → 8 → 9 这个**书写顺序不是可执行顺序**。
+> 任务 7 的动态 `import('./reimburse-view.js')` 要的是任务 8 才创建的文件；任务 8 又在文件头
+> 静态 `import { openSettleSheet } from './settle-sheet.js'`，那是任务 9 才创建的。
+> 而任务 9 只依赖已完成的 `reimburse-model.js` / `reimburse-store.js`，**不反向依赖任何 UI 模块**。
+> 所以正确拓扑序是 **任务 9 → 任务 8 → 任务 7**。照原序做，第 7 步「切到报销单」会直接抛
+> `Failed to fetch dynamically imported module`（离线时更糟：SW 的 `cache.addAll` 里还没有那个文件）。
+> 本任务（7）的步骤 7 预期数字也已过期，见该步。
+
 **文件：**
 - 修改：`app/ui/invoice-view.js`
 - 修改：`styles/` 下发票相关的 CSS

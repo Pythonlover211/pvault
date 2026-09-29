@@ -169,3 +169,37 @@ export function matchFilter(inv, filterId) {
     default: return true;   // 'all' 与任何不认识的 id
   }
 }
+
+// 到账面板预选的分类。id 与 app/schema.js 的 INCOME 种子是同一份（'cat-refund' = 退款，
+// kind: 'income'）——这条对应关系由 tests/reimburse-model.test.js 对着 seedCategories() 钉住，
+// 免得哪天有人改了种子的 id，面板安静地预选到一个不存在的分类上（记出来的账是「无分类」）。
+export const DEFAULT_SETTLE_CATEGORY = 'cat-refund';
+
+// 到账面板的三个默认值。
+//
+// **为什么放在这个纯模块里**：这几个默认值里唯一会出错的是「上次那个账户已经不见了」那条分支
+// ——它只在用户删过账户之后才出现，靠手点是撞不上的（要先记一笔、再删账户、再回来标到账）。
+// 放进 UI 文件就只能靠真机点，而本仓的浏览器实测环境起不来（见计划里任务 9 的说明）。
+//
+// **为什么这里可以调 sumCents**：reimburse-model 早就从 invoice-model 里 import 了 sumCents
+// （diffCents 用它算合计），而 invoice-model 是**零 import** 的叶子模块——依赖方向是
+// reimburse-model → invoice-model 单向，不存在环。这个模块声称的「纯逻辑、无 IO」指的是
+// 「不碰 DOM / IndexedDB / 全局状态」，import 一个纯函数不违反它。
+export function settleDefaults({ invoices = [], lastAccountId = null, accounts = [] } = {}) {
+  // 账户列表在调用点可能来自 listAccounts()（已滤掉 archived）——所以「上次用的账户归档了」
+  // 与「被删了」在这里是同一条分支，都退到第一个。
+  const ids = (accounts ?? []).map(a => a?.id).filter(Boolean);
+  // 上次用的账户可能已经不在列表里了（记账面板写 lastAccountId 时不校验）。
+  // 退到**第一个账户**，而不是把那个不存在的 id 传下去——传下去会让到账记出的收入指向一个
+  // 没有的账户，界面显示空白，用户找不到哪一笔没记上，而且全程不报错。
+  //
+  // 一个账户都没有时给 **null**，不编 id：settleReimbursement 允许 accountId 为 null
+  // （交易落成「无账户」），那比落成一个幽灵账户好得多——后者在列表里看得见、点不开。
+  const accountId = ids.includes(lastAccountId) ? lastAccountId : (ids[0] ?? null);
+  return {
+    // 空列表 → 0；脏 amountCents 由 sumCents 按 0 计（与列表页的合计同一口径，两处不会对不上）。
+    settledCents: sumCents(invoices),
+    accountId,
+    categoryId: DEFAULT_SETTLE_CATEGORY
+  };
+}

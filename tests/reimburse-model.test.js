@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   STATUS, STATUS_IDS, STATUS_LABELS, isStatus, statusLabel,
   canEdit, canSubmit, canSettle, canDelete, isActive,
-  autoTitle, diffCents, invoiceStatus, invoiceBadge, matchFilter
+  autoTitle, diffCents, invoiceStatus, invoiceBadge, matchFilter,
+  settleDefaults, DEFAULT_SETTLE_CATEGORY
 } from '../app/reimburse-model.js';
+import { seedCategories } from '../app/schema.js';
 
 const r = (status) => ({ id: 'r1', status });
 
@@ -171,4 +173,42 @@ test('matchFilter：五个筛选各自的判据', () => {
 
   // 不认识的筛选 id 一律放行（等于「全部」），不把列表变成空白。
   assert.equal(matchFilter(pending, 'nope'), true);
+});
+
+test('settleDefaults：金额取合计、账户取上次用的、分类默认退款', () => {
+  const invoices = [{ amountCents: 300000 }, { amountCents: 2500 }];
+  const accounts = [{ id: 'acc-1' }, { id: 'acc-2' }];
+  const d = settleDefaults({ invoices, lastAccountId: 'acc-2', accounts });
+  assert.equal(d.settledCents, 302500, '默认金额就是发票合计');
+  assert.equal(d.accountId, 'acc-2', '与记账面板「上次用的账户」同一个来源');
+  assert.equal(d.categoryId, 'cat-refund');
+});
+
+test('settleDefaults：上次那个账户已经不在了就退回第一个', () => {
+  const accounts = [{ id: 'acc-1' }];
+  const d = settleDefaults({ invoices: [], lastAccountId: 'acc-9', accounts });
+  assert.equal(d.accountId, 'acc-1');
+  assert.equal(d.settledCents, 0);
+});
+
+test('settleDefaults：一个账户都没有时 accountId 为 null（不编一个不存在的 id）', () => {
+  // 这条是「编 id」与「给 null」的分界：往下传 'acc-9' 或不存在的值，会在
+  // settleReimbursement 里写出一笔指向幽灵账户的收入——界面显示空白、账对不上、还不报错。
+  const d = settleDefaults({ invoices: [], lastAccountId: 'acc-9', accounts: [] });
+  assert.equal(d.accountId, null);
+  // 没给 lastAccountId（首次使用，settings 表里根本没这个键）时同样不许编 id。
+  assert.equal(settleDefaults({ invoices: [], accounts: [] }).accountId, null);
+  // 脏数据：账户项缺 id（或 id 是空串）时不能被当成候选，「第一个」也不能落在它头上。
+  const dirty = [{ name: '没有 id 的脏账户' }, null, { id: '' }, { id: 'acc-1' }];
+  assert.equal(settleDefaults({ invoices: [], lastAccountId: null, accounts: dirty }).accountId, 'acc-1');
+  // 全都是脏项 → 退到 null，而不是退到 undefined 或空串（它们会被原样写进库）。
+  assert.equal(settleDefaults({ invoices: [], accounts: [{}, null] }).accountId, null);
+});
+
+test('settleDefaults：分类默认值必须真的是「退款」这个收入分类', () => {
+  // 钉住 id 与种子的对应关系：schema 里把 cat-refund 改名 / 挪走 kind 之后，
+  // 面板会安静地预选到一个不存在（或不是收入）的分类上，交易记出来是「无分类」。
+  const hit = seedCategories().find(c => c.id === DEFAULT_SETTLE_CATEGORY);
+  assert.ok(hit, `默认到账分类 ${DEFAULT_SETTLE_CATEGORY} 不在默认种子里——面板会预选到一个不存在的分类`);
+  assert.equal(hit.kind, 'income', '到账记的是收入，默认分类的 kind 必须是 income');
 });
