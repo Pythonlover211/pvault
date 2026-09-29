@@ -479,6 +479,14 @@ export async function importBackup(text, password) {
   const parsed = parseBackupFile(text);
   const { summary, data } = await decryptBackupFile(parsed, password);
 
+  // 这次导入只取一次时间，写在库里的东西共用它：下面给 assets 那条背景记录、以及按需补出来的
+  // backgroundImage 设置行兜底时都读这个 now。两处各自再调一次 Date.now() 会留下一个 1ms 的竞态
+  // ——两次调用之间跨过毫秒边界（机器一忙就会发生）就差 1，而这两条记录在语义上是**同一次导入
+  // 操作**的产物，时间戳本就该一致。正常写入那条路也是这个取法：theme-store 的 setPhoto 一次
+  // 取好 createdAt，assets 记录与设置行共用它，只有导入这一处此前各取了一次。
+  // 取在这里（写库之前）而不是紧跟某一处，是为了让它代表「这次导入」本身，与落到哪一行无关。
+  const now = Date.now();
+
   // 这台设备自己的两行本地状态，都在同一个事务里写回去：
   //   lastBackupAt —— 「上一次把这台设备的数据安全导出是什么时候」。
   //     沿用备份文件里的旧日期，会让刚导入完的人看到「30 天前备份过」甚至「从未备份」这种假信息，
@@ -555,8 +563,9 @@ export async function importBackup(text, password) {
         mime: bg.mime || 'image/jpeg',
         size: Number(bgBlob.size) || 0,
         // 与 theme-store 的 setPhoto 同一个字段含义（这条记录是什么时候写下的）。
-        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻。
-        createdAt: Number(bg.createdAt) || Date.now()
+        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻——用上面那个共用的 now，
+        // 这样它与下面补出来的设置行不会差出 1ms（各取一次时的原样，见函数开头）。
+        createdAt: Number(bg.createdAt) || now
       }
     });
     // 备份带了图，但它的 settings 里**没有** backgroundImage 那一行——源机器上就是「图在库里、
@@ -577,7 +586,10 @@ export async function importBackup(text, password) {
             // normalizeOverlay 兜住 null / 脏值（回 OVERLAY_DEFAULT）并夹紧取整——与 theme-store
             // 的应用侧用的是同一个函数，所以补出来的这一行和用户自己在面板上设过的行长得一样。
             overlay: normalizeOverlay(bg.overlay),
-            createdAt: Number(bg.createdAt) || Date.now()
+            // 与 assets 那条记录共用同一个 now：这两条是这个函数一次写下去的（同一次导入），
+            // 时间戳本该一样；各取一次 Date.now() 会跨毫秒边界差 1，读这对记录的人就会以为
+            // 「图是更早那一刻的、引用是后一刻的」。
+            createdAt: Number(bg.createdAt) || now
           }
         }
       });

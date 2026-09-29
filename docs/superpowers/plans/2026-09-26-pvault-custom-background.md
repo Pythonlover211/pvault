@@ -3312,8 +3312,9 @@ async function encodeBackground(settings) {
         mime: bg.mime || 'image/jpeg',
         size: Number(bgBlob.size) || 0,
         // 与 theme-store 的 setPhoto 同一个字段含义（这条记录是什么时候写下的）。
-        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻。
-        createdAt: Number(bg.createdAt) || Date.now()
+        // 备份里没有这个时间（老格式、或那段导出失败）就用导入时刻——用上面那个共用的 now，
+        // 这样它与下面补出来的设置行不会差出 1ms（各取一次时的原样，见函数开头）。
+        createdAt: Number(bg.createdAt) || now
       }
     });
     // 备份带了图，但它的 settings 里**没有** backgroundImage 那一行——源机器上就是「图在库里、
@@ -3334,7 +3335,10 @@ async function encodeBackground(settings) {
             // normalizeOverlay 兜住 null / 脏值（回 OVERLAY_DEFAULT）并夹紧取整——与 theme-store
             // 的应用侧用的是同一个函数，所以补出来的这一行和用户自己在面板上设过的行长得一样。
             overlay: normalizeOverlay(bg.overlay),
-            createdAt: Number(bg.createdAt) || Date.now()
+            // 与 assets 那条记录共用同一个 now：这两条是这个函数一次写下去的（同一次导入），
+            // 时间戳本该一样；各取一次 Date.now() 会跨毫秒边界差 1，读这对记录的人就会以为
+            // 「图是更早那一刻的、引用是后一刻的」。
+            createdAt: Number(bg.createdAt) || now
           }
         }
       });
