@@ -1243,7 +1243,11 @@ export async function settleReimbursement(id, {
   if (!hasCents && (!missingCents || createTxn)) {
     throw new ReimburseError('到账金额不对，这次没记上', 'BAD_INPUT');
   }
-  const cents = hasCents ? settledCents : 0;
+  // 缺失时**保留 null**，不要兜底成 0：能走到这一行且 !hasCents 的只有「createTxn:false
+  // 且没传金额」这一种组合，而那时「没填」与「真的是 0 元」必须能分开——settledCents 的
+  // 默认值当初从 0 改成 null 就是为了这件事，这里兜底 0 会把它合回去（详情页会把「没填」
+  // 显示成「实际到账 ¥0.00 / 差额 −¥3,025.00」）。四种组合见规格 §8 的表。
+  const cents = hasCents ? settledCents : null;
 
   // 已到账那条记录：两个分支共用这一份字面量，各支只 spread 一次。
   // 两处各写一遍六个字段的版本里，将来加一个字段、只改一处，就会得到「因复选框而字段不同」
@@ -1845,7 +1849,10 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
         el('div', { class: 'rc-meta', text: `${invoices.length} 张 · ${formatCents(sumCents(invoices), { symbol: true })}` }),
         // 已到账且实际金额与合计不同时才显示差额：没有差额就没有信息，
         // 显示一行「差额 ¥0.00」只是噪音。
-        r.status === STATUS.SETTLED && diffCents(r.settledCents, invoices)
+        // `r.settledCents !== null` 是**护栏**：null（只标记到账、没填金额）时 diffCents 本来
+        // 也返回 null、同样不渲染，但那样就把「不显示 ¥0.00」押在 diffCents 的实现细节上了。
+        // 另注意别写成 `diffCents(...) !== null`——那会让「差额为 0」的行也渲染，是另一件事。
+        r.status === STATUS.SETTLED && r.settledCents !== null && diffCents(r.settledCents, invoices)
           ? el('div', { class: 'rc-diff', text: `实际到账 ${formatCents(r.settledCents, { symbol: true })} · 差额 ${formatCents(diffCents(r.settledCents, invoices), { symbol: true })}` })
           : null
       ]))
@@ -2131,12 +2138,17 @@ export function openSettleSheet({ reimb, invoices, onSettled }) {
     ]);
     const d = settleDefaults({ invoices, lastAccountId, accounts });
 
-    let settledCents = d.settledCents;
+    // 初值给 null 而不是 d.settledCents：createKeypad 创建时会**同步首调一次** onChange(null)，
+    // 那一调立刻覆盖这里的初值；真正让默认金额生效的是下面那句 setFromCents。
+    // 写成 d.settledCents 会让人以为默认值来自这行——它是死赋值。
+    let settledCents = null;
     let accountId = d.accountId;
     let categoryId = d.categoryId;
     let createTxn = true;
 
-    const keypad = createKeypad({ onChange: ({ cents }) => { settledCents = cents ?? 0; } });
+    // cents 为 null 表示「输入框空了」——原样留着，**别 `?? 0`**：0 是合法到账金额
+    // （公司拒报），两者在屏幕上长得一样但语义不同，详情页要能分开。
+    const keypad = createKeypad({ onChange: ({ cents }) => { settledCents = cents; } });
     keypad.setFromCents(settledCents);
 
     const accountSel = el('select', {}, accounts.map(a => el('option', { value: a.id, text: a.name })));
@@ -2205,6 +2217,17 @@ export function openSettleSheet({ reimb, invoices, onSettled }) {
 git add app/reimburse-model.js app/ui/settle-sheet.js tests/reimburse-model.test.js
 git commit -m "feat(reimburse): 标记到账面板（金额/账户/分类 + 可只标记不记账）"
 ```
+
+（后记：本任务的实际实现比上面这些代码块**收紧了好几处**，读本节代码时以仓库里的
+`app/ui/settle-sheet.js` 为准。差异都是审查与复审逼出来的，逐条记在这里：① 错误显示用
+`.form-error` + `hidden` 就地改文字，**不是** `mount(body, ...)`（后者会把 keypad.node 摘掉
+重建、用户刚输的金额一起消失）；② 金额为空时**面板自己先拦**（记账那条路报「请输入到账金额」，
+不发请求），不把存储层的「到账金额不对，这次没记上」端给用户；③ 分类回退到 `null`（下拉里加
+一个 `value=""` 的「（不选分类）」）而不是退到第一个收入分类——那会静默记成一笔「工资」；
+④ 一个账户都没有时强制 `createTxn=false` 并禁用勾选框；⑤ `onSettled` 的兜底要覆盖
+**thenable**（任务 8 的 `renderReimbursements` 是 async 的，只写同步 try/catch 会把它的
+rejection 漏成 unhandled）；⑥ `settledCents` 缺省落 `null` 不落 0，详情页为此显示「未填」。
+这六条各有测试或变异守着，详见 `tests/settle-sheet.test.js`。）
 
 ---
 
