@@ -13,7 +13,7 @@
 // 一个逐张写十次、每次都合法地走一次 writeAll 的实现也不会被谁发现。
 
 import * as db from './db.js';
-import { uid } from './store.js';
+import { uid, addTransaction } from './store.js';
 // canSubmit / canSettle / isStatus 在本文件里暂时**没有调用点**：提交、到账、删除这三个写函数
 // 由计划任务 5 追加在同一个文件里，判据就用它们。现在把它们一起引进来，是为了让「状态机只从
 // reimburse-model 进」这条线一眼看得出来——数据层不许自己写 `status === 'draft'` 那种字面量判断，
@@ -242,4 +242,112 @@ export async function removeInvoiceFrom(id, invoiceId) {
   await writeAll([
     { store: INVOICE_STORE, value: { ...inv, reimbursementId: null, updatedAt: Date.now() } }
   ]);
+}
+
+export async function submitReimbursement(id, now = Date.now()) {
+  // 前置检查走本文件已有的两层 helper：`requireReimbursement` 管「必须存在」、
+  // `requireStatus` 管「必须处于某状态」。别再手写那几行——判据来自 reimburse-model 的
+  // 白名单，漏写一行不会报错（静默失败面），而五份文案副本迟早会分叉。
+  const reimb = await requireReimbursement(id);
+  requireStatus(
+    reimb, canSubmit,
+    reimb.status === STATUS.SUBMITTED ? '这张报销单已经提交过了' : '已经到账的报销单不能重复提交',
+    'NOT_SUBMITTABLE'
+  );
+  const next = { ...reimb, status: STATUS.SUBMITTED, submittedAt: now };
+  // 写走 writeAll：一处发起事务、一处把英文异常翻成人话。
+  await writeAll([{ store: REIMB_STORE, value: next }]);
+  return next;
+}
+
+/**
+ * 标记到账。这是本模块唯一一个**跨三张表**的写：
+ *   ① 更新报销单（状态 / 到账时间 / 账户 / 实际到账金额 / txnId）
+ *   ② 若 createTxn，写一笔收入交易
+ * 两件事必须落在**一个**事务里：先写交易、后写报销单，中途失败会留下「钱记上了、
+ * 报销单还停在已提交」——用户看到没到账，再点一次「标记到账」，于是记出**第二笔收入**。
+ * 而那个半截状态没有任何自愈路径（重启应用也不会去比对）。
+ *
+ * 实现方式是把「更新报销单」那一条作为 extraEntries 交给 addTransaction，
+ * 由它那一次 db.putAll 一并写下去（见 store.js 的 addTransaction 注释）。
+ */
+export async function settleReimbursement(id, {
+  settledCents = 0, accountId = null, categoryId = null, createTxn = true, now = Date.now()
+} = {}) {
+  const reimb = await requireReimbursement(id);
+  requireStatus(
+    reimb, canSettle,
+    reimb.status === STATUS.DRAFT ? '这张报销单还没提交给公司，不能标记到账' : '这张报销单已经到账了',
+    'NOT_SETTLEABLE'
+  );
+  const cents = Number.isSafeInteger(settledCents) ? settledCents : 0;
+
+  if (!createTxn) {
+    // 不记账这条路只有一处写入，不必绕 addTransaction——但仍走 writeAll 翻译异常。
+    const next = {
+      ...reimb, status: STATUS.SETTLED, settledAt: now,
+      accountId: accountId ?? null, settledCents: cents, txnId: null
+    };
+    await writeAll([{ store: REIMB_STORE, value: next }]);
+    return next;
+  }
+
+  // 交易 id 先自己生成：报销单那一条要与交易**同批写入**，而它里面要写上 txnId——
+  // 若等 addTransaction 返回后再写回，就变成两次写入了，那正是这一段要避免的事。
+  // 为此任务 3 给 addTransaction 加了 `id: input.id ?? uid()`。
+  const txnId = uid();
+  const settled = {
+    ...reimb, status: STATUS.SETTLED, settledAt: now,
+    accountId: accountId ?? null, settledCents: cents, txnId
+  };
+  await addTransaction({
+    id: txnId,
+    kind: 'income',
+    amountCents: cents,
+    categoryId: categoryId ?? null,
+    accountId: accountId ?? null,
+    occurredAt: now,
+    note: `报销到账 · ${reimb.title}`,
+    source: 'reimbursement',
+    reimbursementId: id
+  }, {
+    extraEntries: [{ store: REIMB_STORE, value: settled }]
+  });
+
+  return settled;
+}
+
+/**
+ * 删掉一张报销单。两条纪律：
+ *  · 单里的发票**回到待报销**，不是被删掉——票是用户的东西，报销单只是它的分组；
+ *  · 已经生成过收入账时由**调用方**决定要不要一起删（deleteTxn）。两边都留会变成
+ *    对不上的账，所以界面必须问，而且不能默认——但「留还是删」是用户的决定，不是这里的。
+ * 三处写入一个事务：回退发票、删单据、（可选）删交易。
+ *
+ * 这里**没走 requireReimbursement**：删一张不存在的单是幂等的成功（重复点删除不该报错），
+ * 与其余几个写函数的「不存在就抛 NOT_FOUND」是**有意的不同**，不是漏改。
+ */
+export async function deleteReimbursement(id, { deleteTxn = false } = {}) {
+  const reimb = await getReimbursement(id);
+  if (!reimb) return;
+
+  const invoices = await listInvoicesOf(id);
+  const now = Date.now();
+  const entries = [
+    ...invoices.map(inv => ({
+      store: INVOICE_STORE,
+      value: { ...inv, reimbursementId: null, updatedAt: now }
+    })),
+    // 删主键走 deletes 的形态（replaceAllRecords 与 removeAll 同形）。
+    ...(deleteTxn && reimb.txnId ? [{ store: 'txns', key: reimb.txnId }] : [])
+  ];
+
+  await db.replaceAllRecords({
+    clears: [],
+    puts: entries.filter(e => !e.key),
+    deletes: [
+      ...entries.filter(e => e.key).map(e => ({ store: e.store, key: e.key })),
+      { store: REIMB_STORE, key: id }
+    ]
+  });
 }

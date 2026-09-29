@@ -14,7 +14,8 @@ import { saveInvoice } from '../app/invoice-store.js';
 import { STORES } from '../app/schema.js';
 import {
   listReimbursements, getReimbursement, listInvoicesOf, listPendingInvoices,
-  createReimbursement, renameReimbursement, addInvoicesTo, removeInvoiceFrom
+  createReimbursement, renameReimbursement, addInvoicesTo, removeInvoiceFrom,
+  submitReimbursement, settleReimbursement, deleteReimbursement
 } from '../app/reimburse-store.js';
 
 installFakeBrowser();
@@ -229,4 +230,109 @@ test('listInvoicesOf / listReimbursements：排序稳定', async () => {
   await db.put('reimbursements', { id: 'r0', title: '更早', status: 'draft', createdAt: NOW - 1000 });
   const all = await listReimbursements();
   assert.deepEqual(all.map(x => x.id), [r.id, 'r0'], '报销单按创建时间倒序');
+});
+
+test('submitReimbursement：草稿→已提交，记下 submittedAt', async () => {
+  await mkInvoice({ id: 'i1' });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  const after = await submitReimbursement(r.id, NOW + 1000);
+
+  assert.equal(after.status, 'submitted');
+  assert.equal(after.submittedAt, NOW + 1000);
+  assert.equal((await getReimbursement(r.id)).status, 'submitted', '必须真的落库');
+});
+
+test('submitReimbursement：已提交的不能再提交', async () => {
+  await mkInvoice({ id: 'i1' });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  await assert.rejects(() => submitReimbursement(r.id, NOW), { code: 'NOT_SUBMITTABLE' });
+});
+
+test('settleReimbursement：三处写入只发起一个事务，且都落地', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 300000 });
+  await mkInvoice({ id: 'i2', amountCents: 2500 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  await db.put('accounts', { id: 'acc-1', name: '工资卡' });
+
+  const before = transactionCount();
+  const settled = await settleReimbursement(r.id, {
+    settledCents: 300000, accountId: 'acc-1', categoryId: 'cat-refund', createTxn: true, now: NOW + 5000
+  });
+  assert.equal(transactionCount() - before, 1, '交易 + 报销单 + txnId 必须落在同一个事务里');
+
+  assert.equal(settled.status, 'settled');
+  assert.equal(settled.settledAt, NOW + 5000);
+  assert.equal(settled.settledCents, 300000);
+  assert.equal(settled.accountId, 'acc-1');
+  assert.ok(settled.txnId, '要记下生成的收入账 id');
+
+  const txn = await db.get('txns', settled.txnId);
+  assert.equal(txn.kind, 'income');
+  assert.equal(txn.amountCents, 300000);
+  assert.equal(txn.source, 'reimbursement');
+  assert.equal(txn.reimbursementId, r.id, '交易要能找回它的报销单（删除保护靠这个）');
+  assert.equal(txn.categoryId, 'cat-refund');
+  assert.equal(txn.accountId, 'acc-1');
+});
+
+test('settleReimbursement：只标记到账时不生成交易', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 1000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  const settled = await settleReimbursement(r.id, {
+    settledCents: 1000, accountId: null, categoryId: null, createTxn: false, now: NOW
+  });
+  assert.equal(settled.status, 'settled');
+  assert.equal(settled.txnId, null);
+  assert.deepEqual(await db.getAll('txns'), [], '不记账时不该有任何交易');
+});
+
+test('settleReimbursement：草稿不能直接到账', async () => {
+  await mkInvoice({ id: 'i1' });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await assert.rejects(
+    () => settleReimbursement(r.id, { settledCents: 1, createTxn: false, now: NOW }),
+    { code: 'NOT_SETTLEABLE' }
+  );
+});
+
+test('deleteReimbursement：发票回到待报销，报销单消失', async () => {
+  await mkInvoice({ id: 'i1' });
+  await mkInvoice({ id: 'i2' });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1', 'i2'], title: 'x', now: NOW });
+
+  const before = transactionCount();
+  await deleteReimbursement(r.id, { deleteTxn: false });
+  assert.equal(transactionCount() - before, 1, '回退发票 + 删单据必须在同一个事务里');
+
+  assert.equal(await getReimbursement(r.id), null);
+  assert.equal((await db.get('invoices', 'i1')).reimbursementId, null);
+  assert.equal((await db.get('invoices', 'i2')).reimbursementId, null);
+  assert.deepEqual((await listPendingInvoices()).map(i => i.id).sort(), ['i1', 'i2'], '票要回到待报销，不是被删掉');
+});
+
+test('deleteReimbursement：deleteTxn 为真时连那笔收入一起删', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 5000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  const settled = await settleReimbursement(r.id, {
+    settledCents: 5000, accountId: null, categoryId: null, createTxn: true, now: NOW
+  });
+
+  await deleteReimbursement(r.id, { deleteTxn: true });
+  assert.equal(await db.get('txns', settled.txnId), undefined, '选了「一起删」就该删掉');
+});
+
+test('deleteReimbursement：deleteTxn 为假时留下那笔收入', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 5000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  const settled = await settleReimbursement(r.id, {
+    settledCents: 5000, accountId: null, categoryId: null, createTxn: true, now: NOW
+  });
+
+  await deleteReimbursement(r.id, { deleteTxn: false });
+  assert.ok(await db.get('txns', settled.txnId), '选了「只删报销单」时收入必须留着——那是用户账上的钱');
 });
