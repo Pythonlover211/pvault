@@ -7,8 +7,10 @@
 // 或者「钱记上了、报销单还停在已提交」（后者更糟：用户会重试，于是记出第二笔收入）。
 // db.replaceAllRecords 与 importBackup 的注释讲的是同一条纪律。
 //
-// 这条纪律由 tests/reimburse-store.test.js 的**事务计数**守着：
-// 拆成两次调用会让计数变成 2，那条断言立刻红。
+// 这条纪律由两处一起守着：结构上是下面的 writeAll——本文件所有写都从它出去，想拆成两次就绕不开它；
+// 断言上是 tests/reimburse-store.test.js 的**事务计数**（拆成两次调用会让计数变成 2，那条立刻红）。
+// 两者缺一不可：只有计数时，writeAll 里那句「英文异常翻成人话」照样没人管；只有 writeAll 时，
+// 一个逐张写十次、每次都合法地走一次 writeAll 的实现也不会被谁发现。
 
 import * as db from './db.js';
 import { uid } from './store.js';
@@ -51,8 +53,10 @@ export async function getReimbursement(id) {
 export async function listInvoicesOf(reimbId) {
   if (!reimbId) return [];
   const hits = await db.getAllByIndex(INVOICE_STORE, 'by_reimbursement', reimbId);
-  // 索引查询的顺序实际是随机的（同一个索引键下按随机 uid 排），
-  // 与 invoice-store.js 的 listInvoices 用同一套排序，保证每次打开顺序一致。
+  // 索引查询的顺序与时间无关：同一个索引键下的多条记录按**主键**排，而主键是随机 uid
+  // （两次调用其实拿到的顺序相同，但用户看不出任何道理，换一次数据迁移就可能变）。
+  // 所以这里统一排成「开票日期倒序、同一日的按录入时间倒序」，与 invoice-store.js 的
+  // listInvoices 同一套口径——同一个单里的票，在发票列表和报销单详情里顺序不一致是说不通的。
   return hits.sort((a, b) => (b.issuedAt ?? 0) - (a.issuedAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
 }
 
@@ -105,6 +109,80 @@ async function invoiceEntriesFor(invoiceIds, reimbId) {
   return { entries, skipped };
 }
 
+// ===== 内部：写的前置检查与唯一的写入出口 =====
+
+/**
+ * 这张报销单必须还在，否则 NOT_FOUND。
+ *
+ * 单列一层不是为了少写一行：**判据漏写不报错**。少了这句，一个不存在的 id 会继续往下走，
+ * 一直走到某个更远的地方才变成「往库里写了一条没有归属的记录」或者「把别的单的票摘走了」，
+ * 而那些都是静默失败——出错现场早就不在原处了。本文件的三个写函数与计划任务 5 的
+ * submit / settle 第一步逐字相同，五处都从这里过。
+ */
+async function requireReimbursement(id) {
+  const reimb = await getReimbursement(id);
+  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
+  return reimb;
+}
+
+/**
+ * 这张报销单必须处于 predicate 放行的状态，否则抛出 message / code。
+ *
+ * 谓词**整个传进来**（canEdit / canSubmit / canSettle），不在这里写 `status === 'draft'`：
+ * 状态机只从 reimburse-model 进，白名单放行谁，改一处就够。也**不要**传 `() => canEdit(r)`
+ * 那样的 lambda——包一层之后「这个函数按哪条白名单放行」就藏进闭包里了，
+ * 读代码的人要多跳一次才能确认它到底在挡什么。
+ *
+ * `deleteReimbursement`（任务 5）写的是 `if (!reimb) return`，与这里抛 NOT_FOUND 不一致。
+ * 那是任务 5 的范围，本文件不替它决定，留这句话只是免得后来者以为是漏改。
+ */
+function requireStatus(reimb, predicate, message, code) {
+  if (!predicate(reimb)) throw new ReimburseError(message, code);
+  return reimb;
+}
+
+/**
+ * 「必须存在 + 必须还能编辑」——本文件三个写函数的入口。
+ * 合成一个而不是让三处各写两行，是因为那句文案要**一模一样**地出现在每一处：
+ * 复制到五份（任务 5 还会再加两处）之后，改文案时只要漏掉一处，
+ * 用户就会在同一个 App 里看到两种说法，而没有任何地方会报错。
+ */
+async function requireEditable(id) {
+  const reimb = await requireReimbursement(id);
+  return requireStatus(reimb, canEdit, '已经提交给公司的报销单不能修改', 'NOT_EDITABLE');
+}
+
+/**
+ * **所有写都走这里**：一处发起事务、一处把英文异常翻成人话。
+ *
+ * 为什么不让 db.putAll 的错误直接冒泡：界面上会显示「保存失败：QuotaExceededError: …」，
+ * 用户既不知道发生了什么，也不知道下一步该做什么。app/invoice-store.js 的 putInvoice
+ * 已经为同一个异常写过一句能照着做的中文——同一个异常在两处必须说同一种人话，
+ * 否则一处给建议、一处甩英文，政策就不统一了。
+ *
+ * 顺带把「一次写 = 一次批量调用」变成结构性的：四个写函数全部经过它，
+ * 谁再想拆出第二次 db.putAll，得先绕开这一层——那是个显眼的动作，不是随手多写一行 await。
+ */
+async function writeAll(entries) {
+  try {
+    await db.putAll(entries);
+  } catch (err) {
+    // 配额写满是这台手机上最可能撞到的失败：挂十几张票的批量更新，一次就是几十 KB。
+    if (err?.name === 'QuotaExceededError') {
+      const quota = new Error('手机存储空间不够了，这次报销改动没存下。可以先去「记账 → 备份」导出一份并清理旧数据再试。');
+      // 沿用原 name：界面读的是 message（已经是中文人话），控制台与排查时仍认得出这是配额失败，
+      // 不至于退化成一个无从追查的普通 Error。
+      quota.name = err.name;
+      throw quota;
+    }
+    // 其余存储失败（UnknownError / AbortError / DatabaseClosedError……，以及 enqueue 里同步抛出的
+    // DataError）给用户一句中文，原文进控制台留给排查——这里**不**沿用 err.name
+    // （那些 name 对用户毫无信息量，界面只读 message）。
+    console.error('报销单写入失败', err);
+    throw new Error('这次报销改动没存下来（手机存储出错）。请确认存储空间还够，然后重试一次。');
+  }
+}
+
 // ===== 写（每条一个事务）=====
 
 /**
@@ -126,39 +204,42 @@ export async function createReimbursement({ invoiceIds = [], title = '', now = D
     note: ''
   };
   const { entries, skipped } = await invoiceEntriesFor(invoiceIds, reimb.id);
-  await db.putAll([{ store: REIMB_STORE, value: reimb }, ...entries]);
-  return { ...reimb, skipped };
+  await writeAll([{ store: REIMB_STORE, value: reimb }, ...entries]);
+  // 返回两件，而不是 `{ ...reimb, skipped }`：后者会让**同一个实体有两种形状**——
+  // getReimbursement 读回来的是纯记录（规格字段表里没有 skipped），这里却是个混了界面信息的对象。
+  // 谁照着返回值把字段抄进下一次写入（改名、改状态那类代码就是照抄这个字段列表写的），
+  // skipped 就跟着进了库，而这件事没有任何地方会报错。与 addInvoicesTo 的返回形状对齐。
+  return { reimb, skipped };
 }
 
 export async function renameReimbursement(id, title) {
-  const reimb = await getReimbursement(id);
-  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
-  if (!canEdit(reimb)) throw new ReimburseError('已经提交给公司的报销单不能修改', 'NOT_EDITABLE');
+  const reimb = await requireEditable(id);
   const next = { ...reimb, title: String(title ?? '').trim() || reimb.title };
-  await db.putAll([{ store: REIMB_STORE, value: next }]);
+  await writeAll([{ store: REIMB_STORE, value: next }]);
   return next;
 }
 
 export async function addInvoicesTo(id, invoiceIds) {
-  const reimb = await getReimbursement(id);
-  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
-  if (!canEdit(reimb)) throw new ReimburseError('已经提交给公司的报销单不能修改', 'NOT_EDITABLE');
+  await requireEditable(id);
   const { entries, skipped } = await invoiceEntriesFor(invoiceIds, id);
   // 空清单要早退：db.putAll([]) 里 names 是空数组，db.transaction([]) 抛的是 InvalidAccessError，
   // **不是** no-op（db.js 中 putAll 上方那段注释就是这条调用方契约）。加的都是已在别的单里的票时
   // 就会走到这里——那本该是「什么都没发生」，不该反过来把界面炸掉。
   if (entries.length === 0) return { skipped };
-  await db.putAll(entries);
+  await writeAll(entries);
   return { skipped };
 }
 
 export async function removeInvoiceFrom(id, invoiceId) {
-  const reimb = await getReimbursement(id);
-  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
-  if (!canEdit(reimb)) throw new ReimburseError('已经提交给公司的报销单不能修改', 'NOT_EDITABLE');
+  await requireEditable(id);
   const inv = await db.get(INVOICE_STORE, invoiceId);
+  // 归属校验：只动**属于本单**的票。少了这一行，对 A 单调 removeInvoiceFrom 一张其实属于 B 单的
+  // 票，会把 B 单里那张票的 reimbursementId 置成 null——B 单凭空少一张票，A 单什么也没变，
+  // 用户根本看不出是哪一步弄丢的。界面不会给出这种选择，但列表是几分钟前渲染的：
+  // 详情页或另一个标签页完全可能已经把这张票挪走了，这个函数的入参是 id，不是它读到的对象。
+  // （票不存在、也不在本单 → 静默返回，与 invoiceEntriesFor 里「已被删掉的票静默略过」同一条口径。）
   if (!inv || inv.reimbursementId !== id) return;
-  await db.putAll([
+  await writeAll([
     { store: INVOICE_STORE, value: { ...inv, reimbursementId: null, updatedAt: Date.now() } }
   ]);
 }

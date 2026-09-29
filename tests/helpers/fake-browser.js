@@ -1,4 +1,7 @@
-// 浏览器 API 桩：给「函数一调用就要浏览器环境」的那几个模块用（眼下只有 app/backup-store.js）。
+// 浏览器 API 桩：给「函数一调用就要浏览器环境」的那几个模块用——眼下是 app/backup-store.js、
+// app/store.js、app/invoice-store.js 与 app/reimburse-store.js。这份清单过期时别含糊成「还有别的」：
+// 它决定了后来者该不该相信这里的绿——每多一个直接走 IndexedDB 的模块，就可能要多认一条差异
+// （下面清单的第 9、10 条就是这么长出来的）。
 //
 // 为什么需要它：app/db.js 的读写要一个 IndexedDB 环境，而 Node 里没有；零依赖约束又排除了引
 // fake-indexeddb（见 docs/手动验证清单.md 开头那段），所以这里手写一个**只实现 app/db.js 用到的那几条**
@@ -6,13 +9,16 @@
 // （`indexedDB.open(DB_NAME, DB_VERSION)`），只要在调用之前把它放上去就够了，不必改任何生产代码。
 //
 // **它不是 IndexedDB 的仿真器，这份绿也不能读成「浏览器里也就这样」。** 下面把差异一次列全
-// （前四条是第一版就写着的，后五条是复审逐个实测出来的——**漏写差异本身就是一种假绿**：
+// （前四条是第一版就写着的，后六条是复审逐个实测出来的——**漏写差异本身就是一种假绿**：
 // 后来者会以为「桩通过 = 这条路径验过了」）：
 //
 //  1. **事务的真实隔离与回滚**：abort() 只改一个标记，已经写进 Map 的数据不会退回去。
 //     所以它**盖不住** db.replaceAllRecords 那条「中途失败不留半库」的保证——那一条只能靠真机与评审。
-//  2. **请求的失败路径**：put / get 永远成功，onerror 一次都不会被调到（配额满、事务中止、
-//     死锁这些真实失败在桩上不存在）。
+//  2. **请求的失败路径**：put / get 默认永远成功，onerror 一次都不会被调到（配额满、事务中止、
+//     死锁这些真实失败在桩上不存在）。想验「写失败被翻成人话」，唯一的口子是导出的
+//     failNextWrite(storeName, err)——它把某张表的下一次 put 换成同步抛 err 的版本。
+//     注意它注入的是**异常本身**，不是事务语义：回滚仍然没有（见第 1 条），
+//     所以别拿它验「写失败之后库里没有半截」。
 //  3. **版本升级的真实语义**：onblocked、旧连接挡升级、versionchange 让路全都不存在。
 //  4. **索引的空值语义**：真实 IndexedDB **不索引** keyPath 为 null / undefined 的记录
 //     （schema.js 里那段注释讲的就是这个坑）。桩照做（见 index().getAll）；但 IDBKeyRange.only(null)
@@ -33,6 +39,10 @@
 //     （WebIDL 的类型检查也是同步抛，但真实 FileReader 是抛错还是派发 onerror，这里没有真机核实过）。
 //     两条路对被测代码等价：backup-store.js 的 blobToBase64 把 readAsDataURL 整个包在 Promise 里，
 //     同步抛错同样变成 rejection，被 encodeFiles / encodeBackground 的 try 收住。
+// 10. **事务的 mode**：真实 IDB 会**校验** mode（只认 readonly / readwrite / versionchange 那几个
+//     字面量，写错抛 TypeError）；桩不校验，mode 判定的唯一用处是决定要不要计数。
+//     所以「把 readwrite 拼错」在桩上只会安静地少计一次，不会报错——真机上同一处直接抛。
+//     （事务计数本身也是复审才加进这份桩的，见下面 transactionCount 的注释。）
 //
 // 它盖得住的是**数据形状**：谁写了什么、删了什么、清了什么、导入导出之后库里还剩什么——这正是
 // backup-store 的导入导出需要被钉住的那一层。盖不住的那些仍然只能靠 docs/手动验证清单.md 的真机条目。
@@ -51,10 +61,51 @@ const databases = new Map();   // 库名 -> { version, stores: Map<表名, Store
 // （读一次 + 写一次），而下面那些 `assert.equal(transactionCount() - before, 1)` 在**正确
 // 实现下也会红**——一条永远红的断言不区分「拆没拆」，等于什么都没验。加上 mode 判定之后
 // 「一次批量写 = 1」才成立，把一次写入拆成两次也才会让它变成 2。
+//
+// **txCount 单调递增、永不重置**：resetFakeDatabases 也不清它（那个函数只清表里的数据）。
+// 断言一律用**差值**口径——`const before = transactionCount(); …; assert.equal(transactionCount() - before, 1)`。
+// 绝对计数（`assert.equal(transactionCount(), 1)`）是真实的诱惑，但它必然红，而红线指向的是被测代码、
+// 真凶却在桩里（同进程里别的测试文件先跑过，计数早就不是 0 了，加 --test-isolation=none 之后更是如此）。
+// 这类假红最贵：找的是一个不存在的 bug。
 let txCount = 0;
 
 export function transactionCount() {
   return txCount;
+}
+
+/**
+ * 让某张表的下一次写入同步抛出 err，返回一个还原函数（幂等，写完没写完都可以调）。
+ *
+ * 为什么要有这个口子：桩的 put 永远成功（见文件头第 2 条），于是「写入失败被翻成人话」
+ * 这条路径在桩上一次也走不到——而它恰恰是唯一需要 catch 的地方，也是最容易被顺手删掉的地方。
+ * 注入的是**异常本身**，不是事务语义：回滚仍然没有（见文件头第 1 条），
+ * 所以别拿它验「写失败之后库里没有半截」。
+ *
+ * 只换一次：put 被调用就自动还原。调用方仍应显式再还原一次（fn 里写入没走到 put 时，
+ * 比如前面的守卫先抛了），否则那张表在余下的测试里会一直是坏的。
+ */
+export function failNextWrite(storeName, err) {
+  const store = findStore(storeName);
+  if (!store) throw new Error(`NotFoundError: 桩里还没有 ${storeName} 这张表（先让它被打开一次）`);
+  const original = store.put;
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    store.put = original;
+  };
+  store.put = () => { restore(); throw err; };
+  return restore;
+}
+
+// 按表名找到桩里的 Store 实例。桩里只有一个库（'pvault'），但这里仍遍历而不是写死库名：
+// 库名属于 app/schema.js 的知识，桩不该跟着它一起过期。
+function findStore(name) {
+  for (const meta of databases.values()) {
+    const store = meta.stores.get(name);
+    if (store) return store;
+  }
+  return null;
 }
 
 class Store {

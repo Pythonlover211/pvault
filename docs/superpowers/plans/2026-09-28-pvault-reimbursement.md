@@ -1010,7 +1010,10 @@ export async function createReimbursement({ invoiceIds = [], title = '', now = D
   };
   const { entries, skipped } = await invoiceEntriesFor(invoiceIds, reimb.id);
   await db.putAll([{ store: REIMB_STORE, value: reimb }, ...entries]);
-  return { ...reimb, skipped };
+  // 返回两件，不是 `{ ...reimb, skipped }`：后者让同一个实体有两种形状（getReimbursement 读回来的
+  // 是纯记录），照抄返回值字段去写库的代码会把 skipped 一起写进去，而且不报错。
+  // （复审后本文件的写都改走内部函数 writeAll——一处发起事务、一处把英文异常翻成中文。）
+  return { reimb, skipped };
 }
 
 export async function renameReimbursement(id, title) {
@@ -1592,7 +1595,11 @@ function openCreateReimburseSheet(invoices, onDone) {
       class: 'btn btn-primary', type: 'button', text: '创建报销单',
       onclick: async () => {
         try {
-          const r = await createReimbursement({
+          // createReimbursement 返回 { reimb, skipped } **两件**（任务 4；复审已从 `{ ...reimb, skipped }`
+          // 改成两件，免得同一个实体有两种形状）。这一版两件都还没用上，用的时候照这两个名字解构：
+          //  · skipped 非空 = 有票已经在别的单里，这里要提示「N 张已经在别的报销单里」（计划末尾「类型一致性」）；
+          //  · reimb.id 用于下面那句「跳到那一单」——任务 8 做出详情页之后改成直接进它。
+          await createReimbursement({
             invoiceIds: invoices.map(i => i.id),
             title: input.value
           });
@@ -2287,5 +2294,5 @@ git commit -m "chore(reimburse): SW 缓存升到 v19、手动验证清单加「�
 
 **占位符扫描**：无「待定 / TODO / 后续实现 / 类似任务 N」。唯一的「实现时先读该文件」出现在任务 10 步骤 1、2 与任务 7 步骤 5——它们的成对内容（要复用哪个已有机制、要把哪些变量名换成实际令牌）都写明了具体做法，不是「补充细节」。
 
-**类型一致性**：`createReimbursement` 返回 `{ ...reimb, skipped }`（任务 4 步骤 4），任务 7 只用它的返回对象存在与否，未读 `skipped`——**但界面应当读它**：若 `skipped` 非空要提示「N 张已经在别的报销单里」。任务 7 步骤 4 的实现里已留下这个位置（`catch` 之外的正常路径），实现时按注释补一句提示。其余函数签名在本计划内前后一致：`settleReimbursement(id, opts)` 的参数名在任务 5 与任务 9 一致；`listInvoicesOf` / `listPendingInvoices` / `getReimbursement` 三处的用途与返回形状一致。
+**类型一致性**：`createReimbursement` 返回 `{ reimb, skipped }` **两件**——任务 4 最初写的是 `{ ...reimb, skipped }`（把 skipped 并进实体），复审时改掉了：那会让同一个实体有两种形状（`getReimbursement` 读回来的是纯记录，规格字段表里没有 skipped），而照抄返回值字段去写库的代码（改名、改状态那类）会把 skipped 一起写进库，且没有任何地方会报错。现在测试也钉住了这一点（`Object.keys(created)` 与「库里那条没有 skipped」）。任务 7 只用它的返回对象存在与否，未读 `skipped`——**但界面应当读它**：若 `skipped` 非空要提示「N 张已经在别的报销单里」。任务 7 步骤 4 的代码块里已写明这一点。其余函数签名在本计划内前后一致：`settleReimbursement(id, opts)` 的参数名在任务 5 与任务 9 一致；`listInvoicesOf` / `listPendingInvoices` / `getReimbursement` 三处的用途与返回形状一致。另：复审后 `reimburse-store.js` 的四个写函数不再各自 `db.putAll`，统一走内部函数 `writeAll`（一处发起事务、一处把 `QuotaExceededError` 这类英文异常翻成中文，口径照 `invoice-store` 的 `putInvoice`），任务 5 的 submit / settle 也照这个走。
 
