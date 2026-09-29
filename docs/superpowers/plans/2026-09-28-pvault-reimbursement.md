@@ -527,18 +527,28 @@ test('addTransaction：extraEntries 会与交易一起落库', async () => {
   // 这条测试照样绿。名字若承诺「同事务」，它承诺的就是一个自己拿不出证据的保证——
   // 下一个人会以为这层保证有人看着，然后放心去改那行代码。
   //
-  // 真正那层保证（同事务 / 中途失败整笔回滚）由 app/store.js 里「单个 transaction + 单次
-  // putAll」的代码结构承载，**自动化测不了**：tests/helpers/fake-browser.js 文件头第 1 条差异
-  // 写的正是它——abort() 只改一个标记，已经写进 Map 的数据不会退回去，所以桩上根本产生不了
-  // 「写了一半」的状态。那层保证得靠代码审查与 docs/手动验证清单.md 的真机条目，不靠这条测试。
+  // 那层保证由 app/store.js 里「单个 transaction + 单次 putAll」的代码结构承载，它分成两半，
+  // 只有一半测不了：**「中途失败整笔回滚」测不了**——tests/helpers/fake-browser.js 文件头第 1 条
+  // 差异写的正是它：abort() 只改一个标记，已经写进 Map 的数据不会退回去，桩上根本产生不了
+  // 「写了一半」的状态。回滚这半层得靠代码审查与 docs/手动验证清单.md 的真机条目，不靠这条测试
+  // （该条目由计划任务 11 步骤 5 补进清单的「报销 · 到账」小节——现在清单里还没有，别去旧章节找）。
+  // 而「同一次 putAll」（= 只发起一个事务）**能测**，判据是数事务个数——见下面那段。
   //
-  // 补上这一环的是任务 4：桩会加一个 transactionCount()，届时这条才能真正强化成
-  // 「整笔写入只发起一次 putAll」。现在做不到，就不要在这里假装做到了。
+  // 这个文件里**不会**出现事务计数断言：桩的 transactionCount() 是任务 4 的交付物，而没有任何
+  // 任务会回头改这个文件（任务 4 的文件清单是桩 + reimburse-store.js + 它的测试），所以别把
+  // 「这层保证有人看着」读成「就在本文件里」。真正咬住它的是任务 5 那条
+  // `settleReimbursement：三处写入只发起一个事务`：settleReimbursement 把报销单当 extraEntries
+  // 交给 addTransaction，那一次调用只发起一个事务——把下面 `entries.concat(extraEntries)` 拆成
+  // 两次 putAll，那条断言的计数差就从 1 变成 2、必红。
+  // 这是**推导，不是实测**：reimburse-store.js 还没实现，那条现在跑不了。
   const txn = await store.addTransaction(
     { kind: 'income', amountCents: 300000, categoryId: 'cat-refund', accountId: 'acc-1' },
     { extraEntries: [{ store: 'reimbursements', value: { id: 'r1', status: 'settled', createdAt: 1 } }] }
   );
-  assert.ok(txn.id, '返回的仍然是完整交易');
+  // 主交易本身也得在库里。原先这里只断言 `txn.id` 非空，而 id 走 uid()、永远非空——那等于
+  // 什么都没验，这条测试的名字却承诺「与交易**一起**落库」。改为读回库里那条，金额一起钉死，
+  // 这样「额外条目到了、主交易没写」这种半截实现才会真的变红。
+  assert.equal((await db.get('txns', txn.id)).amountCents, 300000, '主交易必须真的落库');
   const saved = await db.get('reimbursements', 'r1');
   assert.equal(saved?.status, 'settled', '额外的条目必须真的落库');
 });
@@ -557,6 +567,14 @@ test('addTransaction：不传 extraEntries 时行为与从前完全一致', asyn
   // 不传时是 **null** 而不是 undefined：这个对象是重建出来的、字段逐个显式列出，
   // `input.reimbursementId ?? null` 对 undefined 也会落成 null。
   assert.equal(txn.reimbursementId, null, '不传时显式写 null');
+  // 钉住字段集本身：「不传 extraEntries 时行为不变」的全部含义就是这 14 个字段一个不多、一个不少、
+  // 名字一个不差（漏一个＝既有调用点拿到 undefined，多一个＝这个新口子顺手改了返回值），
+  // 而 addTransaction 正是**重建**对象的写法，字段集就是它的真契约。只挑 source / reimbursementId
+  // 两个字段验，等于让「完全一致」这句话靠运气——正是刚修掉的那条测试名同型的毛病。
+  assert.deepEqual(Object.keys(txn).sort(), [
+    'accountId', 'amountCents', 'categoryId', 'createdAt', 'id', 'kind', 'note', 'occurredAt',
+    'recurringId', 'reimbursementId', 'shares', 'source', 'toAccountId', 'updatedAt'
+  ].sort(), '返回值只能是这 14 个字段');
 });
 
 test('addTransaction：reimbursementId 会写进交易本身', async () => {
@@ -595,8 +613,12 @@ export async function addTransaction(input, { extraEntries = [] } = {}) {
   const now = Date.now();
   const txn = {
     // 允许调用方指定 id：报销到账要在**同一个事务**里把 txnId 写进报销单，
-    // 而那要求交易 id 在调用之前就已知（见 reimburse-store.js 的 settleReimbursement）。
+    // 而那要求交易 id 在调用之前就已知（见 reimburse-store.js 的 settleReimbursement——
+    // 那个文件由计划任务 4 建立、settleReimbursement 由任务 5 补上，现在都还不存在）。
     // 既有调用点都不传，行为不变。
+    // 传一个**已存在**的 id 会静默覆盖那笔交易（db.putAll 走 objectStore.put，同主键即覆盖），
+    // 而它先前派生的应收**不会**跟着变——那条 receivables 的 sourceTxnId 仍指向它，主交易却已被
+    // 改写，库里留下一对自相矛盾的记录，全程不报错。要改一笔已有的交易请用 updateTransaction。
     id: input.id ?? uid(),
     kind: input.kind,
     amountCents: input.amountCents,
@@ -635,6 +657,9 @@ export async function addTransaction(input, { extraEntries = [] } = {}) {
     });
   }
   // 额外的条目追加在最后，由**同一个** putAll 写下去——这就是「同事务」的全部实现。
+  // 追加在**主交易之后**有代价：同主键时后面的赢（objectStore.put 逐条覆盖），额外条目若也写
+  // `txns` 且撞上 txn.id，就会顶掉刚写下去的主交易，而函数返回的还是被顶掉的那个对象——
+  // 调用方拿到一个与库里对不上的 txn。所以额外条目别写 `txns`。
   await db.putAll(entries.concat(extraEntries));
   return txn;
 }
@@ -2179,6 +2204,14 @@ git commit -m "feat(invoice): 编辑器拦截「仅存档」与报销单的互�
 - [ ] 确认后记账首页多出一笔收入，金额是**改过**的那个数
 - [ ] 勾「只标记到账，不记收入」→ 确认后记账页**没有**多出交易
 - [ ] 到账金额填 0 → 会要求二次确认（公司拒报时 0 是合法的）
+- [ ] 到账写了一半时不许留下半截（可人为制造：临时让 `settleReimbursement` 同批写入里的**报销单
+      那一条**失败——把交给 `addTransaction` 的 `extraEntries` 的 value 塞进一个 IndexedDB 克隆不了
+      的值，例如 `bad: () => {}`，真机上这条 `put` 请求会失败并让整批写入作废）：点「标记到账」
+      报错后，记账首页**没有**多出那笔收入、报销单**仍停在「已提交」**；去掉那个坏值重试，
+      只记出**一笔**收入（不是两笔）
+  - 备注：这是「交易 + 报销单 + txnId 必须落在同一个事务里」在真机上唯一的验法——桩的 `abort()`
+    只改标记，写进 Map 的数据不会退回去，所以这一条自动测不了（见 `tests/helpers/fake-browser.js`
+    文件头第 1 条）
 
 ### 删除保护
 - [ ] 删掉一张已生成收入的报销单 → 弹窗问「要不要一起删那笔收入」

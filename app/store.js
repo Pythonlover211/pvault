@@ -1,7 +1,11 @@
 // 仓库层：UI 与 IndexedDB 之间的唯一通道。
 // 所有视图只通过本模块读写数据，不直接引用 db.js。
-// 本模块依赖 db.js（进而依赖 indexedDB / IDBKeyRange 浏览器全局），因此不能在 Node 里被 import，
-// 验证方式见 docs/手动验证清单.md 的「仓库层」小节。
+// 本模块依赖 db.js（进而依赖 indexedDB / IDBKeyRange 浏览器全局），所以**它的读写行为**不能在
+// Node 里直接验，验证方式见 docs/手动验证清单.md 的「仓库层」小节。
+// （订正：原文写的是「因此不能在 Node 里被 import」，那是句站不住的全称判断——模块体本身不碰
+// 浏览器全局，装好 tests/helpers/fake-browser.js 之后可以在 Node 里 import：tests/store-transaction.test.js
+// 就是这么做的。它钉住的是 addTransaction 的**数据形状**；真实浏览器的事务语义、配额与失败路径
+// 仍然只能在上面那份清单的真机条目里验。）
 
 import * as db from './db.js';
 import { monthRange } from './dates.js';
@@ -45,8 +49,12 @@ export async function addTransaction(input, { extraEntries = [] } = {}) {
   const now = Date.now();
   const txn = {
     // 允许调用方指定 id：报销到账要在**同一个事务**里把 txnId 写进报销单，
-    // 而那要求交易 id 在调用之前就已知（见 reimburse-store.js 的 settleReimbursement）。
+    // 而那要求交易 id 在调用之前就已知（见 reimburse-store.js 的 settleReimbursement——
+    // 那个文件由计划任务 4 建立、settleReimbursement 由任务 5 补上，现在都还不存在）。
     // 既有调用点都不传，行为不变。
+    // 传一个**已存在**的 id 会静默覆盖那笔交易（db.putAll 走 objectStore.put，同主键即覆盖），
+    // 而它先前派生的应收**不会**跟着变——那条 receivables 的 sourceTxnId 仍指向它，主交易却已被
+    // 改写，库里留下一对自相矛盾的记录，全程不报错。要改一笔已有的交易请用 updateTransaction。
     id: input.id ?? uid(),
     kind: input.kind,
     amountCents: input.amountCents,
@@ -85,6 +93,9 @@ export async function addTransaction(input, { extraEntries = [] } = {}) {
     });
   }
   // 额外的条目追加在最后，由**同一个** putAll 写下去——这就是「同事务」的全部实现。
+  // 追加在**主交易之后**有代价：同主键时后面的赢（objectStore.put 逐条覆盖），额外条目若也写
+  // `txns` 且撞上 txn.id，就会顶掉刚写下去的主交易，而函数返回的还是被顶掉的那个对象——
+  // 调用方拿到一个与库里对不上的 txn。所以额外条目别写 `txns`。
   await db.putAll(entries.concat(extraEntries));
   return txn;
 }
