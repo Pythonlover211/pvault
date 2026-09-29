@@ -1529,7 +1529,25 @@ git commit -m "feat(invoice): 补上第五个筛选「已报销」，状态标�
 
 **文件：**
 - 修改：`app/ui/invoice-view.js`
+- 修改：`app/ui/reimburse-view.js`（**详情页的「加票」按钮**，见下面的范围补充）
 - 修改：`styles/` 下发票相关的 CSS
+
+> **范围补充：多选的「目标单」（任务 8 的审查发现的计划缺口）**。规格 `:293` 要求详情页在 draft 时
+> 有「提交 / **加票** / 移除」，§8 `:213` 也预设了「从详情页逐张加票时可能撞上（仅存档）」——
+> 但**计划里没有任何任务给 `addInvoicesTo` 接 UI**，于是它和 `renameReimbursement` 一样，
+> 成了「store 层写好了、对用户不存在、测试全绿」的第二例。这一条并进本任务做，因为多选得先
+> 支持「目标是某一单」：
+>
+> 1. `selecting` 旁边加一个 `selectTarget`（`null` = 新建报销单；否则是那张单的 id）。
+>    「选择」按钮把两个都设成新建态（`selecting = []; selectTarget = null`）。
+> 2. 底部操作条按目标分叉：新建态是「发起报销（N 张 · ¥X）」；加票态是「加到「<单标题>」」，
+>    调用 `addInvoicesTo(selectTarget, selecting)`，成功后回到报销单段并停在那一单的详情。
+> 3. 详情页（`reimburse-view.js`）在 `canEdit(r)` 时加「加票」按钮：调
+>    `onSwitchToInvoices?.({ startSelecting: true, targetId: id })`——**回调的参数形状因此扩展**，
+>    任务 8 已经写好 `{ startSelecting: true }` 那条路，这里把 `targetId` 一并带上，
+>    发票段据此进入「加票态」（并切到「待报销」筛选）。
+> 4. 加票态要排除**已经在别的单里**的票（`invoice-view` 已有 `inv.reimbursementId` 判据，
+>    多选时本就不让选），并在底部条上写清目标单的标题——用户按的按钮必须说清它要往哪加。
 
 - [ ] **步骤 1：编写实现——分段状态与切换**
 
