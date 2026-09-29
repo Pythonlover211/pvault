@@ -707,9 +707,15 @@ git commit -m "feat(store): addTransaction 支持同事务追加条目，并透�
 // 事务计数：给「这几处写入必须落在同一个事务里」这类判据用。
 //
 // 桩的回滚是假的（见文件头第 1 条：abort() 只改标记，写进 Map 的数据不会退回去），
-// 所以「中途失败不留半截」这条**验不了**。但「只发起了一个事务」是能验的，
-// 而它恰好是那条保证的**结构前提**：一次 db.putAll / replaceAllRecords 就是一个事务，
-// 把它拆成两次调用，计数立刻变成 2。这是桩能给出的最诚实的那个信号。
+// 所以「中途失败不留半截」这条**验不了**。但「只发起了几个**写**事务」是能验的，
+// 而它恰好是那条保证的**结构前提**：一次 db.putAll / replaceAllRecords 就是一个写事务，
+// 把它拆成两次调用，计数就多 1。这是桩能给出的最诚实的那个信号。
+//
+// **只数 readwrite，不数 readonly**——这一条是 2026-09-28 复审实测纠正的：自增最初写在
+// `transaction()` 的第一行，于是 db.get() 那种只读事务也被数进去，判据的基数从 1 变成 2
+// （读一次 + 写一次），而下面三处 `assert.equal(transactionCount() - before, 1)` 在**正确
+// 实现下也会红**——一条永远红的断言不区分「拆没拆」，等于什么都没验。加上 mode 判定之后
+// 「一次批量写 = 1」才成立，把一次写入拆成两次也才会让它变成 2。
 let txCount = 0;
 
 export function transactionCount() {
@@ -717,11 +723,13 @@ export function transactionCount() {
 }
 ```
 
-再把 `Database` 类的 `transaction(names)` 方法第一行改成（加一句自增）：
+再把 `Database` 类的 `transaction(names)` 方法改成（加 mode 形参与一句自增）：
 
 ```js
-  transaction(names) {
-    txCount += 1;
+  transaction(names, mode = 'readonly') {
+    // 只把**写**事务计进去：db.get / getAll / getAllByIndex 这些读操作不该进这个计数，
+    // 否则「一次批量写 = 1」这个判据会被读操作污染成 2 / 3 / 4（见上面 transactionCount 的注释）。
+    if (mode === 'readwrite') txCount += 1;
     const list = Array.isArray(names) ? names : [names];
 ```
 
@@ -2204,14 +2212,17 @@ git commit -m "feat(invoice): 编辑器拦截「仅存档」与报销单的互�
 - [ ] 确认后记账首页多出一笔收入，金额是**改过**的那个数
 - [ ] 勾「只标记到账，不记收入」→ 确认后记账页**没有**多出交易
 - [ ] 到账金额填 0 → 会要求二次确认（公司拒报时 0 是合法的）
-- [ ] 到账写了一半时不许留下半截（可人为制造：临时让 `settleReimbursement` 同批写入里的**报销单
-      那一条**失败——把交给 `addTransaction` 的 `extraEntries` 的 value 塞进一个 IndexedDB 克隆不了
-      的值，例如 `bad: () => {}`，真机上这条 `put` 请求会失败并让整批写入作废）：点「标记到账」
+- [ ] 到账那批写入一旦失败，不许留下半截（可人为制造：把交给 `addTransaction` 的 `extraEntries`
+      的 value 里塞一个 IndexedDB 克隆不了的值，例如 `bad: () => {}`——真机上 `put()` 会**同步**
+      抛 DataCloneError，`db.js` 的 `enqueue` 捕获后调 `tx.abort()` 让整批作废）：点「标记到账」
       报错后，记账首页**没有**多出那笔收入、报销单**仍停在「已提交」**；去掉那个坏值重试，
       只记出**一笔**收入（不是两笔）
   - 备注：这是「交易 + 报销单 + txnId 必须落在同一个事务里」在真机上唯一的验法——桩的 `abort()`
     只改标记，写进 Map 的数据不会退回去，所以这一条自动测不了（见 `tests/helpers/fake-browser.js`
     文件头第 1 条）
+  - 备注重申（2026-09-28 复审纠正）：它验的是 `enqueue` 显式 abort 这条路——abort 发生在**提交
+    之前**，所以「写了一半」的半截状态其实从未产生；措辞上别把它读成「异步请求失败自动中止事务」
+    （那是另一条路径，规范里同样会中止，但不是这条用例打到的）
 
 ### 删除保护
 - [ ] 删掉一张已生成收入的报销单 → 弹窗问「要不要一起删那笔收入」

@@ -36,9 +36,11 @@ test('addTransaction：extraEntries 会与交易一起落库', async () => {
   // 这个文件里**不会**出现事务计数断言：桩的 transactionCount() 是任务 4 的交付物，而没有任何
   // 任务会回头改这个文件（任务 4 的文件清单是桩 + reimburse-store.js + 它的测试），所以别把
   // 「这层保证有人看着」读成「就在本文件里」。真正咬住它的是任务 5 那条
-  // `settleReimbursement：三处写入只发起一个事务`：settleReimbursement 把报销单当 extraEntries
-  // 交给 addTransaction，那一次调用只发起一个事务——把下面 `entries.concat(extraEntries)` 拆成
-  // 两次 putAll，那条断言的计数差就从 1 变成 2、必红。
+  // `settleReimbursement：三处写入只发起一个事务，且都落地`：settleReimbursement 把报销单当
+  // extraEntries 交给 addTransaction，那一次调用只发起一个写事务——把下面
+  // `entries.concat(extraEntries)` 拆成两次 putAll，那条断言的计数差就从 1 变成 2、必红。
+  // （「从 1 变成 2」的前提是桩只数**写**事务，见任务 4 步骤 1 里 transactionCount 的注释；
+  //   它最初把只读事务也数进去，那样基数会是 2，正确的实现反而先红。）
   // 这是**推导，不是实测**：reimburse-store.js 还没实现，那条现在跑不了。
   const txn = await store.addTransaction(
     { kind: 'income', amountCents: 300000, categoryId: 'cat-refund', accountId: 'acc-1' },
