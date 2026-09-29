@@ -2212,7 +2212,7 @@ git commit -m "feat(reimburse): 标记到账面板（金额/账户/分类 + 可�
         const cur = await invoiceStore.getInvoice(state.id);
         if (cur?.reimbursementId) {
           e.target.checked = false;
-          showError('这张票在一张报销单里，请先把它从报销单里移出，再标为「仅存档」');
+          errorNode.textContent = '这张票在一张报销单里，请先把它从报销单里移出，再标为「仅存档」';
           return;
         }
       }
@@ -2221,11 +2221,11 @@ git commit -m "feat(reimburse): 标记到账面板（金额/账户/分类 + 可�
   });
 ```
 
-其中 `showError` 用该文件里已有的错误显示方式。**实现时先读该文件**：它已有把错误显示在面板里的现成机制（保存失败时用的那套，见第 346 行附近的 catch），**复用它**，不要新造一个。若它没有独立函数，就把那段 catch 里的挂载逻辑提成一个小函数再调用。
+其中 `errorNode` 是**该文件里已经有的**东西（`const errorNode = el('div', { class: 'vault-error' })`，在文件靠前的模块级变量区），保存路径里两处错误显示用的都是 `errorNode.textContent = ...`（查重提示那处、`saveInvoice` 之后那个 catch）。**照那个写法用，不要新造函数、不要 `mount(body, ...)`**——`mount` 会清空并替换整个面板的内容，用户填了一半的表单连同图片缩略图一起消失。这里的代码块给的就是最终形态，直接照抄。
 
 - [ ] **步骤 2：编写实现——保存时兜底**
 
-在 `app/ui/invoice-editor.js` 保存路径（第 346 行 `await invoiceStore.saveInvoice(state)` **之前**）插入：
+在 `app/ui/invoice-editor.js` 的保存路径里插入——**具体位置是 `validateInvoice` 通过之后、查重（`findByNumber`）之前**（即第 329 行与第 331 行之间），**不是**紧贴第 346 行的 `saveInvoice`：
 
 ```js
       // 兜底：上面那个 onchange 是**异步**的，用户在它落定之前就点「保存」是有可能的
@@ -2233,13 +2233,15 @@ git commit -m "feat(reimburse): 标记到账面板（金额/账户/分类 + 可�
       if (state.archived && state.id) {
         const cur = await invoiceStore.getInvoice(state.id);
         if (cur?.reimbursementId) {
-          mount(body, el('div', { class: 'vault-error', text: '这张票在一张报销单里，不能标为「仅存档」。请先从报销单里把它移出。' }));
+          errorNode.textContent = '这张票在一张报销单里，不能标为「仅存档」。请先从报销单里把它移出。';
           return;
         }
       }
 ```
 
-**注意**：上面的 `body` 与 `mount` 要换成该文件里实际使用的错误显示节点与写法（第 346 行附近的 catch 就是模板）。
+**注意**：这里与上面那处用同一个 `errorNode`（**不要** `mount(body, ...)`，理由同上：会清掉用户填了一半的表单）。`return` 之后 `finally` 里的 `saving = false` 仍会执行，所以用户移完票回来还能再点保存。
+
+**为什么排在查重之前**：互斥是**硬**拦截（这张票的归属是事实问题），查重是**软**提示（两段式，第一次点只提示、第二次才真存）。顺序反了的话，用户得先点一次「保存」看查重提示、再点一次才被互斥拦住——同一个按钮要按两遍才告诉他真正的问题。而排在 `validateInvoice` 之前也不行：一张连号码都非法的票，先报互斥是答非所问。
 
 - [ ] **步骤 3：界面实测**
 
