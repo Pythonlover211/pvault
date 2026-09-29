@@ -33,10 +33,21 @@ export async function listAllCategories() {
   return (await db.getAll('categories')).sort((a, b) => a.sort - b.sort);
 }
 
-export async function addTransaction(input) {
+// extraEntries：调用方要把自己的条目写进**同一个事务**时用它。
+//
+// 存在的理由是报销到账：那一步要同时写一笔收入交易、更新报销单状态、再把 txnId 记回报销单。
+// 分两次写一旦中途失败，会留下「钱记上了、报销单还停在已提交」——而用户看到没成功就会
+// 再点一次「标记到账」，于是记出**第二笔收入**。宁可控整笔失败。
+// （db.replaceAllRecords 的注释、backup-store 的导入注释讲的是同一条纪律。）
+//
+// 默认参数保证了既有调用点一个字都不用改。
+export async function addTransaction(input, { extraEntries = [] } = {}) {
   const now = Date.now();
   const txn = {
-    id: uid(),
+    // 允许调用方指定 id：报销到账要在**同一个事务**里把 txnId 写进报销单，
+    // 而那要求交易 id 在调用之前就已知（见 reimburse-store.js 的 settleReimbursement）。
+    // 既有调用点都不传，行为不变。
+    id: input.id ?? uid(),
     kind: input.kind,
     amountCents: input.amountCents,
     categoryId: input.categoryId ?? null,
@@ -47,6 +58,10 @@ export async function addTransaction(input) {
     shares: input.shares ?? [],
     recurringId: input.recurringId ?? null,
     source: input.source ?? 'manual',
+    // 报销到账生成的收入账会带上它。这个对象是**重建**出来的，没列在这里的字段
+    // 会被静默丢掉——而删除保护（删报销单时问「那笔收入要不要一起删」）正是靠
+    // 报销单上的 txnId 找回这条交易的，链子断在这里不会报错，只会在删除时找不到它。
+    reimbursementId: input.reimbursementId ?? null,
     createdAt: now,
     updatedAt: now
   };
@@ -69,7 +84,8 @@ export async function addTransaction(input) {
       }
     });
   }
-  await db.putAll(entries);
+  // 额外的条目追加在最后，由**同一个** putAll 写下去——这就是「同事务」的全部实现。
+  await db.putAll(entries.concat(extraEntries));
   return txn;
 }
 
