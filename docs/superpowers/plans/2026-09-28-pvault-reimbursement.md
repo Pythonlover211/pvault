@@ -534,7 +534,9 @@ test('addTransaction：不传 extraEntries 时行为与从前完全一致', asyn
   // 既有 5 处调用点都走这条路，一个字都不该变。
   const txn = await store.addTransaction({ kind: 'expense', amountCents: 500 });
   assert.equal(txn.source, 'manual', 'source 默认值不变');
-  assert.equal(txn.reimbursementId, undefined, '不带 extraEntries 时不会有这个字段');
+  // 不传时是 **null** 而不是 undefined：这个对象是重建出来的、字段逐个显式列出，
+  // `input.reimbursementId ?? null` 对 undefined 也会落成 null。
+  assert.equal(txn.reimbursementId, null, '不传时显式写 null');
 });
 
 test('addTransaction：reimbursementId 会写进交易本身', async () => {
@@ -628,7 +630,7 @@ export async function addTransaction(input, { extraEntries = [] } = {}) {
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：322 pass / 0 fail。
+预期：326 pass / 0 fail（基线 323 + 本任务新增 3 条）。
 
 **这一条尤其重要**：`addTransaction` 有 5 处既有调用点（记账面板、导入、应收等）。全量绿是「默认参数没破坏任何调用方」的证据。
 
