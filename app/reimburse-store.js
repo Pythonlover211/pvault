@@ -24,10 +24,11 @@
 
 import * as db from './db.js';
 import { uid, addTransaction } from './store.js';
-// canSubmit / canSettle / isStatus 在本文件里暂时**没有调用点**：提交、到账、删除这三个写函数
-// 由计划任务 5 追加在同一个文件里，判据就用它们。现在把它们一起引进来，是为了让「状态机只从
-// reimburse-model 进」这条线一眼看得出来——数据层不许自己写 `status === 'draft'` 那种字面量判断，
-// 否则状态机一改（比如允许草稿直接到账），改的是一处、漏的是另一处，而且不报错。
+// isStatus 在本文件里暂时**没有调用点**：它留给「读到一个脏 status」时兜底用（备份恢复、
+// 手改过的记录都可能带进来）。提交 / 到账 / 删除这三个写函数用的是 canSubmit / canSettle，
+// 判据都从这一个 import 进。把状态机集中在这一行，是为了让「数据层不许自己写
+// `status === 'draft'` 那种字面量判断」这条线一眼看得出来——否则状态机一改（比如允许
+// 草稿直接到账），改的是一处、漏的是另一处，而且不报错。
 import { canEdit, canSubmit, canSettle, isStatus, STATUS } from './reimburse-model.js';
 
 // 与 invoices 侧的那一对常量同名同值（app/schema.js 里没有它们的定义，
