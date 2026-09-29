@@ -229,3 +229,64 @@ button.rd-title {
 .rd-time { margin-left: auto; font-size: var(--font-sm); color: var(--text-2); }
 /* 操作按钮不换行：手机上换行会把「删除」挤到下一行、离它要删的那张单更远。 */
 .rd-actions { display: flex; gap: 8px; flex-wrap: nowrap; margin-top: 12px; }
+
+/* —— 分段切换与多选（app/ui/invoice-view.js）——
+   四个东西：分段条（发票 / 报销单）、工具条、多选态的勾选框、底部操作条。
+   令牌同样只用 base.css 里**确实存在**的那几个：边框是 --border（本仓没有 --line），
+   强调色是 --accent（在这个 app 里是**蓝色**，不是暖橙）。 */
+.seg-bar { display: flex; gap: 0; margin: 0 0 12px; }
+.seg-bar .seg {
+  flex: 1;
+  padding: 7px 0;
+  font-size: var(--font-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+}
+/* 两格拼成一条：中间那条缝靠「左边只留右边框」消掉，否则选中态那块实底色会在缝里
+   露出下面那层底色，看着像两个没对齐的按钮。 */
+.seg-bar .seg:first-child { border-radius: var(--radius) 0 0 var(--radius); border-right: 0; }
+.seg-bar .seg:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+/* 选中的那一段用实底色：两段之间没有别的东西可看，不给一个明显的差别，用户分不清自己在哪一段。
+   这一条写在 :first-child / :last-child 之后是有意的——三者特异性相同，靠顺序决定 border-color
+   归谁（first-child 那条只改 border-right 的宽度，不会被这条覆盖掉）。 */
+.seg-bar .seg[aria-selected="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* 工具条只有一颗按钮，靠右放——它管的是下面那个列表，不该跟上面的搜索框抢位置。 */
+.inv-tools { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
+
+/* 多选态那一行比平时**多一格**（勾选框），列宽要跟着变：不改的话 52px 那一格被勾选框占掉，
+   缩略图被挤到第二列、宽度还是 1fr，整行看起来缺了一格。
+   这个状态由 JS 写在类名上而不是用 :has()——Chrome 83（本仓的底线）不认识 :has()。 */
+.inv-item.is-selecting { grid-template-columns: 18px 52px 1fr auto; }
+/* 勾选框本身只是个方框，勾中的样子由下面两条规则给。 */
+.inv-check { width: 18px; height: 18px; flex: none; border: 1.5px solid var(--border); border-radius: 3px; }
+/* 勾中的那一行：用 outline 而不是 border（border 会改尺寸，整行会跳一下），加上勾选框填实底色——
+   屏幕上一个颜色的方框与一个实心方块，比只改边框色好认得多。 */
+.inv-item.is-checked { outline: 2px solid var(--accent); outline-offset: -2px; }
+.inv-item.is-checked .inv-check { background: var(--accent); border-color: var(--accent); }
+
+/* 底部操作条：贴底固定。**不能写死 bottom: 12px**——本仓有 --bottom-inset（= --tab-h 56px + 安全区），
+   底部导航就压在那条线上，写死会让操作条盖住 tabbar（或反过来），而这取决于机型的安全区高度，
+   正是那种只在别人手机上出现的问题。 */
+.reimburse-bar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--bottom-inset) + 12px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 40;
+}
+.reimburse-bar .rb-total { font-size: var(--font-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }

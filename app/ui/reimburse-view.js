@@ -30,6 +30,19 @@ import { openSheet } from './sheet.js';
 // 切走再回来，用户应该还在他刚才那一单上。
 let openId = null;
 
+/**
+ * 打开某一单的详情（**下一次渲染**生效，本函数自己不渲染）。
+ *
+ * 给发票段的两条路用：发起报销成功之后停在新建的那一单，以及详情页「加票」加完之后停回那一单。
+ * 为什么需要一个导出的写入口：openId 是**本模块的状态**（故意留在模块里——切走再回来，用户应该
+ * 还在刚才那一单上），而调用方 ui/invoice-view.js 只负责切到这一段、碰不到这个变量。
+ * 少了它，那两条路的终点会从「这一单的详情」悄悄退化成「报销单列表」——不报错，也说不清
+ * （tests/invoice-view.test.js 把终点钉住了：它断言屏幕上出现详情页的「← 报销单」）。
+ */
+export function openReimbursement(id) {
+  openId = id ?? null;
+}
+
 // 渲染序号。与 invoice-view.js 的 viewSeq 是同一类问题：main.js 的 renderSeq 只保证
 // 「哪一次渲染有权挂 tabbar」，拦不住本视图在 await 之后自己写 root。
 // 少了它，「进报销单详情后立刻点统计」会复现「统计高亮着、屏幕上是报销单」的错位。
@@ -207,6 +220,17 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
       onclick: () => submitReimbursement(id)
         .then(() => renderReimbursements(root, { onSwitchToInvoices }))
         .catch(fail)
+    }));
+  }
+  // 加票：规格 §5.1 把「加票 / 移票 / 改名」一起算进 canEdit，所以只对草稿出现。
+  // 它做的事是把用户送回发票段、进多选，并说明目标是**这一单**——票在那边挑，挑完由
+  // invoice-view 调 addInvoicesTo 加回来（本模块自己的 addInvoicesTo 调用点只有它）。
+  // 参数形状是跨文件契约的另一半：只写 { startSelecting: true } 的话，用户以为在加票，
+  // 选完却被加进一张新建的单里——不报错，只是账目对不上。
+  if (editable) {
+    actions.push(el('button', {
+      class: 'btn', type: 'button', text: '加票',
+      onclick: () => onSwitchToInvoices?.({ startSelecting: true, targetId: id })
     }));
   }
   if (canSettle(r)) {
