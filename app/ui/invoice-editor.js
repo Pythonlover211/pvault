@@ -69,6 +69,15 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   let exporting = false;
 
   const errorNode = el('div', { class: 'vault-error' });
+  // 「仅存档」互斥的**就地**提示，单独一个节点。为什么不能只用上面那个 errorNode：它挂在面板
+  // 的最顶上，而勾选框在面板靠下——中间隔着一整个 keypad 加号码、金额、销售方、类型、抬头、
+  // 税号好几行，手机上必然要滚动才够得到。用户被拒时目光正在勾选框上、提示落在视野之外，
+  // 他能看到的只有「勾选框自己弹了回去」，不知道原因。
+  // 类名复用 .vault-error 而不是新造一个：styles/vault.css 里已经有它的规则，
+  // 新类名会被 scripts/check-theme-css.mjs 的⑭判成「app 里用到、styles 里没有规则」。
+  // 内联 min-height:0 是必须的：.vault-error 自带一行 min-height，留着的话没提示时也会空出一行，
+  // 把一条本该紧贴勾选框的提示变成一段无来由的空白。
+  const archivedHint = el('div', { class: 'vault-error', style: 'min-height:0' });
   const previewBox = el('div', {});
   // 导出按钮只在真的有文件时出现：没有文件时它按下去也没用，
   // 而一个按了没反应的按钮比没有按钮更让人困惑。
@@ -321,10 +330,15 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
           // 弹回未勾而不是只弹个提示：勾选框是这张票当前状态的**显示**，留着勾就等于
           // 屏幕上写着「仅存档」而库里不是，用户会带着一个错印象离开这个面板。
           e.target.checked = false;
-          errorNode.textContent = '这张票在一张报销单里，请先把它从报销单里移出，再标为「仅存档」';
+          // 提示写在勾选框旁边的就地节点（见 archivedHint）：用户在下方操作，提示就该在下方。
+          archivedHint.textContent = '这张票在一张报销单里，请先把它从报销单里移出，再标为「仅存档」';
           return;
         }
       }
+      // 放行之前必须**清掉**上一次的互斥提示，而不是「这一次不写它」。那句话一旦上了屏就留在
+      // 原地，它说的是**上一次**的事实：用户刚在另一个标签页把票移出报销单、回来再勾一次成功了，
+      // 屏幕上却还写着「请先把它从报销单里移出」——与此刻的状态正好相反，比不提示更误导。
+      archivedHint.textContent = '';
       state.archived = e.target.checked;
     }
   });
@@ -357,7 +371,9 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       if (state.archived && state.id) {
         const cur = await invoiceStore.getInvoice(state.id);
         if (cur?.reimbursementId) {
-          errorNode.textContent = '这张票在一张报销单里，不能标为「仅存档」。请先从报销单里把它移出。';
+          // 写就地节点、不写顶部的 errorNode：这道兜底拦的是与勾选框**同一件事**，而用户在勾选框
+          // 附近点「保存」，提示就该出现在附近（顶部 errorNode 继续承担查重、保存失败那些别的错误）。
+          archivedHint.textContent = '这张票在一张报销单里，不能标为「仅存档」。请先从报销单里把它移出。';
           return;
         }
       }
@@ -630,6 +646,9 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
       archivedCheck,
       el('span', { text: '仅存档（不参与报销追踪）' })
     ]),
+    // 紧挨着勾选框那一行：这条互斥的提示只写在这里，顶部 errorNode 不再承担它（否则同一句话
+    // 会在面板的两头各出现一次）。
+    archivedHint,
     field('备注', noteInput),
     // 关联账目：先有票、再决定挂到哪笔账上，这是更贴近真实使用顺序的入口。
     // 记账首页那个「🧾N」标记只在某笔账**已经有票**时才出现（见 ledger-home.js），

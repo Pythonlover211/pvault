@@ -75,9 +75,32 @@ function archivedCheckbox() {
   return need(hit, '面板里没有「仅存档」勾选框');
 }
 
+// 面板里有**两个** .vault-error：顶部的通用错误行，和「仅存档」勾选框旁边那条互斥专用提示
+// （为什么要两个：勾选框在面板靠下，顶部那条在手机上落在视野之外）。
+// topErrorLine 取**顶部**那个（文档序里的第一个）；errorLine 取「屏幕上写着什么」的那一个
+// ——既有用例关心的都是后者，没提示时两者都空，就退回第一个，让 `textContent === ''` 照常成立。
+function topErrorLine() {
+  const all = findAll(panelRoot(), n => n.classList.contains('vault-error'));
+  return need(all[0], '面板里没有错误行');
+}
+
 function errorLine() {
-  const hit = findAll(panelRoot(), n => n.classList.contains('vault-error'))[0];
-  return need(hit, '面板里没有错误行');
+  const all = findAll(panelRoot(), n => n.classList.contains('vault-error'));
+  return all.find(n => n.textContent !== '') || topErrorLine();
+}
+
+// 就地提示节点：**紧跟在勾选框那一行（.vault-check）之后**的那个 .vault-error。
+// 不用「第几个 .vault-error」定位——将来面板里多一个错误节点，按下标取就会悄悄指错人；
+// 而「紧贴着勾选框」恰恰就是这条提示存在的**理由本身**，断它等于断需求。
+// 桩没有 previousSibling（见 fake-dom.js 文件头：它不是 DOM 仿真器），自己从父节点的 childNodes 里找。
+function archivedHintLine() {
+  const afterCheckRow = n => {
+    const siblings = n.parentNode?.childNodes ?? [];
+    const i = siblings.indexOf(n);
+    return i > 0 && siblings[i - 1].classList.contains('vault-check');
+  };
+  const hit = findAll(panelRoot(), n => n.classList.contains('vault-error') && afterCheckRow(n))[0];
+  return need(hit, '勾选框旁边没有互斥提示节点');
 }
 
 function saveButton() {
@@ -141,7 +164,10 @@ test('票在一张报销单里：勾「仅存档」被拒、勾选框弹回未�
   await clickCheckbox(box);
 
   assert.equal(box.checked, false, '票在报销单里时，勾选必须被弹回未勾');
-  assert.match(errorLine().textContent, /报销单/, '必须给一句中文说明，而不是静默弹回');
+  // 断在**就地**节点上（不是笼统的 errorLine）：这条互斥的文案必须落在勾选框旁边——用户被拒时
+  // 目光正在这里，而顶部那条在手机上落在视野之外，他能看到的只有「勾选框自己弹了回去」。
+  assert.match(archivedHintLine().textContent, /报销单/, '必须给一句中文说明，而不是静默弹回');
+  assert.equal(topErrorLine().textContent, '', '同一句话不许同时写在面板的两头');
   const inv = await getInvoice('inv-linked');
   assert.equal(inv.archived, false, '被拒之后不许把 archived 写进库');
 });
@@ -186,7 +212,9 @@ test('保存路径兜底：勾完之后票被塞进单里（onchange 时它还�
   assert.deepEqual(saved, [], '被拦住的保存不该走到成功回调');
   const inv = await getInvoice('inv-race');
   assert.equal(inv.archived, false, '被拦住的保存不许把 archived 写进库');
-  assert.match(errorLine().textContent, /报销单/, '保存路径必须再拦一次并讲清楚原因');
+  assert.match(archivedHintLine().textContent, /报销单/, '保存路径必须再拦一次并讲清楚原因');
+  assert.equal(topErrorLine().textContent, '',
+    '兜底拦的与勾选框是同一件事：用户在勾选框附近点保存，提示也得写在那里');
 });
 
 test('保存路径不误拦：票曾经在单里、后来被移出 → 勾仅存档 → 保存照常成功', async () => {
@@ -240,6 +268,34 @@ test('兜底排在查重之前：同号票存在时，第一次点保存报的�
   // 同样先断言库、后断言文案（理由见上一条用例）。
   assert.deepEqual(saved, []);
   assert.equal((await getInvoice('inv-dup-mine')).archived, false, '被互斥拦下时不该存成仅存档');
-  assert.match(errorLine().textContent, /报销单/, '第一次点保存就该说互斥，而不是先说查重');
+  assert.match(archivedHintLine().textContent, /报销单/, '第一次点保存就该说互斥，而不是先说查重');
   assert.doesNotMatch(errorLine().textContent, /已经录过/, '硬拦截不该被软提示挡在前面');
+});
+
+test('先被拒、票被移出报销单后再勾一次：上一次的提示必须清空、archived 真落库', async () => {
+  await mkInvoice('inv-retry');
+  const { reimb } = await createReimbursement({ invoiceIds: ['inv-retry'], title: '9月报销', now: NOW });
+  const saved = [];
+  await openEditorOn('inv-retry', saved);
+
+  const box = archivedCheckbox();
+  await clickCheckbox(box);
+  // 前置断言：第一次必须真的被拒、且提示**真的上了屏**。少这一条，下面那句「提示已清空」
+  // 在一个从来没写过提示的分支上也是绿的——正是这条用例要防的那种假绿。
+  assert.equal(box.checked, false, '前置条件：票在单里时第一次勾必须被弹回');
+  assert.match(archivedHintLine().textContent, /报销单/, '前置条件：被拒时提示已经上屏');
+
+  // 用户去另一个标签页（或报销单页）把这票移出报销单。面板里 state 那份副本仍是旧的，
+  // 靠 onchange 现查库才看得到这个变化。
+  await removeInvoiceFrom(reimb.id, 'inv-retry');
+
+  await clickCheckbox(box);
+  assert.equal(box.checked, true, '票已经不在单里了，这一次勾选该放行');
+  assert.equal(archivedHintLine().textContent, '',
+    '上一次被拒的提示必须清掉：它说的是上一次的事实，与此刻的成功状态正好相反');
+
+  await saveButton().click();
+  await waitFor(() => saved.length === 1, '保存成功回调');
+  const inv = await getInvoice('inv-retry');
+  assert.equal(inv.archived, true, '提示清空之后，这一次勾选必须真的能存进库');
 });
