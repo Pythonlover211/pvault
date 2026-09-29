@@ -140,3 +140,23 @@ export function invoiceBadge(inv, reimb) {
   // 读不到报销单、或状态是脏值：退回中性说法，不猜它到哪一步了。
   return '已报销';
 }
+
+// 发票列表的筛选判据。**放在这里而不是 invoice-view.js 里**，是为了能脱离 DOM 单测——
+// 「已报销」这一个筛选正是本次要补的缺口（发票规格 §7.2 写了五个，实现只有四个），
+// 而它最容易写错的地方是「仅存档的票算不算已报销」（不算：它压根不参与报销追踪）。
+export const FILTER_IDS = Object.freeze(['all', 'pending', 'reimbursed', 'unlinked', 'stored']);
+
+export function matchFilter(inv, filterId) {
+  switch (filterId) {
+    // 三个三态判据**复用 invoiceStatus**，不在这里另写一遍 archived / reimbursementId。
+    // 起因：本文件原来同时有 matchFilter 的手写判据与 invoiceStatus 的三态判据，两者
+    // 语义等价、互为副本——而两份等价判据迟早漂移（有人给「仅存档」加一条例外、只改了
+    // 一处），漂移不报错、只是筛选结果对不上。**一处定义、一处复用。**
+    // reimb 传 null：筛选发生在发票列表页，那一刻手里没有报销单对象（见 invoiceStatus 的注释）。
+    case 'pending': return invoiceStatus(inv, null) === 'pending';
+    case 'reimbursed': return invoiceStatus(inv, null) === 'reimbursed';
+    case 'stored': return invoiceStatus(inv, null) === 'stored';
+    case 'unlinked': return !inv?.txnId;
+    default: return true;   // 'all' 与任何不认识的 id
+  }
+}

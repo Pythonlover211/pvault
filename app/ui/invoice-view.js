@@ -8,12 +8,14 @@ import { formatCents } from '../money.js';
 import { typeLabel, invoiceTitle } from '../invoice-model.js';
 import { openInvoiceEditor } from './invoice-editor.js';
 import { openSheet } from './sheet.js';
+import { matchFilter, invoiceBadge } from '../reimburse-model.js';
 
 const FILTERS = [
   { id: 'all', label: '全部' },
   { id: 'pending', label: '待报销' },
-  { id: 'stored', label: '仅存档' },
-  { id: 'unlinked', label: '未挂账' }
+  { id: 'reimbursed', label: '已报销' },
+  { id: 'unlinked', label: '未挂账' },
+  { id: 'stored', label: '仅存档' }
 ];
 
 // 筛选状态按 Tab 生命周期保存在模块级：切走再回来不该被重置，
@@ -47,12 +49,9 @@ function matches(inv, kw) {
 }
 
 function inFilter(inv) {
-  switch (filter) {
-    case 'pending': return !inv.archived && !inv.reimbursementId;
-    case 'stored': return !!inv.archived;
-    case 'unlinked': return !inv.txnId;
-    default: return true;
-  }
+  // 判据本身在 reimburse-model.js 里（可单测），这里只做转发——
+  // 五个筛选的边界（尤其「仅存档算不算已报销」）不该只在界面上被验。
+  return matchFilter(inv, filter);
 }
 
 export async function renderInvoices(root) {
@@ -162,7 +161,7 @@ export async function renderInvoices(root) {
         el('div', {}, [
           el('div', { class: 'inv-title', text: invoiceTitle(inv) }),
           el('div', { class: 'inv-meta', text: [typeLabel(inv.type), inv.number].filter(Boolean).join(' · ') }),
-          el('div', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: inv.archived ? '仅存档' : (inv.reimbursementId ? '已报销' : '待报销') })
+          el('div', { class: 'inv-tag ' + (inv.archived ? 'stored' : 'pending'), text: invoiceBadge(inv, null) })
         ]),
         el('div', { class: 'inv-amount', text: formatCents(inv.amountCents, { symbol: true }) })
       ]);
@@ -262,8 +261,8 @@ export function openInvoiceLinkSheet({ txn, categoryName = '', onChanged } = {})
         el('span', { class: 'muted tiny', text: `${inv.number || '无号码'} · ${formatCents(inv.amountCents ?? 0, { symbol: true })}` })
       ]),
       inv.archived
-        ? el('span', { class: 'inv-tag stored', text: '仅存档' })
-        : el('span', { class: 'inv-tag pending', text: inv.reimbursementId ? '已报销' : '待报销' })
+        ? el('span', { class: 'inv-tag stored', text: invoiceBadge(inv, null) })
+        : el('span', { class: 'inv-tag pending', text: invoiceBadge(inv, null) })
     ]));
 
     mount(body,

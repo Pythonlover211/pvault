@@ -81,7 +81,14 @@
 // 起作用的照旧是「字节变了就重装一次」；升号与不升号的**实际差别**只在 `addAll` 写进哪一份缓存 ——
 // 写新名字（v18）时中途失败（配额满、断网）只让新缓存作废、旧缓存完好，写同名（v17）则可能留下一份
 // 半新半旧的缓存。所以这一步不是「换掉一个出过问题的版本」（v15 的设备本来就会重装），是定版。
-const CACHE = 'pvault-v18';
+// v19：reimburse-model.js 进预缓存清单 —— 任务 6 让 ui/invoice-view.js 静态 import 它
+// （main → invoice-view → reimburse-model），它由此成了首屏静态依赖。**这次必须 +1，不能沿用 v18 那个名字**：
+// 与 v14 / v16 / v17 那几次的边界不同，v18 是任务 14 的定版号，可能已经跟着真机验证服役过了；
+// 按本文件开头那条边界（「已经在设备上服役过的版本，改 ASSETS 就得 +1」），往服役中的名字里 addAll
+// 一旦中途失败（配额满、断网）会留下半新半旧的缓存。漏加这一条的后果和 v14 / v16 / v17 相同：
+// 已装旧缓存的设备离线启动时这个 module 拿不到（cache-first 未命中 → 网络断 → 回退 index.html，
+// 模块脚本被 MIME 检查拒绝），import 链一断是整个 app 白屏，不只是发票面板。
+const CACHE = 'pvault-v19';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
@@ -123,6 +130,7 @@ const ASSETS = [
   './app/predict.js',
   './app/receivable.js',
   './app/recovery-code.js',
+  './app/reimburse-model.js',
   './app/router.js',
   './app/schema.js',
   './app/store.js',

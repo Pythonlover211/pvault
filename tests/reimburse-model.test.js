@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   STATUS, STATUS_IDS, STATUS_LABELS, isStatus, statusLabel,
   canEdit, canSubmit, canSettle, canDelete, isActive,
-  autoTitle, diffCents, invoiceStatus, invoiceBadge
+  autoTitle, diffCents, invoiceStatus, invoiceBadge, matchFilter
 } from '../app/reimburse-model.js';
 
 const r = (status) => ({ id: 'r1', status });
@@ -141,4 +141,24 @@ test('invoiceBadge：列表上那一行标签的五种文案', () => {
   // 拿不到报销单（列表页）时退回中性说法，不猜它到哪一步了。
   assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, null), '已报销');
   assert.equal(invoiceBadge({ archived: false, reimbursementId: 'r1' }, { status: 'nope' }), '已报销');
+});
+
+test('matchFilter：五个筛选各自的判据', () => {
+  const pending = { archived: false, reimbursementId: null, txnId: null };
+  const inReimb = { archived: false, reimbursementId: 'r1', txnId: null };
+  const stored = { archived: true, reimbursementId: null, txnId: 't1' };
+  const linked = { archived: false, reimbursementId: null, txnId: 't1' };
+
+  assert.equal(matchFilter(pending, 'all'), true);
+  assert.equal(matchFilter(pending, 'pending'), true);
+  assert.equal(matchFilter(inReimb, 'pending'), false);
+  assert.equal(matchFilter(inReimb, 'reimbursed'), true, '「已报销」是这次补上的第五个筛选');
+  assert.equal(matchFilter(pending, 'reimbursed'), false);
+  assert.equal(matchFilter(stored, 'reimbursed'), false, '仅存档的票不参与报销追踪');
+  assert.equal(matchFilter(linked, 'unlinked'), false);
+  assert.equal(matchFilter(pending, 'unlinked'), true);
+  assert.equal(matchFilter(stored, 'stored'), true);
+  assert.equal(matchFilter(pending, 'stored'), false);
+  // 不认识的筛选 id 一律放行（等于「全部」），不把列表变成空白。
+  assert.equal(matchFilter(pending, 'nope'), true);
 });
