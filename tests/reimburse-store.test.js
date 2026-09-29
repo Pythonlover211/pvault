@@ -406,7 +406,7 @@ test('settleReimbursement：显式传 0 是合法值（公司拒报），照记�
   assert.equal((await db.get('txns', settled.txnId)).amountCents, 0, '显式传 0 就记一笔 ¥0 的收入');
 });
 
-test('settleReimbursement：不记账时缺金额是正常的（记 0 而不是报错）', async () => {
+test('settleReimbursement：不记账时缺金额是正常的（落 null，不是折成 0）', async () => {
   await mkInvoice({ id: 'i1', amountCents: 1000 });
   const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
@@ -415,7 +415,13 @@ test('settleReimbursement：不记账时缺金额是正常的（记 0 而不是�
   // 那里不传 settledCents 是正常的调用方式，不该被上面的金额校验挡住。
   const settled = await settleReimbursement(r.id, { createTxn: false, now: NOW });
   assert.equal(settled.status, 'settled');
-  assert.equal(settled.settledCents, 0, '没给金额就是不记账的那条路，按 0 记（不是 null：单子已经到账了）');
+  // 这条断言原文是 `settledCents === 0`，理由写的是「没给金额就是不记账的那条路，按 0 记
+  // （不是 null：单子已经到账了）」。**它钉的正是「缺省折成 0」这个被推翻的行为**，已按审查结论改成 null：
+  //  · 兜底成 0 与 settledCents 的 null 默认值（「没给」与「真的是 0 元」必须分开）自相矛盾；
+  //  · 后果是界面上「金额留空 + 只标记到账」会静默落库 0，详情页显示
+  //    「实际到账 ¥0.00 / 差额 −¥3,025.00」——把「没填」记成了「公司给了 0 元」。
+  // 真的 0 元（公司拒报）走显式传值那条路，见上面「显式传 0 是合法值」。
+  assert.equal(settled.settledCents, null, '没给金额就是不记账的那条路：落 null（「没填」不是「0 元」）');
   assert.equal(settled.txnId, null);
 });
 

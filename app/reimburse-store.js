@@ -333,7 +333,20 @@ export async function settleReimbursement(id, {
   if (!hasCents && (!missingCents || createTxn)) {
     throw new ReimburseError('到账金额不对，这次没记上', 'BAD_INPUT');
   }
-  const cents = hasCents ? settledCents : 0;
+  // 保留 null（不折成 0）。四种组合逐一代进上面那条判断，能走到这里且 !hasCents 的**只有一种**：
+  //   createTxn:true  + 有值  → hasCents            → 用原值
+  //   createTxn:true  + 缺失  → 上面那条 throw       → 到不了这里（要记账就必须有金额）
+  //   createTxn:false + 有值  → hasCents            → 用原值
+  //   createTxn:false + 缺失  → 唯一走到这里且 !hasCents 的组合 → 值就是「没给」
+  // 所以这一行碰不到记账支：下面 createTxn:true 那条路的 amountCents 用的正是 cents，
+  // 而它在那条路上恒为 hasCents 分支。
+  //
+  // 为什么必须保留 null 而不是兜底成 0：settledCents 的默认值当初从 0 改成 null（见参数列表），
+  // 就是为了让「没给」（漏传、或界面上的金额输入框是空的）与「真的是 0 元」（公司拒报，
+  // 界面上专门为它做了二次确认）可区分。兜底成 0 把两者又合并了回去，于是「只标记到账、
+  // 金额留空」会静默落库 settledCents: 0，详情页显示「实际到账 ¥0.00 / 差额 −¥3,025.00」——
+  // 把「没填」记成了「公司给了 0 元」。这里修的是本文件**内部的不一致**，不是新增语义。
+  const cents = hasCents ? settledCents : null;
 
   // 已到账那条记录：两个分支共用这一份字面量，各支只 spread 一次。
   // 两处各写一遍六个字段的版本里，将来加一个字段、只改一处，就会得到「因复选框而字段不同」的
