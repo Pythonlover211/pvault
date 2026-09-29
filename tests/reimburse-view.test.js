@@ -120,9 +120,13 @@ async function mkInvoice(id, amountCents, seller = '某公司') {
   await saveInvoice({ id, number: '', amountCents, issuedAt: NOW, seller, type: 'other', archived: false });
 }
 
-async function mkDraft(title, invoiceIds) {
-  const { reimb } = await createReimbursement({ invoiceIds, title, now: NOW });
+async function mkDraftAt(title, invoiceIds, now) {
+  const { reimb } = await createReimbursement({ invoiceIds, title, now });
   return reimb;
+}
+
+async function mkDraft(title, invoiceIds) {
+  return mkDraftAt(title, invoiceIds, NOW);
 }
 
 async function submitAndGet(id) {
@@ -133,7 +137,13 @@ async function submitAndGet(id) {
 // 只标记到账、不记收入：这条路能落 settledCents: null（「没填金额」），
 // 而它是本文件里最容易写错的那个状态（折成 0 之后屏幕上写着「公司给了 0 元」）。
 async function settleAndGet(id, settledCents) {
-  await settleReimbursement(id, { settledCents, createTxn: false, now: NOW + 2000 });
+  return settleAt(id, settledCents, NOW + 2000);
+}
+
+// 到账时间要能被测试摆布：列表的「已到账」组按 settledAt 倒序，而 settledAt 与 createdAt
+// 在真实使用里本来就是两回事（早建的单可能晚到账）。时间戳全用同一个 NOW 就验不出顺序。
+async function settleAt(id, settledCents, now) {
+  await settleReimbursement(id, { settledCents, createTxn: false, now });
   return getReimbursement(id);
 }
 
@@ -209,7 +219,81 @@ test('列表：每张卡的「N 张 · 合计」是按它自己的发票算的',
   assert.ok(cardByTitle('一张单').textContent.includes('1 张 · ¥555.00'));
 });
 
-test('列表：差额只在「已到账 + 填了金额 + 与合计不同」时出现', async () => {
+test('列表：每张卡带创建日期（规格 §7.4 列的那一项）', async () => {
+  await mkInvoice('i1', 100000);
+  await mkDraft('有日期的单', ['i1']);
+
+  await renderList();
+
+  // 期望值用同一个 toLocaleDateString **现算**，不写死字符串：日期读的是本地时区，
+  // 把「2023/11/15」钉进断言的话，换一台机器（或换时区）就红，而代码是对的。
+  const want = new Date(NOW).toLocaleDateString('zh-CN');
+  assert.ok(cardByTitle('有日期的单').textContent.includes(want),
+    `卡片要带创建日期 ${want}，实际卡片文本是「${cardByTitle('有日期的单').textContent}」`);
+});
+
+test('列表：一张票都没有的单写「还没有发票」，不是「0 张 · ¥0.00」', async () => {
+  await mkInvoice('i1', 100000);
+  await mkDraft('空单', []);
+  await mkDraft('正常单', ['i1']);
+
+  await renderList();
+
+  const empty = cardByTitle('空单').textContent;
+  // 规格 §8：「报销单里一张票都没有」允许存在，但列表上要写「还没有发票」。
+  // 「0 张」读起来是一个既成事实，而用户此刻恰恰是要往里加票。
+  assert.ok(empty.includes('还没有发票'), `实际卡片文本是「${empty}」`);
+  assert.ok(!empty.includes('0 张'), '零张的卡不该写「0 张」');
+  assert.ok(!empty.includes('¥0.00'), '零张的卡不该写「¥0.00」');
+  // 另一张卡照旧是「N 张 · 合计」——别为了零张那一句把正常分支也改了。
+  assert.ok(cardByTitle('正常单').textContent.includes('1 张 · ¥1000.00'));
+});
+
+test('列表：已到账组内按 settledAt 倒序（不是创建时间）', async () => {
+  await mkInvoice('i1', 100000);
+  await mkInvoice('i2', 100000);
+  await mkInvoice('i3', 100000);
+  // 创建顺序是「早 → 晚」，到账顺序**反过来**（最早建的最后才到账）。
+  // 两个顺序都写死，才能区分实现读的是哪一个时间戳。
+  const a = await mkDraftAt('早建晚到', ['i1'], NOW);
+  const b = await mkDraftAt('中建中到', ['i2'], NOW + 1000);
+  const c = await mkDraftAt('晚建早到', ['i3'], NOW + 2000);
+  for (const r of [a, b, c]) await submitAndGet(r.id);
+  await settleAt(a.id, 100000, NOW + 30000);
+  await settleAt(b.id, 100000, NOW + 20000);
+  await settleAt(c.id, 100000, NOW + 10000);
+
+  await renderList();
+
+  // 判据取**屏幕上卡片的先后**（cards() 是文档序）：用户在这一组里找的是「最近哪笔钱回来了」，
+  // 而不是「哪张单建得晚」。跟着 createdAt 倒序走的话，顺序刚好是反的。
+  const order = cards()
+    .map(c => /早建晚到|中建中到|晚建早到/.exec(c.textContent)?.[0])
+    .filter(Boolean);
+  assert.deepEqual(order, ['早建晚到', '中建中到', '晚建早到'],
+    `已到账组应按 settledAt 倒序，实际屏幕顺序：${order.join(' → ')}`);
+});
+
+test('列表：脏 status 的单不会静默消失（兜底分组让它照旧出现在屏幕上）', async () => {
+  await mkInvoice('i1', 100000);
+  await mkDraft('正常单', ['i1']);
+  // 一条谁也没定义过的 status：备份是从外部导入的、记录也可能被手改过——
+  // statusLabel 早就为这种值准备好了「未知状态」的说法，说明这条路径是被承认存在的。
+  await db.put('reimbursements', {
+    id: 'garb-1', title: '脏状态单', status: 'garbage', createdAt: NOW - 1000,
+    submittedAt: null, settledAt: null, accountId: null, txnId: null, settledCents: null, note: ''
+  });
+
+  await renderList();
+
+  // 关键不是「它被归到哪一组」，而是**它在屏幕上**：「进行中」与「已到账」都是白名单判据，
+  // 两个都不要它时这张单会从列表上整张消失——不报错、数据也还在，用户却以为单子丢了。
+  assert.equal(cards().length, 2, `两张单都该出现，实际屏幕上 ${cards().length} 张`);
+  assert.ok(cardByTitle('脏状态单').textContent.includes('未知状态'),
+    '脏 status 的标签要走 statusLabel 的兜底说法，不是一句谁都看不懂的原文');
+});
+
+test('列表：已到账的卡片一定显示「实际到账」，差额只在非 0 时另起一行', async () => {
   await mkInvoice('i1', 302500);
   await mkInvoice('i2', 302500);
   await mkInvoice('i3', 302500);
@@ -225,22 +309,29 @@ test('列表：差额只在「已到账 + 填了金额 + 与合计不同」时�
 
   await renderList();
 
-  // ① 实到 ≠ 合计：差额行要有，负数如实显示（公司少报、扣税、抹零都合法）
-  assert.ok(cardByTitle('少给了').textContent.includes('实际到账 ¥3000.00 · 差额 -¥25.00'),
+  // ① 实到 ≠ 合计：两行都要有，负数如实显示（公司少报、扣税、抹零都合法）
+  assert.ok(cardByTitle('少给了').textContent.includes('实际到账 ¥3000.00'),
+    `实到要如实显示，实际卡片文本是「${cardByTitle('少给了').textContent}」`);
+  assert.ok(cardByTitle('少给了').textContent.includes('差额 -¥25.00'),
     '实到与合计不同时要有差额行');
   // ② 差额为 0：没有信息，不显示。**这条守着「别写成 diffCents(...) !== null」**——
   //    那样写会让差额为 0 的行也渲染，屏幕上多一行「差额 ¥0.00」的噪音。
-  //    注意列表卡片的「实际到账」与「差额」是**同一行**（只有一行时才不占地方），所以差额为 0 时
-  //    这一整行都不出现；详情页则是两行独立的（那边「实际到账」照显示，见下面那条测试）。
+  //    ⚠️ 但「实际到账」这一行**必须**在：规格 §7.4 那句「（若有）」紧跟在「差额」后面，管的是差额；
+  //    实到金额对已到账的单是**无条件**的。改这条测试之前，「实际到账」与「差额」挤在同一行、
+  //    由 diff 的真值一起决定要不要渲染，于是「公司正好给对」的单在列表上跟没记过金额一模一样
+  //    （点进去才看得到）——那是规格偏差，返工把它拆成了两行（与详情页对齐）。
   assert.ok(!cardByTitle('正好').textContent.includes('差额'),
     '差额为 0 不显示（0 是 falsy，但这条判据靠的是真值判断，不是 diffCents 返回了 null）');
-  assert.ok(!cardByTitle('正好').textContent.includes('实际到账'),
-    '列表页的实到与差额是同一行，没有差额时整行都不渲染');
-  // ③ settledCents 为 null：只标记到账、没填金额。连「实际到账」都不该显示——
-  //    显示成 ¥0.00 等于说「公司给了 0 元」。
-  assert.ok(!cardByTitle('没填金额').textContent.includes('实际到账'),
-    'settledCents 为 null 时不该显示金额行');
-  assert.ok(!cardByTitle('没填金额').textContent.includes('差额'));
+  assert.ok(cardByTitle('正好').textContent.includes('实际到账 ¥3025.00'),
+    '差额为 0 时「实际到账」这一行仍必须在（「（若有）」管的是差额，不是到账金额）');
+  // ③ settledCents 为 null：只标记到账、没填金额 → 写「未填」。**不能**走 formatCents：
+  //    它对 null 会安静地返回 '¥0.00'，屏幕上就变成「公司给了 0 元」（同一个坑详情页那边也钉着）。
+  assert.ok(cardByTitle('没填金额').textContent.includes('实际到账 未填'),
+    `「没填」必须说出来，实际卡片文本是「${cardByTitle('没填金额').textContent}」`);
+  assert.ok(!cardByTitle('没填金额').textContent.includes('¥0.00'),
+    '「没填」不能显示成 ¥0.00');
+  assert.ok(!cardByTitle('没填金额').textContent.includes('差额'),
+    '没填金额就没有差额可谈');
 });
 
 test('详情：合计与时间线——已发生的节点有时间，未发生的是 — 且灰显', async () => {
@@ -328,6 +419,52 @@ test('canEdit 分界：草稿有「提交给公司」与每张票的「移除」
   assert.equal(all.filter(i => i.reimbursementId).length, 2, '提交只改状态，不动票的归属');
 });
 
+test('详情：草稿的标题可点改名，改完落库并当场重绘', async () => {
+  await mkInvoice('i1', 302500);
+  const r = await mkDraft('旧标题', ['i1']);
+
+  await renderList();
+  await openDetail('旧标题');
+
+  // 判据是**标题那个节点的类型**（`.rd-title` 是仓里的显示约定，与文件头列的三处同源）。
+  // 「可点改」这件事只有真做成按钮才算数：做成一个不可点的 div，用户点了之后什么都不会发生，
+  // 而 renameReimbursement 在 store 里一直躺着、没有任何调用点（规格 §7.4 要的就是这个入口）。
+  const titleNode = findAll(document.body, n => n.classList.contains('rd-title'))[0];
+  assert.equal(titleNode.tagName, 'BUTTON', '草稿态的标题应当是可点的按钮（规格 §7.4）');
+  await titleNode.click();
+  await waitFor(() => findAll(document.body, n => n.classList.contains('sheet-overlay')).length === 1,
+    '改名面板');
+
+  const input = findAll(sheetRoot(), n => n.tagName === 'INPUT')[0];
+  assert.ok(input, '面板里要有一个标题输入框');
+  assert.equal(input.value, '旧标题', '输入框要预填当前标题（用户多半只改一两个字）');
+  input.value = '新标题';
+  await sheetButtons('保存')[0].click();
+
+  await waitForAsync(async () => (await getReimbursement(r.id))?.title === '新标题', '改名落到库里');
+  await waitFor(() => findByText(document.body, '新标题') !== null, '详情页标题跟着变');
+  assert.equal(findByText(document.body, '旧标题'), null, '旧标题不该留在屏幕上');
+});
+
+test('详情：提交之后的标题点不动（改名与「移票」同属 canEdit）', async () => {
+  await mkInvoice('i1', 302500);
+  const r = await mkDraft('已提交单', ['i1']);
+  await submitAndGet(r.id);
+
+  await renderList();
+  await openDetail('已提交单');
+
+  // 规格 §5.1 把「改名」和「加票 / 移票」一起算进 canEdit，只在草稿态放行：
+  // 提交给公司之后再改标题，手机上这一单和公司收到的那张单就对不上了。
+  // 判据取**节点类型**——把 editable 判据写坏（例如写死成 true）时标题会重新变成 BUTTON，这条当场红。
+  const titleNode = findAll(document.body, n => n.classList.contains('rd-title'))[0];
+  assert.equal(titleNode.tagName, 'DIV', '提交之后的标题必须是普通文本，不能是能点开改名的入口');
+  assert.equal(
+    findAll(document.body, n => n.tagName === 'BUTTON' && n.textContent === '已提交单').length, 0,
+    '已提交的单不该有任何以标题为文本的按钮'
+  );
+});
+
 test('删除保护：没生成过收入时只给一个「删除」，打开面板本身不动库', async () => {
   await mkInvoice('i1', 302500);
   const r = await mkDraft('草稿单', ['i1']);
@@ -401,6 +538,45 @@ test('详情：移除一张票，合计跟着变小并落到库里', async () =>
   const remain = formatCents(left[0].amountCents, { symbol: true });
   await waitFor(() => findByText(document.body, remain) !== null, `合计变成剩下的 ${remain}`);
   assert.equal(findByText(document.body, '¥3580.00'), null, '旧合计不该留在屏幕上');
+});
+
+test('详情：移除失败时把中文错误写进错误行，而不是漏成 unhandled rejection', async () => {
+  // 与下面「提交失败」那条是同一形状，但守的是**另一个**异步动作——这条是审查实测出来的空档：
+  // 把「移除」那句 `.catch(fail)` 删掉，当时 12 条测试**全绿**。它的 rejection 没有任何人接
+  // （onclick 的返回值在浏览器里没人 await），用户那头屏幕上什么都不会变、控制台里一条 unhandled。
+  await mkInvoice('i1', 302500);
+  await mkInvoice('i2', 55500);
+  await mkDraft('待提交单', ['i1', 'i2']);
+
+  await renderList();
+  await openDetail('待提交单');
+
+  const boom = new Error('磁盘满了');
+  boom.name = 'QuotaExceededError';
+  // 注入到 invoices 表：Remove 的落库在那一张（detachEntry）。
+  const restore = failNextWrite('invoices', boom);
+  const unhandled = [];
+  const onUnhandled = reason => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await buttons('移除')[0].click();
+    await flush();
+    // unhandledRejection 要等一轮事件循环结束才判定，多等一轮再断言（与下一条同理）。
+    await flush();
+  } finally {
+    restore();
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  // 两种写坏方式各自被这里的一条钉住：
+  //  · `onclick: () => { removeInvoiceFrom(…).then(…) }`（没 return 也没 catch）→ unhandled 非空；
+  //  · 链上少了 `.catch(fail)` → 桩的 click 会 await 监听器、直接把这个 rejection 抛出来（上面的 click 红）。
+  //    浏览器里同一种写法表现为 unhandled rejection，两条路的结论一致：错误必须被接住并说出来。
+  assert.deepEqual(unhandled.map(r => String(r)), [], '移除失败不能漏成 unhandled rejection');
+  await waitFor(() => findByText(document.body, '存储空间') !== null, '错误提示');
+  // 失败是原子的：票还在这一单里、合计也没变（与 store 的「一次批量写」纪律一致）。
+  assert.equal(await attachedInvoiceCount(), 2, '写失败时票不该被移出这一单');
+  assert.ok(findByText(document.body, '¥3580.00'), '合计不该变');
 });
 
 test('详情：提交失败时把中文错误显示出来，而不是漏成 unhandled rejection', async () => {

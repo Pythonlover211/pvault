@@ -393,11 +393,12 @@ const show = h => `${h.file}:${h.line}: ${h.raw}   ← ${h.rule}：${h.why}`;
 
 test('扫描范围的前提：运行时代码都抽到了（别让守卫静默失明）', () => {
   const { files } = scanAll();
-  // 实测基线（数出来的是 `runtimeTargets` 的长度）：app 下 51 个 .js + sw.js + index.html = **53**；
-  // 其中 **52** 个走 `stripComments`（51 + sw.js），`index.html` 走「不剥注释」那一支。
-  // （复审报的 52 是「走剥注释的那一支」的口径，不是 `files.length`——两个数都对，别混。）
+  // 实测基线（数出来的是 `runtimeTargets` 的长度）：app 下 55 个 .js + sw.js + index.html = **57**；
+  // 其中 **56** 个走 `stripComments`（55 + sw.js），`index.html` 走「不剥注释」那一支。
+  // （复审报的 52 是「走剥注释的那一支」的**早期**口径，不是 `files.length`——当时 app 下 51 个 .js。
+  //   报销单那几个模块进来之后两个数各涨了 4（57 / 56），下限 `>= 50` 照样有量级的余量。）
   assert.ok(files.length >= 50,
-    `只抽到 ${files.length} 个运行时文件（实测基线 53）——遍历多半失效了，下面的断言不能当通过`);
+    `只抽到 ${files.length} 个运行时文件（实测基线 57）——遍历多半失效了，下面的断言不能当通过`);
   for (const want of ['app/main.js', 'sw.js', 'index.html']) {
     assert.ok(files.some(f => f.file === want), `${want} 不在扫描范围里（抽到：${files.map(f => f.file).join(', ')}）`);
   }

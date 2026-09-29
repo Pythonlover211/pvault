@@ -185,6 +185,21 @@
 .rc-meta { margin-top: 4px; font-size: var(--font-sm); color: var(--text-2); }
 .rc-diff { margin-top: 4px; font-size: var(--font-sm); color: var(--text-2); }
 .rd-title { font-size: var(--font-lg); }
+/* 草稿态的标题是个**按钮**（点开改名面板，规格 §7.4）：清掉按钮的默认底色 / 边框 / 居中，
+   让它看起来还是那行标题（与 .rd-inv-main 同一处置）。单独一条 `button.rd-title` 而不是并进
+   上面那句：提交之后同一位置是个 div，两条规则的 display 与宽度诉求不同。
+   font-size 必须写在 `font: inherit` **之后**——font 简写会把 font-size 一起重置回继承值。 */
+button.rd-title {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--font-lg);
+  text-align: left;
+}
 /* 票一行一条，行间只用一条 --border 细线分开、不铺底色。 */
 .rd-inv { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 /* 整行可点的主按钮：清掉按钮默认底色、让字体继承（与 .inv-link-row 同理）。 */

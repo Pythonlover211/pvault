@@ -19,7 +19,7 @@ import {
   STATUS, statusLabel, isActive, canEdit, canSubmit, canSettle, diffCents
 } from '../reimburse-model.js';
 import {
-  listReimbursements, listInvoicesOf, getReimbursement,
+  listReimbursements, listInvoicesOf, getReimbursement, renameReimbursement,
   submitReimbursement, removeInvoiceFrom, deleteReimbursement
 } from '../reimburse-store.js';
 import { openSettleSheet } from './settle-sheet.js';
@@ -71,6 +71,18 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
 
   const active = rows.filter(({ r }) => isActive(r));
   const settled = rows.filter(({ r }) => r.status === STATUS.SETTLED);
+  // 脏 status 的单（既不是 draft/submitted，也不是 settled）——上面两个判据都是白名单，
+  // 于是它**两组都不属于**：不报错，只是从列表上整张消失，用户看到的是「我的单不见了」（数据还在库里）。
+  // 备份是从外部导入的、手改过的记录都可能带进脏 status，所以给它一个兜底分组。
+  // 卡片上的状态标签此时显示 statusLabel 的「未知状态」（那个函数对不认识的值就是这么答的），
+  // 用户至少知道这一张需要自己看一眼。
+  const other = rows.filter(({ r }) => !isActive(r) && r.status !== STATUS.SETTLED);
+  // 规格 §7.4：已到账组内按 `settledAt` 倒序（用户在这一组里找的是「最近哪笔钱回来了」，
+  // 不是「哪张单建得早」——组内原本跟着列表的 createdAt 倒序走）。
+  // settledAt 缺失 / 脏值（只标记过到账又被手改过的记录）一律当 0 排到组尾：
+  // 让 undefined 或字符串参与减法会得到 NaN，比较函数就不满足传递性，顺序会飘。
+  const settledAtOf = ({ r }) => (Number.isSafeInteger(r.settledAt) ? r.settledAt : 0);
+  settled.sort((a, b) => settledAtOf(b) - settledAtOf(a));
 
   function card(r, invoices) {
     // 差额行只在**已到账**、**填了金额**、且**与合计不同**时出现。三个条件各有各的道理：
@@ -83,6 +95,34 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
     const diff = (r.status === STATUS.SETTLED && r.settledCents !== null)
       ? diffCents(r.settledCents, invoices)
       : null;
+
+    // 「实际到账」与「差额」是**两行**，判据也不同（规格 §7.4）：
+    //  · 「实到多少」对已到账的单是**无条件**的——规格那句「（若有）」紧跟在「差额」后面，
+    //    管的是差额（差额为 0 时没有信息，不显示）；实到金额无论是否与合计一致都该看得见，
+    //    否则「公司正好给对」的单看上去跟没记到账金额一样，用户会以为自己没填过。
+    //  · settledCents 为 null（只标记到账、没记金额）显示「未填」，**不能**走 formatCents：
+    //    它对 null 安静地返回 '¥0.00'，屏幕上就变成「公司给了 0 元」。详情页同一处也是这么处置的。
+    let settledText = null;
+    if (r.status === STATUS.SETTLED) {
+      settledText = r.settledCents === null
+        ? '实际到账 未填'
+        : `实际到账 ${formatCents(r.settledCents, { symbol: true })}`;
+    }
+
+    // 列表上要短，所以用 toLocaleDateString（只到日）；详情页时间线那边用 toLocaleString，
+    // 那里要看清「哪一刻」。脏 createdAt（手改过的备份）不写 Date 的默认「Invalid Date」——
+    // 那串东西对用户没有信息量，退回「—」，与时间线未发生节点的口径一致。
+    const created = Number.isSafeInteger(r.createdAt) ? new Date(r.createdAt) : null;
+    const createdText = created && !Number.isNaN(created.getTime())
+      ? created.toLocaleDateString('zh-CN')
+      : '—';
+
+    // 一张票都没有的单：说「还没有发票」，不说「0 张 · ¥0.00」（规格 §8 明写）。
+    // 「0 张」读起来像「这一单里有零张票」的既成事实，而用户此刻要做的是往里加票。
+    const metaText = invoices.length === 0
+      ? '还没有发票'
+      : `${invoices.length} 张 · ${formatCents(sumCents(invoices), { symbol: true })}`;
+
     return el('button', {
       class: 'reimb-card', type: 'button',
       onclick: () => { openId = r.id; renderReimbursements(root, { onSwitchToInvoices }); }
@@ -91,11 +131,12 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
         el('span', { class: 'rc-title', text: r.title }),
         el('span', { class: 'rc-status', text: statusLabel(r.status) })
       ]),
-      el('div', { class: 'rc-meta', text: `${invoices.length} 张 · ${formatCents(sumCents(invoices), { symbol: true })}` }),
-      diff ? el('div', {
-        class: 'rc-diff',
-        text: `实际到账 ${formatCents(r.settledCents, { symbol: true })} · 差额 ${formatCents(diff, { symbol: true })}`
-      }) : null
+      el('div', { class: 'rc-meta', text: metaText }),
+      // 创建日期另起一行（`muted tiny` 是仓里现成的次要文字层，与 .rc-meta 同一层级，
+      // 不新造类名——新类名没有规则的话 scripts/check-theme-css.mjs 的 ⑭ 会红）。
+      el('div', { class: 'muted tiny', text: `创建于 ${createdText}` }),
+      settledText ? el('div', { class: 'rc-diff', text: settledText }) : null,
+      diff ? el('div', { class: 'rc-diff', text: `差额 ${formatCents(diff, { symbol: true })}` }) : null
     ]);
   }
 
@@ -121,7 +162,10 @@ export async function renderReimbursements(root, { onSwitchToInvoices } = {}) {
         ])
       : el('div', { class: 'stack' }, [
           group('进行中', active),
-          group('已到账', settled)
+          group('已到账', settled),
+          // 兜底组只装脏 status 的单。组名不写「未知」是因为它装的不是一种状态，而是「这一版
+          // 认不出来的那些」；有它之后，列表在脏数据上也不会变成一片空白（见上面 other 的注释）。
+          group('其它', other)
         ].filter(Boolean))
   );
 }
@@ -189,10 +233,26 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
       onclick: () => { openId = null; renderReimbursements(root, { onSwitchToInvoices }); }
     }),
     errorNode,
-    el('div', { class: 'rd-title', text: r.title }),
+    // 顶部标题：**草稿态可点改名**（规格 §7.4「顶部：标题（draft 时可点改）」）。
+    // 提交之后必须是普通文本、点不动——规格 §5.1 把「改名」与「加票 / 移票」一起算进 canEdit，
+    // 已提交的单对用户就是只读的（改完标题，手机上这一单和公司收到的那张单就对不上了）。
+    // renameReimbursement 在 store 里一直有，但在此之前**没有任何 UI 调用点**——没有入口的
+    // store 函数等于不存在，用户点不到它。
+    editable
+      ? el('button', {
+          class: 'rd-title', type: 'button', text: r.title,
+          onclick: () => openRenameSheet(r, () => renderReimbursements(root, { onSwitchToInvoices }))
+        })
+      : el('div', { class: 'rd-title', text: r.title }),
     el('div', { class: 'muted tiny', text: statusLabel(r.status) }),
 
     // 票的列表。点一张进发票编辑器（那里能看到原图与全部字段）。
+    //
+    // ⚠️ 规格 §7.3 要的是「票的横向缩略图列表」，本版本**降级为文字行**（规格那一句已同步改，
+    // 两处必须一致）：缩略图要为每张票 createObjectURL 喂 <img>，而本仓有过「对象 URL 不回收」
+    // 的前科——在这条路上漏掉 revokeObjectURL 就是每进一次详情页漏一批 blob（票多时是几十 MB，
+    // 而且不会有任何地方报错）。真要做，得先有一条「离开视图时统一回收」的生命周期，
+    // 那是另一件事。文字行不是死角：点一行就能进发票编辑器看到原图。
     invoices.length === 0
       ? el('div', { class: 'empty', text: '这张报销单还没有发票' })
       : el('div', {}, invoices.map(inv => el('div', { class: 'rd-inv' }, [
@@ -240,6 +300,45 @@ async function renderDetail(root, id, { seq, onSwitchToInvoices }) {
 
     el('div', { class: 'rd-actions' }, actions)
   ]));
+}
+
+// 改名面板（详情页标题点开的那个）。与下面的删除确认面板同一处置：
+//  · 错误行**不 mount 整块 body**——失败是原子的（什么都没发生），用户的下一步就是重试，
+//    把面板换成一行错误等于逼他关掉重开；
+//  · `.catch(fail)` 不能省：onclick 返回的 Promise 在浏览器里**没人 await**，漏出去就是控制台里
+//    一条 unhandled rejection，而用户那头面板上什么都不会变（同「提交给公司」那段的理由）。
+function openRenameSheet(r, onDone) {
+  const body = el('div', { class: 'stack' });
+  const sheet = openSheet({ title: '改标题', body });
+  const errorNode = el('div', { class: 'form-error', hidden: true });
+  // 预填当前标题：用户多半只改一两个字（「9月报销」→「9月报销 · 打车」），重打一遍全文很烦。
+  const input = el('input', { type: 'text', value: r.title });
+
+  function fail(err) {
+    errorNode.textContent = String(err?.message || err);
+    errorNode.hidden = false;
+  }
+
+  function run() {
+    renameReimbursement(r.id, input.value)
+      .then(() => {
+        sheet.close();
+        onDone();
+      })
+      .catch(fail);
+  }
+
+  mount(body,
+    el('div', { class: 'field' }, [
+      el('label', { text: '标题' }),
+      input,
+      // 空标题的口径在 store 里（renameReimbursement 的 `String(...).trim() || reimb.title`
+      // 会保持原标题不变），界面上把它说出来——否则用户点了保存看不出任何变化，只会以为坏了。
+      el('div', { class: 'muted tiny', text: '留空则保持原标题不变' })
+    ]),
+    errorNode,
+    el('button', { class: 'btn btn-primary', type: 'button', text: '保存', onclick: run })
+  );
 }
 
 // 删除保护（规格 §6.6）：生成过收入账的单子必须问，而且**不能默认**——
