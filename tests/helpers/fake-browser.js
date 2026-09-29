@@ -39,6 +39,24 @@
 
 const databases = new Map();   // 库名 -> { version, stores: Map<表名, Store> }
 
+// 事务计数：给「这几处写入必须落在同一个事务里」这类判据用。
+//
+// 桩的回滚是假的（见文件头第 1 条：abort() 只改标记，写进 Map 的数据不会退回去），
+// 所以「中途失败不留半截」这条**验不了**。但「只发起了几个**写**事务」是能验的，
+// 而它恰好是那条保证的**结构前提**：一次 db.putAll / replaceAllRecords 就是一个写事务，
+// 把它拆成两次调用，计数就多 1。这是桩能给出的最诚实的那个信号。
+//
+// **只数 readwrite，不数 readonly**——这一条是 2026-09-28 复审实测纠正的：自增最初写在
+// `transaction()` 的第一行，于是 db.get() 那种只读事务也被数进去，判据的基数从 1 变成 2
+// （读一次 + 写一次），而下面那些 `assert.equal(transactionCount() - before, 1)` 在**正确
+// 实现下也会红**——一条永远红的断言不区分「拆没拆」，等于什么都没验。加上 mode 判定之后
+// 「一次批量写 = 1」才成立，把一次写入拆成两次也才会让它变成 2。
+let txCount = 0;
+
+export function transactionCount() {
+  return txCount;
+}
+
 class Store {
   constructor(keyPath) {
     this.keyPath = keyPath;
@@ -136,7 +154,10 @@ class Database {
     return store;
   }
 
-  transaction(names) {
+  transaction(names, mode = 'readonly') {
+    // 只把**写**事务计进去：db.get / getAll / getAllByIndex 这些读操作不该进这个计数，
+    // 否则「一次批量写 = 1」这个判据会被读操作污染成 2 / 3 / 4（见上面 transactionCount 的注释）。
+    if (mode === 'readwrite') txCount += 1;
     const list = Array.isArray(names) ? names : [names];
     // db.js 的注释记着「db.transaction([]) 抛 InvalidAccessError，不是 no-op」——桩照抛，
     // 否则「空清单」这种调用在测试里会静默通过，而它在浏览器里必炸。
