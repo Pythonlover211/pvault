@@ -1350,6 +1350,7 @@ git commit -m "feat(reimburse): 提交/到账/删除，到账三处写入单事�
 - 修改：`app/ui/invoice-view.js:12-17`（FILTERS）、`:49-56`（inFilter）
 - 修改：`sw.js`（**ASSETS 补 `./app/reimburse-model.js`，`CACHE` 版本 +1**）
 - 测试：`tests/reimburse-model.test.js`
+- 测试：`tests/invoice-view-filters.test.js`（**质检轮补的守卫**，见任务末后记）
 
 > **为什么 `sw.js` 必须一起改**（实现时实测出来的，别漏）：`invoice-view.js` 静态 import
 > `reimburse-model.js` 之后，后者成了**首屏静态依赖**，而 `tests/boot-order.test.js` 的守卫
@@ -2139,7 +2140,7 @@ export function openSettleSheet({ reimb, invoices, onSettled }) {
 
 - [ ] **步骤 7：跑全量回归 + Commit**
 
-运行：`D:\node.exe --test --test-isolation=none`（预期 343 pass / 0 fail）
+运行：`D:\node.exe --test --test-isolation=none`（预期不低于 351 pass / 0 fail）
 
 ```bash
 git add app/reimburse-model.js app/ui/settle-sheet.js tests/reimburse-model.test.js
@@ -2205,7 +2206,7 @@ git commit -m "feat(reimburse): 标记到账面板（金额/账户/分类 + 可�
 
 - [ ] **步骤 4：跑全量回归 + Commit**
 
-运行：`D:\node.exe --test --test-isolation=none`（预期 343 pass / 0 fail）
+运行：`D:\node.exe --test --test-isolation=none`（预期不低于 351 pass / 0 fail）
 
 ```bash
 git add app/ui/invoice-editor.js
@@ -2220,9 +2221,18 @@ git commit -m "feat(invoice): 编辑器拦截「仅存档」与报销单的互�
 - 修改：`sw.js`（`CACHE` 版本 +1、`ASSETS` 补新模块）
 - 修改：`docs/手动验证清单.md`（加「报销」小节）
 
-- [ ] **步骤 1：升 SW 缓存版本**
+- [ ] **步骤 1：核对 SW 缓存版本与 ASSETS**
 
-打开 `sw.js`，把 `const CACHE = 'pvault-v18';` 改成 `'pvault-v19'`，并把本次新增的四个模块加进 `ASSETS` 清单：`app/reimburse-model.js`、`app/reimburse-store.js`、`app/ui/reimburse-view.js`、`app/ui/settle-sheet.js`。
+**先读再改，不要照着本步骤的字面抄**：`CACHE` 已经在任务 6 里升到 `'pvault-v19'` 了
+（`reimburse-model.js` 是 `invoice-view.js` 的首屏静态依赖，它必须跟产生依赖的那次提交一起进
+`ASSETS`，不能拖到这里）。所以本步骤要做的是**核对**，不是重复升版：
+
+1. 打开 `sw.js`，确认 `CACHE` 已是当前仓库里最新的一档（`'pvault-v19'`）——若任务 7～10
+   又给首屏 import 闭包添了新模块，这里要**再 +1**，不要复用 v19；
+2. 确认 `ASSETS` 已含四个模块：`app/reimburse-model.js`（任务 6 已加）、`app/reimburse-store.js`、
+   `app/ui/reimburse-view.js`、`app/ui/settle-sheet.js`；
+3. 缺哪个补哪个，全都齐了就**什么都不做**（重复升版反而是错的：往服役中的缓存名里 `addAll`
+   中途失败会留下半新半旧的缓存）。
 
 **这一步不能省**：`ASSETS` 少一条会让 `cache.addAll` 整批被 404 拒绝，install 失败、SW 根本不激活，而症状是「离线白屏」——排查起来要绕一圈（`sw.js` 开头那段注释讲的就是这两条路的区别）。
 
@@ -2230,7 +2240,8 @@ git commit -m "feat(invoice): 编辑器拦截「仅存档」与报销单的互�
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：343 pass / 0 fail。**这是本计划结束时必须留下的基线。**
+预期：不低于 351 pass / 0 fail（任务 6 之后的实际基线是 351，任务 7～10 会再往上加）。
+**这是本计划结束时必须留下的基线**——具体数字以你这次跑出来的为准，别照抄本行。
 
 - [ ] **步骤 3：完整走一遍主流程**
 
