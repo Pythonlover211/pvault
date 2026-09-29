@@ -272,7 +272,22 @@ button.rd-title {
 
 /* 底部操作条：贴底固定。**不能写死 bottom: 12px**——本仓有 --bottom-inset（= --tab-h 56px + 安全区），
    底部导航就压在那条线上，写死会让操作条盖住 tabbar（或反过来），而这取决于机型的安全区高度，
-   正是那种只在别人手机上出现的问题。 */
+   正是那种只在别人手机上出现的问题。
+
+   层叠关系（全仓就这几个数，动任何一个之前先读完这一段）：
+     .fab 15  <  .tabbar 20  <  **本条 25**  <  .sheet-overlay 30  <  .toast 40
+   · 本条要**高于** .tabbar（20）：它就贴在 tabbar 的上沿，被 tabbar 盖住的那半截会看不见。
+   · 本条要**低于**半屏面板的遮罩（.sheet-overlay 的 30）：它是一条**常驻**操作条，而面板打开时
+     用户正在面板里做事。而「发起报销」那个面板是贴底布局的——按钮在离底 18~56px、标题输入框
+     66~89px、合计提示行 99~113px——本条占的正是离底 68~128px 那一段（见下面 .bar-space 的算式），
+     压上去就**盖住了标题输入框**：用户填不了标题，只能按默认的 autoTitle 创建，
+     而规格 §7.2 要求标题可改（这条改动修的就是它）。
+   · **40 这个值不构成反例**（本条原来就是抄 .toast 的）：toast 是**瞬时**提示，它故意压在半屏面板
+     之上——用户刚做完的那个动作的结果要说给他听，哪怕他正开着面板，几秒后它自己就走了；
+     本条是常驻的，压上去就没人挪得开它。
+   ⚠️ 这一段的依据是**数值推导**，不是真机实测（开发环境里没有可用的浏览器）：调 z-index 或调下面
+   那个占位高度之前，先按 `docs/手动验证清单.md`「### 分段切换、多选与底部操作条（任务 7）」
+   里那两条在真机上量一遍。 */
 .reimburse-bar {
   position: fixed;
   left: 12px;
@@ -287,6 +302,21 @@ button.rd-title {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 40;
+  /* 25：高于 .tabbar 的 20、低于 .sheet-overlay 的 30。为什么是这两个序号见上面那段注释。 */
+  z-index: 25;
 }
-.reimburse-bar .rb-total { font-size: var(--font-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+/* 列表底部垫的这一块：操作条是 fixed 的、不占文档流，所以滚到底时列表最后一行会被它压住一截。
+   垫多少**是算出来的**（算式留在这里，真机上量出来不对就改这个数并回来改这段注释）：
+     · 条的上沿 = bottom(calc(var(--bottom-inset) + 12px)) + 条高 ≈ 56 + 12 + 60 = 离视口底 128px
+       （条高 = padding 10×2 + 里面那颗 .btn 的 10×2 + 文字行高 ≈ 40 + 边框 2）；
+     · 文档流里内容的底边 = .app 的 padding-bottom(var(--bottom-inset) 56) + .screen 的
+       padding-bottom(24) = 离视口底 80px（`.screen` 是 main.js 给视图容器加的，见 components.css）；
+     · 被压住的那一段 = 128 − 80 = **48px**，再加 8px 让最后一行与条之间留一条缝 → 56px。
+   （这块占位挂在 `.stack` 里（barBox 是那个 stack 的最后一个孩子），所以列表最后一行与它之间
+    还有 `.stack` 的 10px gap——实际缝是 8 + 10 = 18px，不是 8px。写出来是为了让真机上量到的
+    数对得上：最后一行底边离视口底应当是 ~146px，而条的上沿在 128px。）
+   `--safe-b`（刘海屏安全区）两边都含在 `--bottom-inset` 里，相减时抵消，所以这个数在
+   安全区不为 0 的机型上照样成立。
+   ⚠️ 与上面那段层级注释一样：**数值推导，没有真机实测**。 */
+.bar-space { height: 56px; }

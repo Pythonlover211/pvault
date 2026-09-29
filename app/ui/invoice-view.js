@@ -204,8 +204,11 @@ export async function renderInvoices(root) {
     mount(barBox, el('div', { class: 'reimburse-bar' }, [
       // 左边是「选了什么」，右边是「按下去会发生什么」——两件事分开写，按钮才是唯一的行动点。
       el('div', {}, [
+        // 三个类名复用仓里现成的那三条规则（.muted 次要文字 / .tiny 小一号 / .num 等宽数字）。
+        // 这里原先新造的 .rb-total 与它们一字不差——多一条规则，就多一份将来要跟着皮肤令牌改的副本，
+        // 而这类副本漂移了不会报错（`scripts/check-theme-css.mjs` 的 ⑭ 只查「规则在不在」）。
         el('span', {
-          class: 'rb-total',
+          class: 'muted tiny num',
           text: `已选 ${picked.length} 张 · ${formatCents(total, { symbol: true })}`
         }),
         selectError ? el('div', { class: 'form-error', text: selectError }) : null
@@ -219,7 +222,11 @@ export async function renderInvoices(root) {
             class: 'btn btn-primary', type: 'button', text: '发起报销',
             onclick: () => { openCreateReimburseSheet(root, picked); }
           })
-    ]));
+    ]),
+    // 给列表垫一块底：操作条是 position: fixed，不占文档流，不垫的话滚到底时最后一行有半截压在条底下
+    // （垫多少、凭什么这么算，写在 styles/invoice.css 的 .bar-space 那段里）。
+    // 空集分支（上面那个 return）**不能垫**：那时根本没有条，垫出来的就是一屏没有来由的空白。
+    el('div', { class: 'bar-space' }));
   }
 
   /**
@@ -301,11 +308,15 @@ export async function renderInvoices(root) {
         type: 'button',
         onclick: () => {
           if (!selecting) { openInvoiceEditor({ id: inv.id, onSaved: refresh }); return; }
-          // 已在单里的票不给选：createReimbursement / addInvoicesTo 会把它跳过，选它只是白选一场；
+          // 已在单里的票不给**选上**：createReimbursement / addInvoicesTo 会把它跳过，选它只是白选一场；
           // 「仅存档」的票更硬——addInvoicesTo 会直接抛错，那是界面给了他一个不该给的选择。
           // 进多选时筛选已经切到「待报销」，这两类票通常根本不在屏幕上；但用户完全可以先切筛选
           // 再回来点，所以守卫必须在这里，不能只靠筛选。
-          if (inv.reimbursementId || inv.archived) return;
+          // **已勾上的允许取消**（`!checked &&` 这一半）：票是勾上之后才在别处变成这两类之一的
+          // （另一个标签页把它加进别的单，或用户在「全部」筛选里把它改成仅存档）。守卫若一律拦住，
+          // 这张票就**既加不进也取消不掉**——它还在选中集合里、底部条还按它算钱，用户只剩
+          // 「取消多选」一条出口，而他的本意只是把这一张划掉。
+          if (!checked && (inv.reimbursementId || inv.archived)) return;
           selecting = checked ? selecting.filter(x => x !== inv.id) : [...selecting, inv.id];
           selectError = '';
           paint();
@@ -518,7 +529,11 @@ function openCreateReimburseSheet(root, invoices) {
       class: 'muted tiny',
       text: `这 ${invoices.length} 张票会打成一单，合计 ${formatCents(sumCents(invoices), { symbol: true })}`
     }),
-    input,
+    // 裸 <input> 走的是浏览器默认外观（13px 系统字体、没有自己的边框与内边距），与本仓「改标题」
+    // 那个面板里的输入框不是同一个形状——而它俩是用户眼里「同一类面板里的同一类控件」。
+    // 包一层 .field 就拿到 ledger.css 里 `.field > label` 与 `.field input` 那两条规则
+    // （面板里的下拉、密码框、账户名输入全是这么包的；label 不带 for 也是那几处的写法）。
+    el('div', { class: 'field' }, [el('label', { text: '标题' }), input]),
     errorNode,
     el('button', {
       class: 'btn btn-primary', type: 'button', text: '创建报销单',

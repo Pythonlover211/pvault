@@ -22,7 +22,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installFakeBrowser } from './helpers/fake-browser.js';
 import {
-  installFakeDom, resetFakeDom, findAll, findByText
+  installFakeDom, resetFakeDom, findAll, findByText, fireEvent
 } from './helpers/fake-dom.js';
 import * as db from '../app/db.js';
 import { STORES } from '../app/schema.js';
@@ -126,6 +126,12 @@ function items() {
   return findAll(view, n => n.classList.contains('inv-item'));
 }
 
+// 搜索框（本页只有一个）。它写的是 filter / keyword 之外那半个模块级状态——上一句 input 改到的
+// keyword 会跟着模块活到下一个用例。
+function searchBox() {
+  return findAll(view, n => n.tagName === 'INPUT' && n.getAttribute('type') === 'search')[0] ?? null;
+}
+
 // 按金额取列表项：票的标题是销售方（两张票的 seller 可以相同），金额才是它们之间
 // 一眼可分辨的那一项。每次点击之后 paint() 会重建整块列表，所以这个函数必须**每次重新查**。
 function itemByAmount(text) {
@@ -181,6 +187,28 @@ test.beforeEach(async () => {
   // 而是 setup 崩溃，正好绕开了「先看到断言级红」这条纪律。
   if (segButton('发票')) {
     await segButton('发票').click();
+    await flush();
+  }
+  // filter 也是**故意**留在模块级的状态（切走再回来不该被重置），于是同样会跨用例残留：
+  // 第 3 条「默认筛选是全部」今天成立只因为它最先跑，将来谁在前面插一条用例，那条断言就会在
+  // 一个与被测行为无关的地方变红（而它读起来像是「默认值坏了」）。这里用**真实分支**复位：
+  // 筛选按钮的 onclick 就是唯一写 filter 的地方，不给生产代码开一个只有测试用的 reset 口子。
+  const filterRow = findAll(view, n => n.classList.contains('inv-filters'))[0];
+  const allBtn = filterRow
+    ? findAll(filterRow, n => n.tagName === 'BUTTON' && n.textContent === '全部')[0]
+    : null;
+  // 只在真的不在「全部」上时才点：多点一次会多触发一次 paint()，而 paint 里那几批缩略图读库
+  // 在桩上不便宜（一次全量跑几十秒，见文件头的 tick 说明）。
+  if (allBtn && allBtn.getAttribute('aria-selected') !== 'true') {
+    await allBtn.click();
+    await flush();
+  }
+  // keyword 同病同治：第 4 条会把搜索框设成一个匹配不到任何票的词，留着它，后面每条用例看到的
+  // 都是一个空列表。写 keyword 的唯一入口就是搜索框的 input 处理函数，所以这也是走真实分支。
+  const box = searchBox();
+  if (box && box.value) {
+    box.value = '';
+    await fireEvent(box, 'input');
     await flush();
   }
 });
@@ -260,6 +288,29 @@ test('多选：勾两张底部条金额是两张之和，取消一张数字跟�
   await waitFor(() => bar().textContent.includes('¥1000.00') && !bar().textContent.includes('¥3025.00'),
     '取消一张之后合计跟着变小');
   assert.ok(bar().textContent.includes('已选 1 张'), '张数也要跟着变');
+
+  // 空结果分支也必须重画操作条（paint() 里那个 `if (rows.length === 0)` 分支自己调了一次 paintBar）。
+  // 真实后果：用户勾着一张票、又把搜索词改成一个匹配不到的词 → 列表空了，条也跟着消失，
+  // 他看到的是「已选 0 张」的假象，还会以为刚才的勾选丢了（勾选其实还在 selecting 里）。
+  // 这段是补的：把那个分支里的 paintBar() 注释掉时，本文件其余断言全绿——真空白。
+  const box = need(searchBox(), '发票页要有一个搜索框');
+  box.value = '一个匹配不到任何票的词';
+  await fireEvent(box, 'input');
+  await waitFor(() => findByText(view, '没有符合条件的发票') !== null, '空结果的空态文案');
+  assert.ok(bar() !== null, '列表被筛空之后，底部操作条不该跟着消失');
+  assert.ok(bar().textContent.includes('已选 1 张 · ¥1000.00'),
+    `筛掉的是屏幕上的行，不是用户已经勾中的票——条上仍该写着「已选 1 张 · ¥1000.00」，实际是「${bar().textContent}」`);
+
+  // 再切走再切回来：main.js 会重新调一次 renderInvoices，而那一次是**新建的 barBox 空节点**，
+  // 所以「列表空 + 还勾着 1 张」这个组合下，条只能由空结果分支那次 paintBar() 画出来。
+  // **咬住变异的是这两条**，不是上面那两条：同一次渲染里条还挂在 barBox 上、内容也正好是对的，
+  // 把那句 paintBar() 注释掉它们照样绿（实测过）。少了这一次重画，用户回到发票页看到的是一片
+  // 空列表、连「已选 1 张」的痕迹都没有，只会以为自己的勾选丢了。
+  await renderInvoices(view);
+  await waitFor(() => findByText(view, '没有符合条件的发票') !== null, '重渲染之后列表仍是空的');
+  assert.ok(bar() !== null, '重渲染之后底部操作条必须还在（空结果分支自己重画它）');
+  assert.ok(bar().textContent.includes('已选 1 张 · ¥1000.00'),
+    `重渲染之后条上的数也要在，实际是「${bar().textContent}」`);
 });
 
 test('多选：已在报销单里、以及「仅存档」的票点不动（不改变选中集合）', async () => {
@@ -293,6 +344,37 @@ test('多选：已在报销单里、以及「仅存档」的票点不动（不�
     `选中集合不该被它们改动，实际底部条是「${bar().textContent}」`);
   assert.equal(findAll(view, n => n.classList.contains('is-checked')).length, 1,
     '屏幕上只该有一行是勾选态');
+});
+
+test('多选：勾上之后票在别处被设成「仅存档」——仍然取消得掉', async () => {
+  await mkInvoice('i1', 100000);
+  await mkInvoice('i2', 202500);
+
+  await renderInvoices(view);
+  await need(toolButton('选择'), '工具条上要有「选择」').click();
+  await waitFor(() => toolButton('取消') !== null, '进入多选');
+  await itemByAmount('¥1000.00').click();
+  await waitFor(() => bar()?.textContent.includes('已选 1 张') === true, '先把它勾上');
+
+  // 勾上之后它在别处被标成「仅存档」。**只改库不够**：列表里的那几行是上一次渲染的快照
+  // （`all` 数组），所以这里要重新渲染一次——这正是真机上的顺序：另一个标签页改了这张票，
+  // 用户切回来，main.js 会重新调 renderInvoices，而多选态是模块级的、活得比那次渲染长。
+  await mkInvoice('i1', 100000, { archived: true });
+  await renderInvoices(view);
+  await waitFor(() => toolButton('取消') !== null, '重渲染之后仍在多选态');
+
+  // 进多选时筛选自动跳到「待报销」，仅存档的票不在那一档里——切到「全部」把它露出来。
+  // 真机上用户完全会这么做：他要去找自己刚才勾中的那一张。
+  await filterButton('全部').click();
+  await waitFor(() => items().length === 2, '两张票都在屏幕上');
+
+  // 守卫若写成 `if (inv.reimbursementId || inv.archived) return;`，这一张就**既加不进也取消不掉**：
+  // 它还在选中集合里、底部条还按它算钱，用户只剩「取消多选」一条出口（那会把整批勾选都退掉）。
+  // 这一条钉住的是守卫里 `!checked &&` 那一半。
+  await itemByAmount('¥1000.00').click();
+  await waitFor(() => bar() === null, '取消勾选之后底部操作条消失（选中集合空了）');
+  assert.equal(findAll(view, n => n.classList.contains('is-checked')).length, 0,
+    '屏幕上不该还有勾选态的行');
 });
 
 test('多选：点「发起报销」→ 面板改名 → 真的落库，标题用的是输入框里的值', async () => {
@@ -368,6 +450,49 @@ test('加票：从详情页进多选，底部条写目标单标题、按下去�
   await waitFor(() => view.textContent.includes('九月报销')
     && buttonsIn(view, '← 报销单').length === 1, '加完停在目标单的详情');
   assert.equal((await db.getAll('reimbursements')).length, 1, '加票不该顺手建出新单');
+});
+
+test('加票：勾的票在别处进了别的单时，把话说清楚并把那张从勾选里摘掉', async () => {
+  await mkInvoice('a1', 100000);
+  const { reimb } = await createReimbursement({ invoiceIds: ['a1'], title: '九月报销', now: NOW });
+  await mkInvoice('b1', 202500);
+  await mkInvoice('b2', 55500);
+
+  await renderInvoices(view);
+  await need(segButton('报销单'), '分段条上要有「报销单」这个按钮').click();
+  await waitFor(() => findByText(view, '九月报销') !== null, '报销单列表');
+  await cardByTitle('九月报销').click();
+  await waitFor(() => buttonsIn(view, '← 报销单').length === 1, '报销单详情页');
+  await button('加票').click();
+  await waitFor(() => toolButton('取消') !== null, '回到发票段且进了多选');
+
+  await itemByAmount('¥2025.00').click();
+  await itemByAmount('¥555.00').click();
+  await waitFor(() => barButton()?.textContent === '加到「九月报销」', '底部条上出现目标单的标题');
+
+  // 勾完之后、按按钮之前，其中一张在别处（另一个标签页）进了**另一张**单：addInvoicesTo 会把它跳过
+  // （规格 §6.4）。界面必须把这件事说出来，而且**不能让那张继续勾着**——留着它，用户再点一次
+  // 还是被跳过，他只会以为按钮坏了，而真正的原因是那张票已经不归这一单了。
+  const { reimb: other } = await createReimbursement({ invoiceIds: ['b2'], title: '别人的单', now: NOW });
+
+  await need(barButton(), '底部操作条上要有一个按钮').click();
+  await waitFor(() => bar()?.textContent.includes('别的报销单') === true, '底部条上那句提示');
+
+  assert.ok(bar().textContent.includes('有 1 张已经进了别的报销单，这次没加进去。'),
+    `提示要说清是几张、以及为什么没加进去，实际是「${bar().textContent}」`);
+  // 张数要缩到 1：被跳过的 b2（¥555.00）从选中集合里摘掉，只剩 b1（¥2025.00）。
+  // 只断「提示出现了」是不够的——那句话在「两张都还勾着」的实现里照样会出现。
+  assert.ok(bar().textContent.includes('已选 1 张 · ¥2025.00'),
+    `被跳过的票要从勾选里摘掉，实际底部条是「${bar().textContent}」`);
+
+  // 加票是**部分成功**：能加的那张（b1）真的进了这一单，被跳过的那张（b2）不进——`skipped`
+  // 说的是「哪几张没进来」，不是「整批都没动」。这两条把上面那句提示的语义钉死：
+  // 不然「一张都没加进去」的实现也会让那句话出现（用户看到的解释与事实不符）。
+  assert.equal((await db.get('invoices', 'b1')).reimbursementId, reimb.id, '没被跳过的那张确实进了这一单');
+  assert.equal((await db.get('invoices', 'b2')).reimbursementId, other.id, '被跳过的那张留在别人那张单里');
+  // 停在原地：没有跳去详情页（用户改一改再点一次就行）。
+  await waitFor(() => toolButton('取消') !== null && findAll(view, n => n.classList.contains('is-checked')).length === 1,
+    '留在多选态，只勾着还能加的那一张');
 });
 
 test('跨文件契约：报销单空状态的「去发票里选几张」真的会让人进入多选', async () => {
