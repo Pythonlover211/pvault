@@ -60,7 +60,7 @@
 
 索引：`by_status`（已建）。
 
-> 关于 `settledCents`：它**不是**为了让金额对齐而存在的——规格 §6.4 明确「不为了对齐而阻止用户」。它存在的唯一理由是**差额需要两个数**，而其中一个（实际到账）只有用户知道。为 null 表示还没到账。
+> 关于 `settledCents`：它**不是**为了让金额对齐而存在的——规格 §6.4 明确「不为了对齐而阻止用户」。它存在的唯一理由是**差额需要两个数**，而其中一个（实际到账）只有用户知道。为 null 表示**没有可用的实际到账金额**：还没到账，或已到账但没填金额（见 §8 的四组合表）。
 >
 > **加这个字段不需要动 `DB_VERSION`，也没有迁移**：IndexedDB 没有字段级 schema，`app/schema.js` 的 `STORES` 只定义 keyPath 与索引（`reimbursements: { keyPath: 'id', indexes: [['by_status','status']] }`，`schema.js:55`），记录上多一个字段照存不误。`DB_VERSION` 只在**加表 / 加索引**这类结构变化时才需要上调——那一段的注释（`schema.js:6-13`）专门讲过「漏了这一步没有任何测试能发现」。本计划对结构**零改动**：要用的表和索引计划 4 都已建好。
 
@@ -143,7 +143,7 @@ STATUS = { DRAFT: 'draft', SUBMITTED: 'submitted', SETTLED: 'settled' }
 |---|---|
 | `autoTitle(monthTs, count)` | 时间戳 + 张数 → 「9月报销 · 3 张」 |
 | `sumInvoiceCents(invoices)` | 发票数组 → 整数分。**空数组得 0** |
-| `diffCents(settledCents, invoices)` | 实际到账 − 发票合计。`settledCents` 为 null 时返回 null（还没到账，没有差额可谈） |
+| `diffCents(settledCents, invoices)` | 实际到账 − 发票合计。`settledCents` 为 null 时返回 null（**没有可用的实际到账金额**：还没到账，或已到账但没填金额——「只标记到账、不记收入」落的就是 null，见 §8 的四组合表；两种情形都没有差额可谈） |
 | `invoiceStatus(inv)` | 三态：`'stored'`（archived）/ `'reimbursed'`（有 reimbursementId）/ `'pending'`。**这是筛选用的判据**，只看发票自身的两个字段 |
 | `invoiceBadge(inv, reimb)` | 显示文案：`仅存档` / `待报销` / `报销中`(draft) / `已提交`(submitted) / `已到账`(settled) |
 

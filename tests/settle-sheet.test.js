@@ -105,6 +105,12 @@ function selectFor(prefix) {
   return sel;
 }
 
+// 按键盘上的某个键。用「按钮 + 文本完全相等」而不是 findByText：后者是 includes，
+// 而屏幕上到处都是含「0」的文本（合计 ¥3,025.00 之类），撞上哪个全看节点深度。
+function keypadKey(label) {
+  return findOne(document.body, n => n.tagName === 'BUTTON' && n.textContent === label, `键盘上的「${label}」键`);
+}
+
 // 真实用户把金额清空就是一路按 ⌫：这么走一遍同时验了键盘 → 面板的连线（onChange 给的是 null）。
 async function clearKeypad() {
   const back = findByText(document.body, '⌫');
@@ -260,6 +266,79 @@ test('面板：onSettled 抛错 → 不写进已经收起的面板，busy 也不
   assert.equal((await db.getAll('txns')).length, 1, '重试也不该再记一笔');
   assert.equal((await getReimbursement(reimb.id)).status, 'settled');
   assert.ok(logged.length > 0, '错误不能静默丢掉，必须留痕（console.error）');
+});
+
+test('面板：onSettled 返回 Promise 且 rejection 时 → 不出现未捕获 rejection，busy 也不回滚', async () => {
+  await seedWorld();
+  const { reimb, invoices } = await mkSubmittedReimb();
+  // 上面那条用的是**同步**回调，而任务 8 的真实调用点 `renderReimbursements` 是 async 函数、
+  // 返回的是 Promise：只写同步 try/catch 的话它的 rejection 会漏成 unhandled rejection——
+  // 那时候屏幕上什么都没有、控制台里也找不到「到账成功但刷新失败」这条线索。
+  // 所以这条必须单独钉住：回调用例是 async 的，同步版本测不到这件事。
+  const logged = [];
+  const unhandled = [];
+  const originalError = console.error;
+  const onUnhandled = reason => { unhandled.push(reason); };
+  console.error = (...args) => { logged.push(args); };
+  // 装上监听器既是为了收集，也是为了让未处理的 rejection 停在这里、不去炸掉整个测试文件进程。
+  process.on('unhandledRejection', onUnhandled);
+  let btn = null;
+  try {
+    await open({ reimb, invoices, onSettled: async () => { throw new Error('异步重绘炸了'); } });
+    btn = confirmButton();
+    await btn.click();
+    await flush();
+    // unhandledRejection 是「一轮事件循环结束时还没人接」才判定的，多等一轮再断言，
+    // 否则这条测试会在**修好之后**仍然因为判早了而假红。
+    await flush();
+  } finally {
+    console.error = originalError;
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  assert.deepEqual(unhandled.map(r => String(r)), [],
+    'async 回调的 rejection 必须被面板接住——漏出去就是 unhandled rejection，用户那头什么都看不到');
+  assert.equal(findByText(topOf(btn), '异步重绘炸了'), null, '面板此刻已经收起，写进去用户根本看不到');
+  assert.equal(btn.disabled, true, '到账已经成功，busy 一律不恢复');
+  assert.equal((await db.getAll('txns')).length, 1, '回调抛错不该让这笔收入消失');
+  assert.equal((await getReimbursement(reimb.id)).status, 'settled');
+  assert.ok(logged.length > 0, '错误不能静默丢掉，必须留痕（console.error）');
+});
+
+test('面板：金额显式为 0 走二次确认（0 是合法到账，不是「没填」）', async () => {
+  await seedWorld();
+  const { reimb, invoices } = await mkSubmittedReimb();
+  // 公司拒报、一分没报回来时用户会真的输 0；这与「输入框空着」（null）是两件事，
+  // 规格 §8 明写 0 是合法值、只多问一次。把面板那句判空写成 `!settledCents`
+  // 就会把这条路静默变成「请输入到账金额」，下面这组断言是唯一会响的地方。
+
+  // ① 取消：单子不该动
+  setConfirmAnswer(false);
+  await open({ reimb, invoices });
+  await clearKeypad();
+  await keypadKey('0').click();
+  await confirmButton().click();
+  await flush();
+
+  assert.equal((await getReimbursement(reimb.id)).status, 'submitted', '取消确认时不能落库');
+  assert.deepEqual(await db.getAll('txns'), [], '取消确认时不该记收入');
+  assert.equal(confirmButton().disabled, false, '取消后闸门要放回去，用户能接着改金额');
+
+  // ② 确认：落 0（不是 null，也不是「请输入到账金额」）
+  resetFakeDom();
+  setConfirmAnswer(true);
+  await open({ reimb: await getReimbursement(reimb.id), invoices });
+  await clearKeypad();
+  await keypadKey('0').click();
+  await confirmButton().click();
+  await flush();
+
+  const settled = await getReimbursement(reimb.id);
+  assert.equal(settled.status, 'settled');
+  assert.equal(settled.settledCents, 0, '0 是合法到账金额（公司拒报），不是「没填」');
+  const txns = await db.getAll('txns');
+  assert.equal(txns.length, 1);
+  assert.equal(txns[0].amountCents, 0, '这笔收入的金额就是 0');
 });
 
 test('面板：cat-refund 被归档时，分类回退到「无分类」而不是静默记成工资', async () => {

@@ -102,7 +102,9 @@ export function autoTitle(monthTs, count) {
 }
 
 // 差额 = 实际到账 − 发票合计。
-// settledCents 为 null 表示还没到账，此时**没有差额可谈**，返回 null，
+// settledCents 为 null 表示**没有可用的实际到账金额**：还没到账，或已到账但没填金额
+// （「只标记到账、不记收入」那条路落的就是 null，见规格 §8 的四组合表）。
+// 两种情形都**没有差额可谈**，返回 null，
 // 界面据此不显示那一行（没有差额就没有信息，显示「差额 ¥0.00」只是噪音）。
 // 差额可以为负（公司少报、扣税、抹零），也可以为正（多打了），两者都要如实显示。
 export function diffCents(settledCents, invoices) {

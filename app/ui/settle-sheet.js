@@ -152,13 +152,20 @@ export function openSettleSheet({ reimb, invoices, onSettled }) {
         // 一句错误。实测后果：单子已 settled、一笔收入已入账，屏幕上却显示「重绘炸了」、按钮还重新可点。
         sheet.close();
         if (onSettled) {
+          // 回调自己抛错时不走上面的 catch（见上）：面板此刻已经收起，把错误写进 errorNode
+          // 用户根本看不到——照 invoice-editor.js:356-361 对同类「收起之后的回调」的做法，
+          // 控制台留痕就够了。到账本身已经成功，这里也不该有任何界面反馈。
+          const warn = err => console.error('到账后的刷新回调失败（到账本身已经成功）', err);
+          // 任务 8 的调用点 renderReimbursements 是 **async 函数**，返回的是 Promise——
+          // 只写同步 try/catch 接不住它的 rejection，那个错会漏成 unhandled rejection：
+          // 屏幕上什么都没有、控制台里也找不到「到账成功但刷新失败」这条线索。
+          // 所以同步抛错与返回的 Promise reject 两条都要接（后者用 .catch，不 await：
+          // 这里仍是**立即**发起的调用，面板收起后的刷新不该被拖到下一个微任务之后）。
           try {
-            onSettled();
+            const ret = onSettled();
+            if (ret && typeof ret.catch === 'function') ret.catch(warn);
           } catch (err) {
-            // 回调自己抛错时不走上面的 catch（见上）：面板此刻已经收起，把错误写进 errorNode
-            // 用户根本看不到——照 invoice-editor.js:356-361 对同类「收起之后的回调」的做法，
-            // 控制台留痕就够了。到账本身已经成功，这里也不该有任何界面反馈。
-            console.error('到账后的刷新回调失败（到账本身已经成功）', err);
+            warn(err);
           }
         }
       }
