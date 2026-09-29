@@ -7,10 +7,20 @@
 // 或者「钱记上了、报销单还停在已提交」（后者更糟：用户会重试，于是记出第二笔收入）。
 // db.replaceAllRecords 与 importBackup 的注释讲的是同一条纪律。
 //
-// 这条纪律由两处一起守着：结构上是下面的 writeAll——本文件所有写都从它出去，想拆成两次就绕不开它；
-// 断言上是 tests/reimburse-store.test.js 的**事务计数**（拆成两次调用会让计数变成 2，那条立刻红）。
+// 这条纪律由两处一起守着：结构上是下面的 writeAll——**能一次 putAll 写完的写都从这里出去**，
+// 想拆成两次就绕不开它；断言上是 tests/reimburse-store.test.js 的**事务计数**
+// （拆成两次调用会让计数变成 2，那条立刻红）。
 // 两者缺一不可：只有计数时，writeAll 里那句「英文异常翻成人话」照样没人管；只有 writeAll 时，
 // 一个逐张写十次、每次都合法地走一次 writeAll 的实现也不会被谁发现。
+//
+// **writeAll 不是唯一出口，有两处例外**——这句「所有写都从这里出去」曾经是假的（settle 的记账支
+// 与 delete 绕过它，「英文异常翻成人话」也就跟着漏了），所以清单写在这里，免得再被读成一句空话：
+//  · settleReimbursement 的记账那支走 addTransaction 的 extraEntries——报销单那一条必须与交易
+//    同批写下去，而 writeAll 只会 putAll 一次、拿不到 addTransaction 的事务。它**自己翻异常**，
+//    用的是与 writeAll 同一句人话（同一个 toUserError）；
+//  · deleteReimbursement 走 db.replaceAllRecords——它要在同一个事务里既删记录（删单、可选的删交易）
+//    又写记录（把票退回待报销），而 putAll 只会写、不会删。它**不翻异常**，与
+//    invoice-store.deleteInvoice 同一处置，理由写在它自己的 JSDoc 里。
 
 import * as db from './db.js';
 import { uid, addTransaction } from './store.js';
@@ -109,6 +119,18 @@ async function invoiceEntriesFor(invoiceIds, reimbId) {
   return { entries, skipped };
 }
 
+/**
+ * 「把票退回待报销」那一条 entry：清掉 reimbursementId、更新时间戳。
+ *
+ * 抽出来是因为它有**两个写点**——removeInvoiceFrom 的手动移票、deleteReimbursement 的删单退票——
+ * 而两处各写一遍同一个字面量时，将来加一个字段（比如给票记上「曾被哪一单用过」）只改一处，
+ * 就会让「手动移出」与「删单退回」得到两种形状的票，且不报错。这与 createReimbursement
+ * 那里警告的「同一实体两种形状」是同一种病。
+ */
+function detachEntry(inv, now) {
+  return { store: INVOICE_STORE, value: { ...inv, reimbursementId: null, updatedAt: now } };
+}
+
 // ===== 内部：写的前置检查与唯一的写入出口 =====
 
 /**
@@ -116,8 +138,10 @@ async function invoiceEntriesFor(invoiceIds, reimbId) {
  *
  * 单列一层不是为了少写一行：**判据漏写不报错**。少了这句，一个不存在的 id 会继续往下走，
  * 一直走到某个更远的地方才变成「往库里写了一条没有归属的记录」或者「把别的单的票摘走了」，
- * 而那些都是静默失败——出错现场早就不在原处了。本文件的三个写函数与计划任务 5 的
- * submit / settle 第一步逐字相同，五处都从这里过。
+ * 而那些都是静默失败——出错现场早就不在原处了。本文件的**五处写**（rename / addInvoicesTo /
+ * removeInvoiceFrom / submitReimbursement / settleReimbursement）第一步逐字相同，都从这里过；
+ * 另外两处是**有意的不同**，不是漏改：createReimbursement 得先生成 id 才能挂票，
+ * deleteReimbursement 对不存在的单当幂等成功（见它自己的 JSDoc）。
  */
 async function requireReimbursement(id) {
   const reimb = await getReimbursement(id);
@@ -133,8 +157,8 @@ async function requireReimbursement(id) {
  * 那样的 lambda——包一层之后「这个函数按哪条白名单放行」就藏进闭包里了，
  * 读代码的人要多跳一次才能确认它到底在挡什么。
  *
- * `deleteReimbursement`（任务 5）写的是 `if (!reimb) return`，与这里抛 NOT_FOUND 不一致。
- * 那是任务 5 的范围，本文件不替它决定，留这句话只是免得后来者以为是漏改。
+ * `deleteReimbursement` 刻意不用这里抛 NOT_FOUND 的处置（删一张不存在的单当幂等成功），
+ * 见它自己的 JSDoc——那是**有意的不同**，不是漏改。
  */
 function requireStatus(reimb, predicate, message, code) {
   if (!predicate(reimb)) throw new ReimburseError(message, code);
@@ -142,10 +166,10 @@ function requireStatus(reimb, predicate, message, code) {
 }
 
 /**
- * 「必须存在 + 必须还能编辑」——本文件三个写函数的入口。
- * 合成一个而不是让三处各写两行，是因为那句文案要**一模一样**地出现在每一处：
- * 复制到五份（任务 5 还会再加两处）之后，改文案时只要漏掉一处，
- * 用户就会在同一个 App 里看到两种说法，而没有任何地方会报错。
+ * 「必须存在 + 必须还能编辑」——可编辑的那三个写函数的入口。
+ * 合成一个而不是让每个调用方各写两行，是因为那句文案要**一模一样**地出现在每一处：
+ * 复制到多份之后，改文案时只要漏掉一处，用户就会在同一个 App 里看到两种说法，
+ * 而没有任何地方会报错。（submit / settle 要的是别的状态、别的文案，走的是 requireStatus 那一层。）
  */
 async function requireEditable(id) {
   const reimb = await requireReimbursement(id);
@@ -153,33 +177,45 @@ async function requireEditable(id) {
 }
 
 /**
- * **所有写都走这里**：一处发起事务、一处把英文异常翻成人话。
+ * 把存储异常翻成用户看得懂的一句中文——**本文件唯一一处翻译**。
  *
- * 为什么不让 db.putAll 的错误直接冒泡：界面上会显示「保存失败：QuotaExceededError: …」，
+ * 为什么不让 db 的错误直接冒泡：界面上会显示「保存失败：QuotaExceededError: …」，
  * 用户既不知道发生了什么，也不知道下一步该做什么。app/invoice-store.js 的 putInvoice
  * 已经为同一个异常写过一句能照着做的中文——同一个异常在两处必须说同一种人话，
  * 否则一处给建议、一处甩英文，政策就不统一了。
  *
- * 顺带把「一次写 = 一次批量调用」变成结构性的：四个写函数全部经过它，
- * 谁再想拆出第二次 db.putAll，得先绕开这一层——那是个显眼的动作，不是随手多写一行 await。
+ * 独立成一个函数、而不是留在 writeAll 的 catch 里：**writeAll 不是唯一出口**（见文件头那份清单），
+ * 而「翻成人话」这件事不该因为走了另一条写入路径就失效——settleReimbursement 的记账那支
+ * 走的是 addTransaction，那里的异常必须由它自己接上这一层。
+ */
+function toUserError(err) {
+  // 配额写满是这台手机上最可能撞到的失败：挂十几张票的批量更新，一次就是几十 KB。
+  if (err?.name === 'QuotaExceededError') {
+    const quota = new Error('手机存储空间不够了，这次报销改动没存下。可以先去「记账 → 备份」导出一份并清理旧数据再试。');
+    // 沿用原 name：界面读的是 message（已经是中文人话），控制台与排查时仍认得出这是配额失败，
+    // 不至于退化成一个无从追查的普通 Error。
+    quota.name = err.name;
+    return quota;
+  }
+  // 其余存储失败（UnknownError / AbortError / DatabaseClosedError……，以及 enqueue 里同步抛出的
+  // DataError）给用户一句中文，原文进控制台留给排查——这里**不**沿用 err.name
+  // （那些 name 对用户毫无信息量，界面只读 message）。
+  console.error('报销单写入失败', err);
+  return new Error('这次报销改动没存下来（手机存储出错）。请确认存储空间还够，然后重试一次。');
+}
+
+/**
+ * **能一次 putAll 写完的写都走这里**：一处发起事务、一处把英文异常翻成人话（toUserError）。
+ *
+ * 顺带把「一次写 = 一次批量调用」变成结构性的：谁再想拆出第二次 db.putAll，得先绕开这一层——
+ * 那是个显眼的动作，不是随手多写一行 await。绕开它的那两处见文件头清单：
+ * 一处自己翻异常（settle 的记账支）、一处有意不翻（delete）。
  */
 async function writeAll(entries) {
   try {
     await db.putAll(entries);
   } catch (err) {
-    // 配额写满是这台手机上最可能撞到的失败：挂十几张票的批量更新，一次就是几十 KB。
-    if (err?.name === 'QuotaExceededError') {
-      const quota = new Error('手机存储空间不够了，这次报销改动没存下。可以先去「记账 → 备份」导出一份并清理旧数据再试。');
-      // 沿用原 name：界面读的是 message（已经是中文人话），控制台与排查时仍认得出这是配额失败，
-      // 不至于退化成一个无从追查的普通 Error。
-      quota.name = err.name;
-      throw quota;
-    }
-    // 其余存储失败（UnknownError / AbortError / DatabaseClosedError……，以及 enqueue 里同步抛出的
-    // DataError）给用户一句中文，原文进控制台留给排查——这里**不**沿用 err.name
-    // （那些 name 对用户毫无信息量，界面只读 message）。
-    console.error('报销单写入失败', err);
-    throw new Error('这次报销改动没存下来（手机存储出错）。请确认存储空间还够，然后重试一次。');
+    throw toUserError(err);
   }
 }
 
@@ -239,15 +275,13 @@ export async function removeInvoiceFrom(id, invoiceId) {
   // 详情页或另一个标签页完全可能已经把这张票挪走了，这个函数的入参是 id，不是它读到的对象。
   // （票不存在、也不在本单 → 静默返回，与 invoiceEntriesFor 里「已被删掉的票静默略过」同一条口径。）
   if (!inv || inv.reimbursementId !== id) return;
-  await writeAll([
-    { store: INVOICE_STORE, value: { ...inv, reimbursementId: null, updatedAt: Date.now() } }
-  ]);
+  await writeAll([detachEntry(inv, Date.now())]);
 }
 
 export async function submitReimbursement(id, now = Date.now()) {
   // 前置检查走本文件已有的两层 helper：`requireReimbursement` 管「必须存在」、
   // `requireStatus` 管「必须处于某状态」。别再手写那几行——判据来自 reimburse-model 的
-  // 白名单，漏写一行不会报错（静默失败面），而五份文案副本迟早会分叉。
+  // 白名单，漏写一行不会报错（静默失败面），而同一句话在多处各抄一遍迟早会分叉。
   const reimb = await requireReimbursement(id);
   requireStatus(
     reimb, canSubmit,
@@ -272,7 +306,10 @@ export async function submitReimbursement(id, now = Date.now()) {
  * 由它那一次 db.putAll 一并写下去（见 store.js 的 addTransaction 注释）。
  */
 export async function settleReimbursement(id, {
-  settledCents = 0, accountId = null, categoryId = null, createTxn = true, now = Date.now()
+  // 默认值是 **null，不是 0**：这两个值在这条路上必须分开——0 是合法业务值（公司拒报、一分没报回来，
+  // 界面上专门为它做了二次确认），而「没传」是漏传或写错字段名。默认成 0 会把后者伪装成前者，
+  // 于是 `settleReimbursement(id, { amountCents: 100 })` 这种调用会安静地记一笔 ¥0 收入。
+  settledCents = null, accountId = null, categoryId = null, createTxn = true, now = Date.now()
 } = {}) {
   const reimb = await requireReimbursement(id);
   requireStatus(
@@ -280,39 +317,64 @@ export async function settleReimbursement(id, {
     reimb.status === STATUS.DRAFT ? '这张报销单还没提交给公司，不能标记到账' : '这张报销单已经到账了',
     'NOT_SETTLEABLE'
   );
-  const cents = Number.isSafeInteger(settledCents) ? settledCents : 0;
+
+  // 金额校验，判据与本仓既有的「非法金额」口径一致（invoice-model 的 validateInvoice 把「缺失」与
+  // 「不合法」分成两种提示，reimburse-model 的 diffCents 对非安全整数返回 null 而不是 0）：
+  //  · **不合法**（给了、但不是安全整数，比如 '100' 或 1.5）→ 两个分支都拒绝；
+  //  · **缺失**（漏传、或写错字段名）→ 只在**要记账**时拒绝。createTxn:false 那条路
+  //    （公司没打钱、只把单子标成到账）本来就没有金额，那里缺失是正常的。
+  //
+  // 为什么不能像第一版那样兜底成 0：0 是**合法业务值**，而漏传与「真的 0」折成同一个数之后，
+  // `settleReimbursement(id, {})` 会替用户记一笔没人要的 ¥0 收入、还顺手把单子标成已到账，
+  // 全程不报错。**0 只能由调用方显式传进来**（配合上面那个 null 默认值）。
+  const hasCents = Number.isSafeInteger(settledCents);
+  const missingCents = settledCents === null || settledCents === undefined;
+  if (!hasCents && (!missingCents || createTxn)) {
+    throw new ReimburseError('到账金额不对，这次没记上', 'BAD_INPUT');
+  }
+  const cents = hasCents ? settledCents : 0;
+
+  // 已到账那条记录：两个分支共用这一份字面量，各支只 spread 一次。
+  // 两处各写一遍六个字段的版本里，将来加一个字段、只改一处，就会得到「因复选框而字段不同」的
+  // 两条记录，而且不报错——正是 createReimbursement 那里警告过的「同一实体两种形状」。
+  const next = {
+    ...reimb, status: STATUS.SETTLED, settledAt: now,
+    accountId: accountId ?? null, settledCents: cents
+  };
 
   if (!createTxn) {
     // 不记账这条路只有一处写入，不必绕 addTransaction——但仍走 writeAll 翻译异常。
-    const next = {
-      ...reimb, status: STATUS.SETTLED, settledAt: now,
-      accountId: accountId ?? null, settledCents: cents, txnId: null
-    };
-    await writeAll([{ store: REIMB_STORE, value: next }]);
-    return next;
+    const settled = { ...next, txnId: null };
+    await writeAll([{ store: REIMB_STORE, value: settled }]);
+    return settled;
   }
 
   // 交易 id 先自己生成：报销单那一条要与交易**同批写入**，而它里面要写上 txnId——
   // 若等 addTransaction 返回后再写回，就变成两次写入了，那正是这一段要避免的事。
   // 为此任务 3 给 addTransaction 加了 `id: input.id ?? uid()`。
   const txnId = uid();
-  const settled = {
-    ...reimb, status: STATUS.SETTLED, settledAt: now,
-    accountId: accountId ?? null, settledCents: cents, txnId
-  };
-  await addTransaction({
-    id: txnId,
-    kind: 'income',
-    amountCents: cents,
-    categoryId: categoryId ?? null,
-    accountId: accountId ?? null,
-    occurredAt: now,
-    note: `报销到账 · ${reimb.title}`,
-    source: 'reimbursement',
-    reimbursementId: id
-  }, {
-    extraEntries: [{ store: REIMB_STORE, value: settled }]
-  });
+  const settled = { ...next, txnId };
+  try {
+    await addTransaction({
+      id: txnId,
+      kind: 'income',
+      amountCents: cents,
+      categoryId: categoryId ?? null,
+      accountId: accountId ?? null,
+      occurredAt: now,
+      note: `报销到账 · ${reimb.title}`,
+      source: 'reimbursement',
+      reimbursementId: id
+    }, {
+      extraEntries: [{ store: REIMB_STORE, value: settled }]
+    });
+  } catch (err) {
+    // 这一支不走 writeAll（报销单那一条必须与交易同批写下去，见上面），所以「英文异常翻成人话」
+    // 要在这里自己接上。少了这一层，同一个「标记到账」按钮的文案会随「记不记收入」那个复选框变：
+    // 不记账时是中文（走 writeAll），记账时是「QuotaExceededError: the quota has been exceeded.」
+    // 直达界面（任务 9 的界面把 err.message 显示出来）。
+    throw toUserError(err);
+  }
 
   return settled;
 }
@@ -326,6 +388,21 @@ export async function settleReimbursement(id, {
  *
  * 这里**没走 requireReimbursement**：删一张不存在的单是幂等的成功（重复点删除不该报错），
  * 与其余几个写函数的「不存在就抛 NOT_FOUND」是**有意的不同**，不是漏改。
+ *
+ * 这条路也**不翻异常**（因此不经 writeAll）：它要在同一个事务里既删记录（删单、可选的删交易）
+ * 又写记录（把票退回待报销），putAll 只会写不会删，只能走 db.replaceAllRecords。
+ * 与 invoice-store.deleteInvoice 同一处置，理由也一样：删除失败是**原子的**、什么都没发生，
+ * 用户的下一步就是**重试**；而配额那句「去备份、清旧数据」在删除场景反而是废话
+ * （删东西本来就是在腾地方）。代价是这条路径上界面拿到的是英文原文，界面不该把
+ * err.message 直接显示给用户（与另外两处中文文案不一致的那一段，是已知且被接受的）。
+ *
+ * 两处**已知且被接受**的后果：
+ *  1. deleteTxn:false 时留下的那笔收入仍带 `reimbursementId: <已删单>`，是个悬空指针。
+ *     今天无消费方——任务 8 的删除保护读的是**正向**的 `reimb.txnId`，不读这个反向指针。
+ *  2. 另一个标签页在 listInvoicesOf 之后才挂到本单上的票，会带着指向已删单的 reimbursementId
+ *     留在库里；而 invoiceStatus 只要票上有 reimbursementId 就判成「已报销」（它刻意不看
+ *     报销单对象），那张票从此回不到待报销列表，**没有自愈路径**。要关掉它就得把
+ *     「读票列表 → 写删单」这一段锁起来，而这是无后端的 IndexedDB，做不到。
  */
 export async function deleteReimbursement(id, { deleteTxn = false } = {}) {
   const reimb = await getReimbursement(id);
@@ -333,21 +410,14 @@ export async function deleteReimbursement(id, { deleteTxn = false } = {}) {
 
   const invoices = await listInvoicesOf(id);
   const now = Date.now();
-  const entries = [
-    ...invoices.map(inv => ({
-      store: INVOICE_STORE,
-      value: { ...inv, reimbursementId: null, updatedAt: now }
-    })),
-    // 删主键走 deletes 的形态（replaceAllRecords 与 removeAll 同形）。
-    ...(deleteTxn && reimb.txnId ? [{ store: 'txns', key: reimb.txnId }] : [])
+  // puts 与 deletes 分成两个数组，而不是混成一个再按「这条 entry 有没有 key」filter 开：
+  // 后者的判据是隐式的，而且 `!e.key` 会把 0 / '' 这种 falsy 主键误判成 put（今天唯一带 key 的
+  // 那条来自被真值守卫过的 reimb.txnId，所以安全——但那是「形状靠约定」，加一个字段就可能悄悄失效）。
+  const puts = invoices.map(inv => detachEntry(inv, now));
+  const deletes = [
+    ...(deleteTxn && reimb.txnId ? [{ store: 'txns', key: reimb.txnId }] : []),
+    { store: REIMB_STORE, key: id }
   ];
 
-  await db.replaceAllRecords({
-    clears: [],
-    puts: entries.filter(e => !e.key),
-    deletes: [
-      ...entries.filter(e => e.key).map(e => ({ store: e.store, key: e.key })),
-      { store: REIMB_STORE, key: id }
-    ]
-  });
+  await db.replaceAllRecords({ clears: [], puts, deletes });
 }

@@ -1201,16 +1201,18 @@ import { uid, addTransaction } from './store.js';
 
 ```js
 export async function submitReimbursement(id, now = Date.now()) {
-  const reimb = await getReimbursement(id);
-  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
-  if (!canSubmit(reimb)) {
-    throw new ReimburseError(
-      reimb.status === STATUS.SUBMITTED ? '这张报销单已经提交过了' : '已经到账的报销单不能重复提交',
-      'NOT_SUBMITTABLE'
-    );
-  }
+  // 前置检查走任务 4 抽出来的两层 helper：`requireReimbursement` 管「必须存在」、
+  // `requireStatus` 管「必须处于某状态」。别再手写那几行——判据来自 reimburse-model 的
+  // 白名单，漏写一行不会报错（静默失败面），而五份文案副本迟早会分叉。
+  const reimb = await requireReimbursement(id);
+  requireStatus(
+    reimb, canSubmit,
+    reimb.status === STATUS.SUBMITTED ? '这张报销单已经提交过了' : '已经到账的报销单不能重复提交',
+    'NOT_SUBMITTABLE'
+  );
   const next = { ...reimb, status: STATUS.SUBMITTED, submittedAt: now };
-  await db.putAll([{ store: REIMB_STORE, value: next }]);
+  // 写走 writeAll（任务 4 抽的）：一处发起事务、一处把英文异常翻成人话。
+  await writeAll([{ store: REIMB_STORE, value: next }]);
   return next;
 }
 
@@ -1226,49 +1228,71 @@ export async function submitReimbursement(id, now = Date.now()) {
  * 由它那一次 db.putAll 一并写下去（见 store.js 的 addTransaction 注释）。
  */
 export async function settleReimbursement(id, {
-  settledCents = 0, accountId = null, categoryId = null, createTxn = true, now = Date.now()
+  // 默认值是 **null，不是 0**：这两个值在这条路上必须分开——0 是合法业务值（公司拒报、一分没报回来，
+  // 界面上专门为它做了二次确认），而「没传」是漏传或写错字段名。默认成 0 会把后者伪装成前者，
+  // 于是 `settleReimbursement(id, { amountCents: 100 })` 这种调用会安静地记一笔 ¥0 收入。
+  settledCents = null, accountId = null, categoryId = null, createTxn = true, now = Date.now()
 } = {}) {
-  const reimb = await getReimbursement(id);
-  if (!reimb) throw new ReimburseError('这张报销单不在了', 'NOT_FOUND');
-  if (!canSettle(reimb)) {
-    throw new ReimburseError(
-      reimb.status === STATUS.DRAFT ? '这张报销单还没提交给公司，不能标记到账' : '这张报销单已经到账了',
-      'NOT_SETTLEABLE'
-    );
+  const reimb = await requireReimbursement(id);
+  requireStatus(
+    reimb, canSettle,
+    reimb.status === STATUS.DRAFT ? '这张报销单还没提交给公司，不能标记到账' : '这张报销单已经到账了',
+    'NOT_SETTLEABLE'
+  );
+
+  // 金额校验（判据与 validateInvoice / diffCents 同一口径：「缺失」与「不合法」是两回事）：
+  //  · **不合法**（给了、但不是安全整数，比如 '100' 或 1.5）→ 两个分支都拒绝；
+  //  · **缺失**（漏传、或写错字段名）→ 只在**要记账**时拒绝：createTxn:false 那条路
+  //    （公司没打钱、只把单子标成到账）本来就没有金额，那里缺失是正常的。
+  // 0 只能由调用方**显式**传进来，绝不兜底。
+  const hasCents = Number.isSafeInteger(settledCents);
+  const missingCents = settledCents === null || settledCents === undefined;
+  if (!hasCents && (!missingCents || createTxn)) {
+    throw new ReimburseError('到账金额不对，这次没记上', 'BAD_INPUT');
   }
-  const cents = Number.isSafeInteger(settledCents) ? settledCents : 0;
+  const cents = hasCents ? settledCents : 0;
+
+  // 已到账那条记录：两个分支共用这一份字面量，各支只 spread 一次。
+  // 两处各写一遍六个字段的版本里，将来加一个字段、只改一处，就会得到「因复选框而字段不同」
+  // 的两条记录，而且不报错——正是 createReimbursement 那里警告过的「同一实体两种形状」。
+  const next = {
+    ...reimb, status: STATUS.SETTLED, settledAt: now,
+    accountId: accountId ?? null, settledCents: cents
+  };
 
   if (!createTxn) {
-    // 不记账这条路只有一处写入，不必绕 addTransaction。
-    const next = {
-      ...reimb, status: STATUS.SETTLED, settledAt: now,
-      accountId: accountId ?? null, settledCents: cents, txnId: null
-    };
-    await db.putAll([{ store: REIMB_STORE, value: next }]);
-    return next;
+    // 不记账这条路只有一处写入，不必绕 addTransaction——但仍走 writeAll 翻译异常。
+    const settled = { ...next, txnId: null };
+    await writeAll([{ store: REIMB_STORE, value: settled }]);
+    return settled;
   }
 
   // 交易 id 先自己生成：报销单那一条要与交易**同批写入**，而它里面要写上 txnId——
   // 若等 addTransaction 返回后再写回，就变成两次写入了，那正是这一段要避免的事。
   // 为此任务 3 给 addTransaction 加了 `id: input.id ?? uid()`。
   const txnId = uid();
-  const settled = {
-    ...reimb, status: STATUS.SETTLED, settledAt: now,
-    accountId: accountId ?? null, settledCents: cents, txnId
-  };
-  await addTransaction({
-    id: txnId,
-    kind: 'income',
-    amountCents: cents,
-    categoryId: categoryId ?? null,
-    accountId: accountId ?? null,
-    occurredAt: now,
-    note: `报销到账 · ${reimb.title}`,
-    source: 'reimbursement',
-    reimbursementId: id
-  }, {
-    extraEntries: [{ store: REIMB_STORE, value: settled }]
-  });
+  const settled = { ...next, txnId };
+  try {
+    await addTransaction({
+      id: txnId,
+      kind: 'income',
+      amountCents: cents,
+      categoryId: categoryId ?? null,
+      accountId: accountId ?? null,
+      occurredAt: now,
+      note: `报销到账 · ${reimb.title}`,
+      source: 'reimbursement',
+      reimbursementId: id
+    }, {
+      extraEntries: [{ store: REIMB_STORE, value: settled }]
+    });
+  } catch (err) {
+    // 这一支不走 writeAll（报销单那一条必须与交易同批写下去，见上面），所以「英文异常翻成人话」
+    // 要在这里自己接上（toUserError 是从 writeAll 的 catch 体里抽出来的那一份）。
+    // 少了这一层，同一个「标记到账」按钮的文案会随「记不记收入」这个复选框变：
+    // 不记账时是中文（走 writeAll），记账时是「QuotaExceededError: …」直达界面。
+    throw toUserError(err);
+  }
 
   return settled;
 }
@@ -1286,39 +1310,36 @@ export async function deleteReimbursement(id, { deleteTxn = false } = {}) {
 
   const invoices = await listInvoicesOf(id);
   const now = Date.now();
-  const entries = [
-    ...invoices.map(inv => ({
-      store: INVOICE_STORE,
-      value: { ...inv, reimbursementId: null, updatedAt: now }
-    })),
-    // 删主键走 removeAll 的形态；replaceAllRecords 的 deletes 与它同形。
-    ...(deleteTxn && reimb.txnId ? [{ store: 'txns', key: reimb.txnId }] : [])
+  // puts 与 deletes 分成两个数组，而不是混成一个再按「这条 entry 有没有 key」filter 开：
+  // 后者的判据是隐式的，而且 `!e.key` 会把 0 / '' 这种 falsy 主键误判成 put。
+  const puts = invoices.map(inv => detachEntry(inv, now));
+  const deletes = [
+    ...(deleteTxn && reimb.txnId ? [{ store: 'txns', key: reimb.txnId }] : []),
+    { store: REIMB_STORE, key: id }
   ];
 
-  await db.replaceAllRecords({
-    clears: [],
-    puts: entries.filter(e => !e.key),
-    deletes: [
-      ...entries.filter(e => e.key).map(e => ({ store: e.store, key: e.key })),
-      { store: REIMB_STORE, key: id }
-    ]
-  });
+  await db.replaceAllRecords({ clears: [], puts, deletes });
 }
 ```
 
 **注意 `settleReimbursement` 里那个 `txnId` 的来历**：它是**调用方**先生成的，然后同时出现在两个地方——交易的 `id`、以及报销单的 `txnId`。这不是绕远路，而是「同事务」的必然要求：报销单那一条必须与交易在同一批里写下去，而它里面要写上交易的 id，所以不能在写之前还不知道那个 id。为此任务 3 的 `addTransaction` 接受了 `id: input.id ?? uid()`。
 
+**复审后的两处同步（2026-09-29，代码质量审查）**：
+
+1. 任务 4 那段 `writeAll` 的 catch 体现在是一个共享函数 `toUserError(err)`（`writeAll` 里就剩 `try { await db.putAll(entries) } catch (err) { throw toUserError(err) }`；上面任务 4 的代码块是当时的样子，行为了无变化，只是把那具 catch 体搬进了 `toUserError`）。抽出来的原因只有一个：`writeAll` **不是唯一出口**——`settleReimbursement` 的记账那支走 `addTransaction`，`deleteReimbursement` 走 `replaceAllRecords`（见文件头那份例外清单）。不抽的话，同一个「标记到账」按钮的文案会随「记不记收入」这个复选框变：不记账时是中文，记账时把 `QuotaExceededError: the quota has been exceeded.` 直接显示出来（任务 9 的界面读的就是 `err.message`）。`deleteReimbursement` **保持不翻**，与 `invoice-store.deleteInvoice` 同一处置，理由写在它的 JSDoc 里。
+2. `detachEntry(inv, now)`（`{ store: INVOICE_STORE, value: { ...inv, reimbursementId: null, updatedAt: now } }`）被抽了出来，`removeInvoiceFrom` 与新加的 `deleteReimbursement` 共用——「把票退回待报销」的条目字面量不再有两份。
+
 - [ ] **步骤 4：运行测试验证通过**
 
 运行：`D:\node.exe --test --test-isolation=none tests/reimburse-store.test.js`
 
-预期：PASS，17 个测试全过。
+预期：PASS，23 个测试全过（本任务新增 8 条 + 复审扩的 5 条；写失败那条扩成了两个入口）。
 
 - [ ] **步骤 5：跑全量回归**
 
 运行：`D:\node.exe --test --test-isolation=none`
 
-预期：339 pass / 0 fail。
+预期：349 pass / 0 fail（基线 344 + 复审新增 5 条：金额非法/缺失 1、显式 0 1、不记账缺金额 1、幂等删除 1、草稿单删交易 1）。
 
 - [ ] **步骤 6：Commit**
 

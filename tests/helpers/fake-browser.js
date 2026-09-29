@@ -14,7 +14,7 @@
 //
 //  1. **事务的真实隔离与回滚**：abort() 只改一个标记，已经写进 Map 的数据不会退回去。
 //     所以它**盖不住** db.replaceAllRecords 那条「中途失败不留半库」的保证——那一条只能靠真机与评审。
-//  2. **请求的失败路径**：put / get 默认永远成功，onerror 一次都不会被调到（配额满、事务中止、
+//  2. **请求的失败路径**：put / get / delete 默认永远成功，onerror 一次都不会被调到（配额满、事务中止、
 //     死锁这些真实失败在桩上不存在）。想验「写失败被翻成人话」，唯一的口子是导出的
 //     failNextWrite(storeName, err)——它把某张表的下一次 put 换成同步抛 err 的版本。
 //     注意它注入的是**异常本身**，不是事务语义：回滚仍然没有（见第 1 条），
@@ -33,8 +33,9 @@
 //  7. **事务活跃期**：oncomplete 之后再入队会抛 TransactionInactiveError（与真实一致）；但没有真实的
 //     自动提交时机差异——桩里所有操作都是同步立即生效的。
 //  8. **主键类型**：只接受 string / number，取不到（或取到 null / undefined）时**同步**抛 DataError
-//     （与真实一致，db.js 的 enqueue 就是为这个同步抛错写的）。Date / ArrayBuffer 这些真实合法的
-//     主键类型没实现。
+//     （与真实一致，db.js 的 enqueue / removeAll 就是为这个同步抛错写的；**put 与 delete 都校验**，
+//     见下面 Store.delete 的注释——delete 不校验曾是这份桩上最贵的一处假绿）。
+//     Date / ArrayBuffer 这些真实合法的主键类型没实现。
 //  9. **FileReader**：只在「喂进去的不是 Blob」这一条上与真实不同——桩**同步抛** TypeError
 //     （WebIDL 的类型检查也是同步抛，但真实 FileReader 是抛错还是派发 onerror，这里没有真机核实过）。
 //     两条路对被测代码等价：backup-store.js 的 blobToBase64 把 readAsDataURL 整个包在 Promise 里，
@@ -108,6 +109,12 @@ function findStore(name) {
   return null;
 }
 
+// 主键够不够用（真实 IDB 只认 string / number）。判据只写一份：put 与 delete 共用，
+// 免得一边校验、一边漏掉——而漏掉的那一边就是变异隐形的地方。
+function isUsableKey(key) {
+  return typeof key === 'string' || typeof key === 'number';
+}
+
 class Store {
   constructor(keyPath) {
     this.keyPath = keyPath;
@@ -119,7 +126,7 @@ class Store {
     // 真实 IDB 在取不出 keyPath（或缺 key、key 为 null）时**同步**抛 DataError，而且这个异常不会
     // 自动中止事务（db.js 的 enqueue 就是为它写的）。桩照抛，好让「少了 key」这类错误照样炸出来。
     const key = value == null ? undefined : value[this.keyPath];
-    if (key === undefined || key === null || (typeof key !== 'string' && typeof key !== 'number')) {
+    if (!isUsableKey(key)) {
       throw new Error(`DataError: 记录里取不出合法的主键（keyPath「${this.keyPath}」）`);
     }
     this.data.set(key, value);
@@ -130,7 +137,22 @@ class Store {
   getAll() { return settledRequest([...this.data.values()]); }
   count() { return settledRequest(this.data.size); }
   clear() { this.data.clear(); return settledRequest(undefined); }
-  delete(key) { this.data.delete(key); return settledRequest(undefined); }
+
+  delete(key) {
+    // delete 的主键校验与 put 逐字同一口径，**不能省**：真实 IDB 的 store.delete(null) 同样
+    // 同步抛 DataError（db.js 的 removeAll 注释逐字记着这个坑：这个同步异常不会自动中止事务，
+    // 前面已入队的 delete 照常提交，于是「撤销一次导入」变成半截删除）。
+    //
+    // 桩早期这里直接 this.data.delete(key)，于是「调用方漏写守卫」这类变异在测试里完全隐形：
+    // 真机上 delete 一个非法主键会同步炸，桩上却安静地删不着任何东西。这类假绿最贵——
+    // 它让一条**承重**的守卫（比如 deleteReimbursement 里 `deleteTxn && reimb.txnId`）看起来可以随便抽掉。
+    // clear() 不走这里，所以清库那条路不受影响。
+    if (!isUsableKey(key)) {
+      throw new Error(`DataError: 删除时给的键不合法（只接受 string / number）`);
+    }
+    this.data.delete(key);
+    return settledRequest(undefined);
+  }
 
   createIndex(name, keyPath) { this.indexes.set(name, keyPath); }
 

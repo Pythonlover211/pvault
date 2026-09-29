@@ -173,7 +173,7 @@ test('addInvoicesTo / removeInvoiceFrom：多票同事务、空清单早退、�
   assert.deepEqual((await listInvoicesOf(r.id)).map(i => i.id), ['i1']);
 });
 
-test('写失败：英文异常翻成中文，原文进控制台', async (t) => {
+test('写失败：英文异常翻成中文，原文进控制台（reimbursements 与 txns 两个入口）', async (t) => {
   const logged = t.mock.method(console, 'error', () => {});
   const { reimb: r } = await createReimbursement({ invoiceIds: [], title: 'x', now: NOW });
 
@@ -208,6 +208,30 @@ test('写失败：英文异常翻成中文，原文进控制台', async (t) => {
 
   // 写失败就是没写成：库里那条不该被改动，用户重试才有意义。
   assert.equal((await getReimbursement(r.id)).title, 'x');
+
+  // —— 第二个入口：settleReimbursement 的**记账**那支 ——
+  // 它不走 writeAll（报销单那一条要作为 extraEntries 交给 addTransaction 同批写下去），
+  // 于是「英文异常翻成人话」那层曾被整条绕过：同一个「标记到账」按钮，不记收入时是中文，
+  // 记收入时把「QuotaExceededError: the quota has been exceeded.」直接送到界面上
+  // （任务 9 的界面读的就是 err.message）。这条钉住两个入口说同一种人话。
+  const { reimb: r2 } = await createReimbursement({ invoiceIds: [], title: '到账', now: NOW });
+  await submitReimbursement(r2.id, NOW);
+  const quotaTxn = new Error('QuotaExceededError: the quota has been exceeded.');
+  quotaTxn.name = 'QuotaExceededError';
+  await assert.rejects(
+    () => withWriteFailure('txns', quotaTxn, () => settleReimbursement(r2.id, {
+      settledCents: 100, accountId: null, categoryId: null, createTxn: true, now: NOW
+    })),
+    err => {
+      assert.equal(err.name, 'QuotaExceededError', '配额那条要沿用原 name，排查时还认得出');
+      assert.doesNotMatch(err.message, /QuotaExceededError/, '记账这条路也不能把英文异常名冒到界面上');
+      assert.match(err.message, /备份|再试/, '与 writeAll 那条必须是同一句人话');
+      return true;
+    }
+  );
+  assert.equal((await getReimbursement(r2.id)).status, 'submitted', '写失败就是没写成，单子还停在已提交');
+  assert.deepEqual(await db.getAll('txns'), [], '交易也不该留下');
+  assert.equal(logged.mock.calls.length, 1, '配额失败不重复记控制台——两个入口一致（这一条没再多记一次）');
 });
 
 test('listPendingInvoices：排除仅存档与已在单里的票', async () => {
@@ -242,11 +266,30 @@ test('submitReimbursement：草稿→已提交，记下 submittedAt', async () =
   assert.equal((await getReimbursement(r.id)).status, 'submitted', '必须真的落库');
 });
 
-test('submitReimbursement：已提交的不能再提交', async () => {
+test('submitReimbursement：已提交的不能再提交，已到账的也不许再提交', async () => {
   await mkInvoice({ id: 'i1' });
   const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
   await submitReimbursement(r.id, NOW);
-  await assert.rejects(() => submitReimbursement(r.id, NOW), { code: 'NOT_SUBMITTABLE' });
+
+  // 断言 code、不断言文案（本文件的政策：改文案不该让测试变红），代价是那两处文案分叉也验不出来——
+  // 把「已经提交过了」与「已经到账的…」对调，只断 code 的版本照样全绿。
+  // 折中是**钉分支而不是钉措辞**：两条 message 必须**不同**，并且第二条要说得出「到账」这个区别。
+  const seen = [];
+  await assert.rejects(() => submitReimbursement(r.id, NOW), err => {
+    assert.equal(err.code, 'NOT_SUBMITTABLE');
+    seen.push(err.message);
+    return true;
+  });
+
+  // 走到已到账：提交之后标记到账（不记账，只把状态推过去）
+  await settleReimbursement(r.id, { settledCents: 0, createTxn: false, now: NOW });
+  await assert.rejects(() => submitReimbursement(r.id, NOW), err => {
+    assert.equal(err.code, 'NOT_SUBMITTABLE');
+    seen.push(err.message);
+    assert.match(err.message, /到账/, '已到账这条要说清卡在哪一步');
+    return true;
+  });
+  assert.notEqual(seen[0], seen[1], '「已经提交过」与「已经到账」是两种情形，不能共用同一句文案（对调就会红）');
 });
 
 test('settleReimbursement：三处写入只发起一个事务，且都落地', async () => {
@@ -266,9 +309,11 @@ test('settleReimbursement：三处写入只发起一个事务，且都落地', a
   assert.equal(settled.settledAt, NOW + 5000);
   assert.equal(settled.settledCents, 300000);
   assert.equal(settled.accountId, 'acc-1');
-  assert.ok(settled.txnId, '要记下生成的收入账 id');
-
+  // 这里刻意**不写** `assert.ok(settled.txnId)`：txnId 由 uid() 生成、永远非空，那条断言等于什么都没验
+  // （本文件上面刚写过同型的一条）。真验「写进去的是同一个 id」的是下面这行——读回库里那笔交易，
+  // 同时钉住「报销单上的 txnId 就是交易的主键」。
   const txn = await db.get('txns', settled.txnId);
+  assert.ok(txn, '报销单上的 txnId 必须就是那笔交易的主键（换个 id 就读不到它了）');
   assert.equal(txn.kind, 'income');
   assert.equal(txn.amountCents, 300000);
   assert.equal(txn.source, 'reimbursement');
@@ -289,13 +334,89 @@ test('settleReimbursement：只标记到账时不生成交易', async () => {
   assert.deepEqual(await db.getAll('txns'), [], '不记账时不该有任何交易');
 });
 
-test('settleReimbursement：草稿不能直接到账', async () => {
+test('settleReimbursement：草稿不能直接到账，已到账的不能重复标记', async () => {
   await mkInvoice({ id: 'i1' });
   const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  // 「钉分支而不是钉措辞」：只断 code 时，把这两处文案对调仍然全绿（见 submit 那条的说明）。
+  const seen = [];
   await assert.rejects(
     () => settleReimbursement(r.id, { settledCents: 1, createTxn: false, now: NOW }),
-    { code: 'NOT_SETTLEABLE' }
+    err => {
+      assert.equal(err.code, 'NOT_SETTLEABLE');
+      seen.push(err.message);
+      assert.match(err.message, /提交/, '草稿这条要说清「还没提交给公司」');
+      return true;
+    }
   );
+
+  await submitReimbursement(r.id, NOW);
+  await settleReimbursement(r.id, { settledCents: 0, createTxn: false, now: NOW });
+  await assert.rejects(
+    () => settleReimbursement(r.id, { settledCents: 0, createTxn: false, now: NOW }),
+    err => {
+      assert.equal(err.code, 'NOT_SETTLEABLE');
+      seen.push(err.message);
+      assert.match(err.message, /到账/, '重复标记这条要说清「已经到账了」');
+      return true;
+    }
+  );
+  assert.notEqual(seen[0], seen[1], '「还没提交」与「已经到账」是两种情形，不能共用同一句文案（对调就会红）');
+});
+
+test('settleReimbursement：要记账时金额非法或缺失一律拒绝，且零写入', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 1000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+
+  // 四类输入都在这一条里：
+  //  · `{}` 与 `{ amountCents: 100 }` 是**漏传 / 写错字段名**——第一版有 `settledCents = 0` 的默认值
+  //    叠上「非法就折成 0」的兜底，这两种调用会「标记已到账 + 记一笔 ¥0 收入 + 记一个 txnId」
+  //    而全程不报错，用户根本看不出记错了（0 又是合法业务值，公司拒报就是它）；
+  //  · '100' 与 1.5 是**给了但不合法**——从输入框直接拿到的字符串、或算错的小数。
+  const bad = [
+    ['漏传', {}],
+    ['写错字段名 amountCents', { amountCents: 100 }],
+    ['字符串金额', { settledCents: '100' }],
+    ['小数金额', { settledCents: 1.5 }]
+  ];
+  for (const [label, opts] of bad) {
+    const before = transactionCount();
+    await assert.rejects(
+      () => settleReimbursement(r.id, { ...opts, createTxn: true, now: NOW }),
+      err => {
+        assert.equal(err.code, 'BAD_INPUT', `${label} 要被拒绝，而不是折成 0`);
+        return true;
+      }
+    );
+    assert.equal(transactionCount() - before, 0, `${label}：拒绝就该发生在写入之前，一次写都不该发起`);
+  }
+
+  assert.equal((await getReimbursement(r.id)).status, 'submitted', '单子还停在已提交');
+  assert.deepEqual(await db.getAll('txns'), [], '库里不该有任何交易');
+});
+
+test('settleReimbursement：显式传 0 是合法值（公司拒报），照记账', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 1000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+
+  // 0 与「漏传」必须是两条路：前者是用户按过二次确认的真实结果，要照记；后者见上一条。
+  const settled = await settleReimbursement(r.id, { settledCents: 0, createTxn: true, now: NOW });
+  assert.equal(settled.settledCents, 0);
+  assert.equal((await db.get('txns', settled.txnId)).amountCents, 0, '显式传 0 就记一笔 ¥0 的收入');
+});
+
+test('settleReimbursement：不记账时缺金额是正常的（记 0 而不是报错）', async () => {
+  await mkInvoice({ id: 'i1', amountCents: 1000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+
+  // createTxn:false 那条路（公司没打钱、只把单子标成到账）**本来就没有金额**，
+  // 那里不传 settledCents 是正常的调用方式，不该被上面的金额校验挡住。
+  const settled = await settleReimbursement(r.id, { createTxn: false, now: NOW });
+  assert.equal(settled.status, 'settled');
+  assert.equal(settled.settledCents, 0, '没给金额就是不记账的那条路，按 0 记（不是 null：单子已经到账了）');
+  assert.equal(settled.txnId, null);
 });
 
 test('deleteReimbursement：发票回到待报销，报销单消失', async () => {
@@ -335,4 +456,30 @@ test('deleteReimbursement：deleteTxn 为假时留下那笔收入', async () => 
 
   await deleteReimbursement(r.id, { deleteTxn: false });
   assert.ok(await db.get('txns', settled.txnId), '选了「只删报销单」时收入必须留着——那是用户账上的钱');
+});
+
+test('deleteReimbursement：删一张不存在的单是幂等成功，一次写都不发起', async () => {
+  // 这是**有意**的契约（与其余写函数的 NOT_FOUND 相反）：重复点删除不该报错。
+  // 之前没有任何测试钉住它——把 `if (!reimb) return` 改成抛 NOT_FOUND，全量仍然全绿。
+  const before = transactionCount();
+  await deleteReimbursement('r-不存在');
+  assert.equal(transactionCount() - before, 0, '什么都不存在时，连一次写都不该发起');
+  assert.deepEqual(await db.getAll('reimbursements'), [], '也不该凭空写出一条记录');
+});
+
+test('deleteReimbursement：deleteTxn 为真但单子还没到账（没有 txnId）时照常删掉，不碰 txns', async () => {
+  // 草稿单/已提交单本来就没有 txnId（settle 才生成），此时 `reimb.txnId` 那半个守卫必须挡住
+  // 「删一个 undefined 主键」——真机上 store.delete(undefined) 是**同步抛 DataError**的
+  // （app/db.js 的 removeAll 注释逐字记着这个坑），整单会跟着删不掉。
+  // 这条测试在桩上也验得动，前提是桩的 delete 校验主键（tests/helpers/fake-browser.js）。
+  await mkInvoice({ id: 'i1', amountCents: 5000 });
+  const { reimb: r } = await createReimbursement({ invoiceIds: ['i1'], title: 'x', now: NOW });
+  await submitReimbursement(r.id, NOW);
+  assert.equal((await getReimbursement(r.id)).txnId, null, '还没到账的单子没有 txnId');
+
+  await deleteReimbursement(r.id, { deleteTxn: true });
+
+  assert.equal(await getReimbursement(r.id), null, '没有 txnId 也照样删得掉');
+  assert.equal((await db.get('invoices', 'i1')).reimbursementId, null, '票回到待报销');
+  assert.deepEqual(await db.getAll('txns'), [], '没有交易可删，txns 不该被动过');
 });
