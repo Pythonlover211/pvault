@@ -2325,16 +2325,19 @@ git commit -m "feat(invoice): 编辑器拦截「仅存档」与报销单的互�
 
 - [ ] **步骤 1：核对 SW 缓存版本与 ASSETS**
 
-**先读再改，不要照着本步骤的字面抄**：`CACHE` 已经在任务 6 里升到 `'pvault-v19'` 了
-（`reimburse-model.js` 是 `invoice-view.js` 的首屏静态依赖，它必须跟产生依赖的那次提交一起进
-`ASSETS`，不能拖到这里）。所以本步骤要做的是**核对**，不是重复升版：
+**先读再改，不要照着本步骤的字面抄**。`CACHE` 早已不是本步骤最初写的 `'pvault-v19'`：
+**每个动到 `app/ui/` 或 `styles/` 内容的提交都必须 +1**（`sw.js:3-11` 的通则——`sw.js` 不变就
+永远不触发 install，装过旧缓存的设备**在线也一直吃旧代码**；例外只有「改的就是 `sw.js` 自己」）。
+到任务 10 为止它已经是 **`'pvault-v24'`**。所以本步骤要做的是**核对**：
 
-1. 打开 `sw.js`，确认 `CACHE` 已是当前仓库里最新的一档（`'pvault-v19'`）——若任务 7～10
-   又给首屏 import 闭包添了新模块，这里要**再 +1**，不要复用 v19；
-2. 确认 `ASSETS` 已含四个模块：`app/reimburse-model.js`（任务 6 已加）、`app/reimburse-store.js`、
-   `app/ui/reimburse-view.js`、`app/ui/settle-sheet.js`；
-3. 缺哪个补哪个，全都齐了就**什么都不做**（重复升版反而是错的：往服役中的缓存名里 `addAll`
-   中途失败会留下半新半旧的缓存）。
+1. 打开 `sw.js` 确认 `CACHE` 是当前唯一的最新一档。**以仓库为准，不要照抄任何写在本计划里的版本号**
+   （本计划里出现过的 v19/v20 都已经过期了）；
+2. 确认 `ASSETS` 覆盖全部运行时依赖：报销相关的四个模块（`reimburse-model.js` 是任务 6 加的，
+   `reimburse-store.js` / `settle-sheet.js` / `reimburse-view.js` 是任务 8 加的）+ 其余既有条目。
+   机器上的判据是 `node scripts/check-theme-css.mjs` 的 ⑬ 项（清单外 0 个）；
+3. 任务 10 之后若还有动 `ui/` / `styles/` 的提交（例如审查返工），**再 +1**；
+4. 全都齐了就**什么都不做**——重复升版是错的：往服役中的同名缓存里 `addAll`，中途失败会留下
+   半新半旧的缓存。
 
 **这一步不能省**：`ASSETS` 少一条会让 `cache.addAll` 整批被 404 拒绝，install 失败、SW 根本不激活，而症状是「离线白屏」——排查起来要绕一圈（`sw.js` 开头那段注释讲的就是这两条路的区别）。
 
