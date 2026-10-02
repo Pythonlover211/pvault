@@ -372,3 +372,83 @@ test('删除确认：读不到那张报销单时退回原文案，且删除照�
   await deleteButton().click();
   await waitForGone(async () => db.get('invoices', 'inv-orphan'), '票照样被删掉');
 });
+
+// —— 选文件这条路（v1.4.1 修的真机故障）——
+// 这一节断的是「选进来的文件能不能进库、进不去时用户看不看得见」，起因是一个**静默**的故障：
+// 相册入口的 accept 里没有 application/octet-stream，而安卓的 MimeTypeMap 没有 OFD 的登记
+// （选择器交给页面的 .ofd 类型就是 octet-stream），于是 OFD 在系统选择器里被置灰、根本选不中，
+// 全程没有任何报错——用户只会以为这个 App 不支持 OFD。
+// 为什么必须断死：它没有任何前兆。没有这一节，下一个人「顺手清理 accept」就会把这个故障原样搬回来
+// （判据与取舍详见 app/file-info.js 的 isSupportedFile 与 invoice-editor 的 albumInput 两处注释）。
+
+// 面板里有两个文件输入：拍照（带 capture）与相册 / 文件。取第二个。
+function albumFileInput() {
+  const all = findAll(panelRoot(), n => n.tagName === 'INPUT' && n.type === 'file');
+  return need(all[1], '面板里没有「选图片 / PDF / OFD」的文件输入');
+}
+
+// pickFile 只读 name / type / size 三个字段（prepareFile 在 pdf / ofd 那条分支上也只把它们带出去），
+// 所以普通对象就够——不必造一个真的 File（桩里也没有 File）。
+const pickedFile = (name, type, size = 4096) => ({ name, type, size });
+
+// 模拟用户在选择器里选中一个文件：桩不会自己做这件事，要显式塞 files 再派 change。
+async function chooseFile(input, file) {
+  input.files = [file];
+  await fireEvent(input, 'change');
+}
+
+test('相册入口的 accept 必须含 application/octet-stream，否则被系统报成它的 OFD 选不中', async () => {
+  await mkInvoice('inv-accept');
+  await openEditorOn('inv-accept');
+
+  // 断在「含 octet-stream」而不是断「等于某个字符串」：将来再加类型不该碰红这一条，
+  // 而「少了哪一项才真的出事」是确定的。
+  const accept = String(albumFileInput().getAttribute('accept') || '');
+  assert.match(accept, /application\/octet-stream/,
+    'accept 少了 octet-stream：安卓把 .ofd 报成它，文件会在选择器里被置灰，选不中且不报错');
+  // 拍照入口不动：它只该收图片（相机不会给非图片，放宽它是另一回事）。
+  const camera = need(
+    findAll(panelRoot(), n => n.tagName === 'INPUT' && n.type === 'file')[0],
+    '面板里没有拍照的文件输入'
+  );
+  assert.equal(camera.getAttribute('accept'), 'image/*');
+});
+
+test('选一个 OFD（系统报成 octet-stream）：能进库，mime 归一化成 application/ofd', async () => {
+  await mkInvoice('inv-ofd');
+  await openEditorOn('inv-ofd');
+
+  await chooseFile(
+    albumFileInput(),
+    pickedFile('25517000000012345678.ofd', 'application/octet-stream', 23456)
+  );
+
+  // 判据放在**预览区显示原始文件名**上，而不是睡固定轮数：它出现就说明 prepareFile 与 saveFile
+  // 都走完了、paintPreview 也读回了记录。这也顺带钉住「有名字就显示名字」——
+  // 少了它，OFD 会退回「OFD 已保存」那句无信息量的占位文案。
+  await waitFor(
+    () => findAll(panelRoot(), n => n.textContent === '25517000000012345678.ofd').length > 0,
+    '预览区出现 OFD 的原始文件名'
+  );
+  const files = await db.getAll('invoiceFiles');
+  assert.equal(files.length, 1, 'OFD 应当正好落一条文件记录');
+  assert.equal(files[0].mime, 'application/ofd', '存库的 mime 要归一化，不能留 octet-stream');
+  assert.equal(files[0].name, '25517000000012345678.ofd', '原始文件名要跟着一起存下来');
+});
+
+test('选了非发票文件（docx）：给中文提示、不落库', async () => {
+  await mkInvoice('inv-docx');
+  await openEditorOn('inv-docx');
+
+  // 放宽 accept 之后系统不再替我们挡文件，这层闸门就得自己证明拦得住。
+  // 漏过去的代价不是「多一条报错」：它会走图片分支、以「图片未能压缩，已按原样保存」的姿态落库，
+  // 导出时还被命名成 .jpg —— 一份文档就这样变成了库里的「发票」。
+  await chooseFile(
+    albumFileInput(),
+    pickedFile('报价单.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  );
+  await flush(3);
+
+  assert.match(errorLine().textContent, /不是发票/, '必须给一句中文提示，而不是静默收下');
+  assert.equal((await db.getAll('invoiceFiles')).length, 0, '非发票文件不许落库');
+});

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAX_FILE_BYTES, fileKind, mimeForKind, extForKind,
+  MAX_FILE_BYTES, fileKind, mimeForKind, extForKind, isSupportedFile,
   sanitizeFilename, replaceExt, fallbackFileName
 } from '../app/file-info.js';
 
@@ -101,6 +101,64 @@ test('同一条记录走完三个函数，口径一致', () => {
 
 test('MAX_FILE_BYTES 是 20 MB', () => {
   assert.equal(MAX_FILE_BYTES, 20 * 1024 * 1024);
+});
+
+test('isSupportedFile：图片 / PDF / OFD 三类都放行', () => {
+  assert.equal(isSupportedFile('image/jpeg', 'a.jpg'), true);
+  assert.equal(isSupportedFile('image/png; charset=binary', ''), true);
+  assert.equal(isSupportedFile('IMAGE/PNG', ''), true);
+  assert.equal(isSupportedFile('', 'a.png'), true);
+  assert.equal(isSupportedFile('', 'a.HEIC'), true);
+  assert.equal(isSupportedFile('application/pdf', 'b.pdf'), true);
+  assert.equal(isSupportedFile('application/ofd', 'c.ofd'), true);
+  assert.equal(isSupportedFile('', 'd.ofd'), true);
+  assert.equal(isSupportedFile('application/octet-stream', 'e.OFD'), true);
+  // 只在 mime 里出现、扩展名对不上的写法也要认（/ofd/ 是子串匹配）
+  assert.equal(isSupportedFile('application/x-ofd', ''), true);
+});
+
+test('isSupportedFile：mime 明确报了别的类型就拒绝', () => {
+  // 放宽 accept 之后（见 invoice-editor 的 albumInput），系统选择器不再替我们挡掉非发票文件，
+  // 这一层就是唯一的闸门。xlsx / docx 一旦漏进去，会走图片分支、以
+  // 「图片未能压缩，已按原样保存」的姿态落库，导出时还会被命名成 .jpg——
+  // 这正是「放宽 accept 必须同时加白名单」的原因。
+  const xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  assert.equal(isSupportedFile(xlsx, 'a.xlsx'), false);
+  assert.equal(isSupportedFile(docx, 'a.docx'), false);
+  assert.equal(isSupportedFile('text/plain', 'a.txt'), false);
+  assert.equal(isSupportedFile('text/csv', 'a.csv'), false);
+  assert.equal(isSupportedFile('application/zip', 'a.zip'), false);
+  assert.equal(isSupportedFile('application/json', 'backup.json'), false);
+  assert.equal(isSupportedFile('video/mp4', 'a.mp4'), false);
+  assert.equal(isSupportedFile('audio/mpeg', 'a.mp3'), false);
+  // 扩展名假装是图片也要按 mime 拦下来：mime 是系统给的，比发送方起的名字可信
+  assert.equal(isSupportedFile('application/vnd.ms-excel', 'a.jpg'), false);
+});
+
+test('isSupportedFile：mime 说不清时，扩展名明确是别的格式也拒绝', () => {
+  // 第 3 档的宽松只对「扩展名也说不清」的文件生效。安卓把 xlsx / zip 报成
+  // application/octet-stream 是有的（微信另存、部分 ROM 的文件管理器），这时扩展名是唯一的线索。
+  assert.equal(isSupportedFile('application/octet-stream', '报表.xlsx'), false);
+  assert.equal(isSupportedFile('application/octet-stream', '说明.docx'), false);
+  assert.equal(isSupportedFile('', 'a.zip'), false);
+  assert.equal(isSupportedFile('', 'backup.json'), false);
+  // 但发票那三种扩展名不能被误伤——它们正是这次要救回来的东西
+  assert.equal(isSupportedFile('application/octet-stream', 'a.ofd'), true);
+  assert.equal(isSupportedFile('application/octet-stream', 'a.pdf'), true);
+  assert.equal(isSupportedFile('', 'a.jpg'), true);
+});
+
+test('isSupportedFile：mime 什么也没说、扩展名也不认识时放行', () => {
+  // 这条宽松不是随手写的：老 ROM 给相册照片空 type 是常态（见 fileKind 的注释），
+  // 一律拒绝会把「拍照 / 从相册选图」这条早就好用的路堵死——那是拿一个已知能用的功能
+  // 去换一个想象中的风险。放行之后它进的是图片分支：decode 失败会回退原图并提示
+  // 「图片未能压缩，已按原样保存」，用户看得见异常，不会静默存错。
+  assert.equal(isSupportedFile('', 'IMG_1234'), true);
+  assert.equal(isSupportedFile('application/octet-stream', 'IMG_1234'), true);
+  assert.equal(isSupportedFile(null, null), true);
+  assert.equal(isSupportedFile(undefined, undefined), true);
+  assert.equal(isSupportedFile('', ''), true);
 });
 
 test('sanitizeFilename：去掉路径分隔符与非法字符', () => {

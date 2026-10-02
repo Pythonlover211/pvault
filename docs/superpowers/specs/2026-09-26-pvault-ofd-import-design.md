@@ -132,7 +132,12 @@ export function fallbackFileName({ number, issuedAt, kind, mime })
 
 ### 7.1 发票编辑器 · 选择按钮
 
-- `accept`：`'image/*,application/pdf,.ofd,application/ofd'`
+- `accept`：`'image/*,application/pdf,application/ofd,.ofd,application/octet-stream'`
+  （**v1.4.1 修订**：原值是 `'image/*,application/pdf,.ofd,application/ofd'`。真机验收证明它在安卓上
+  让 `.ofd` 被置灰、**选不中**——MimeTypeMap 里没有 OFD 的登记，选择器交上来的类型是
+  `application/octet-stream`，而原 accept 里没有这一项，`.ofd` 这个 token 又映射不出 MIME。
+  放宽的同时**必须**配类型白名单：`app/file-info.js` 的 `isSupportedFile`，由 `pickFile` 调用——
+  否则系统不再替我们挡文件，xlsx / docx 会走图片分支、以「图片未能压缩，已按原样保存」的姿态进库）
 - 文案：「选图片或 PDF」→「**图片 / PDF / OFD**」（相机那个「拍照」按钮不动）
 
 ### 7.2 发票编辑器 · 预览区

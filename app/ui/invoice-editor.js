@@ -7,7 +7,7 @@ import { createKeypad } from './keypad.js';
 import { downloadBlob } from './download.js';
 import * as invoiceStore from '../invoice-store.js';
 import { prepareFile, saveFile, getFile, getFullUrl, revokeUrl, setEditingFile, getEditingFile } from '../image-store.js';
-import { MAX_FILE_BYTES, fileKind, sanitizeFilename, fallbackFileName } from '../file-info.js';
+import { MAX_FILE_BYTES, fileKind, isSupportedFile, sanitizeFilename, fallbackFileName } from '../file-info.js';
 import { INVOICE_TYPES, validateInvoice } from '../invoice-model.js';
 import { formatCents } from '../money.js';
 import { formatDayLabel } from '../dates.js';
@@ -214,6 +214,15 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
 
   async function pickFile(file) {
     if (!file) return;
+    // 不是发票的文件在这里、在任何 await 之前就拦掉。
+    // 为什么现在才需要这道闸门：albumInput 的 accept 为了救回 OFD 放宽了（理由见那一行），
+    // 系统选择器从此不再替我们挡文件。xlsx / docx 放进去会走图片分支，以「图片未能压缩，
+    // 已按原样保存」的姿态落库，导出时还会被命名成 .jpg——判据与取舍全在 file-info.isSupportedFile。
+    // 与下面那条大小上限同样的处理：直接 return，不碰 previewSeq、不碰 state.fileId。
+    if (!isSupportedFile(file.type, file.name)) {
+      errorNode.textContent = '选中的不是发票文件（只认图片 / PDF / OFD）';
+      return;
+    }
     // 上限在 prepareFile **之前**判：那个函数的契约是「任何一步失败都回退原图，
     // 不能因为省体积就把用户的发票弄丢」，往里塞一个「直接拒绝」的分支会把契约弄浑。
     // 这里直接 return，不碰 previewSeq、不碰 state.fileId——上一次选的文件继续有效，
@@ -296,7 +305,16 @@ export function openInvoiceEditor({ id = null, txnId = null, onSaved } = {}) {
   }
 
   const cameraInput = fileInput('image/*', 'environment');
-  const albumInput = fileInput('image/*,application/pdf,.ofd,application/ofd');
+  // accept 里为什么必须有 application/octet-stream（这是 v1.4.1 修的真机故障）：
+  // **安卓的 MimeTypeMap 没有 OFD 的登记**（同一个事实在 MainActivity.saveFile 与手动验证清单里
+  // 各记过一次——那次是导出，MediaStore 把 .ofd 改写成 octet-stream），所以选择器交上来的
+  // .ofd 文件类型就是 application/octet-stream。原来的 accept 是
+  // `image/*,application/pdf,.ofd,application/ofd`：`.ofd` 这个 token 在安卓上映射不出 MIME、
+  // `application/ofd` 又与文件真实的 octet-stream 对不上，于是 OFD 在系统选择器里**被置灰、
+  // 根本选不中**，而整个过程没有任何报错——用户只会以为这个 App 不支持 OFD。
+  // 放宽的代价由 pickFile 里那道 isSupportedFile 闸门兜住（放宽与白名单必须同时做）。
+  // `.ofd` 这个 token 留着：桌面浏览器（PWA）上扩展名过滤是有效的，删了就少了那道。
+  const albumInput = fileInput('image/*,application/pdf,application/ofd,.ofd,application/octet-stream');
 
   const amountText = el('div', { class: 'vault-code', text: '¥0.00' });
   const keypad = createKeypad({

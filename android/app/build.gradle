@@ -27,9 +27,13 @@ android {
         // 1.3.0 → 1.4.0：报销流程 —— 发票 Tab 分成「发票 | 报销单」两段，多选发票建报销单，
         // 提交、标记到账（可只标记不记收入，差额单独显示）、删除保护；发票可挂进报销单、
         // 可移出、与「仅存档」互斥；报销单跟着备份走。
+        // 1.4.0 → 1.4.1：修「OFD 选不进来」。相册入口的 accept 里少了 application/octet-stream，
+        // 而安卓的 MimeTypeMap 没有 OFD 的登记（选择器交给页面的 .ofd 类型就是 octet-stream），
+        // 于是 OFD 在系统选择器里被置灰、根本选不中，且全程不报错——用户只会以为这个 App 不支持
+        // OFD。放宽 accept 的同时补了一道类型白名单（否则 xlsx / docx 会被当图片收进库）。
         // versionCode 必须严格递增，否则手机上覆盖安装会被 PackageManager 拒掉。
-        versionCode 5
-        versionName "1.4.0"
+        versionCode 6
+        versionName "1.4.1"
     }
 
     // 静态站点由 scripts/build-apk.ps1 从仓库根目录复制进来，不纳入版本管理。

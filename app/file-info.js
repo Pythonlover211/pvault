@@ -40,9 +40,54 @@ export function fileKind(mime, name) {
   return 'image';
 }
 
-/** 归一化 mime：小写、去掉 `;` 之后的参数（charset 之类）。两个函数共用同一个口径，不各写一份。 */
+/**
+ * 归一化 mime：小写、去掉 `;` 之后的参数（charset 之类）。
+ * mimeForKind / extForKind / isSupportedFile 共用同一个口径，不各写一份。
+ */
 function normalizeMime(mime) {
   return String(mime ?? '').split(';')[0].trim().toLowerCase();
+}
+
+/**
+ * 「mime 说不清」时才用得上的那一条：扩展名明确指向别的类别就拒绝。
+ * 只收常见的误选对象——它的作用是把 isSupportedFile 第 3 档的宽松收回来一点，
+ * 不是要做一份完备的类型表（那种表会随着「某某格式也要支持」不断膨胀）。
+ * 刻意不含 pdf / ofd：它们是发票，永远放行。
+ */
+const NOT_INVOICE_EXT = /\.(xlsx?|docx?|pptx?|csv|txt|md|json|xml|html?|zip|rar|7z|tar|gz|mp[34]|wav|avi|mov|mkv|apk|exe|msi)$/i;
+
+/**
+ * 这个文件该不该收下。
+ *
+ * 存在的理由是一处真机故障。编辑器那个文件输入的 accept 原本是
+ * `image/*,application/pdf,.ofd,application/ofd`，而**安卓的 MimeTypeMap 里没有 OFD 的登记**
+ * （同一个事实在 android/.../MainActivity.java 与手动验证清单里各记过一次），所以选择器
+ * 拿到的 OFD 类型是 `application/octet-stream`——不在 accept 列表里，文件在选择器里直接被
+ * 置灰、根本选不中。这个失败是**静默**的：报错都没有，用户只会以为这个 App 不支持 OFD。
+ *
+ * 修法是把 accept 放宽到 `application/octet-stream` 那一档（见 invoice-editor 的 albumInput），
+ * 于是**系统不再替我们挡掉非发票文件**，这一层就成了唯一的闸门。放这么宽是有代价的：
+ * xlsx / docx 漏进去会走图片分支、以「图片未能压缩，已按原样保存」的姿态落库，导出时还会
+ * 被命名成 .jpg。所以放宽与白名单必须同时做——只做前者是拿数据质量换可用性。
+ *
+ * 判定三档，顺序不能换：
+ * 1. mime 认得出是发票类（image/* 或含 ofd / pdf）→ 放行；
+ * 2. mime 明确报了别的类型 → 拒绝。**压倒扩展名**：mime 是系统给的，文件名是发送方起的
+ *    （扩展名假装成 .jpg 的表格照样得拦）；
+ * 3. mime 什么也没说（空 / application/octet-stream）→ 扩展名明确是别的格式就拒绝，
+ *    否则放行。
+ *
+ * 第 3 档的宽松是刻意的，不是漏写。安卓选择器给相册照片空 type 是常态（见 fileKind 的注释），
+ * 一律拒绝会把「拍照 / 从相册选图」这条早就好用的路堵死——那是拿一个已知能用的功能去换一个
+ * 想象中的风险。放行之后它进的是图片分支：decode 失败会回退原图并提示「图片未能压缩，已按
+ * 原样保存」，用户看得见异常，不会静默存错。换句话说，这里拦得住的是「系统诚实地告诉了我们是
+ * 别的类型」的那些，而那恰好就是 xlsx / docx 的常见情形（DocumentsUI 会按扩展名给出准确的 mime）。
+ */
+export function isSupportedFile(mime, name) {
+  const m = normalizeMime(mime);
+  if (m.startsWith('image/') || /ofd|pdf/i.test(m)) return true;
+  if (m !== '' && m !== 'application/octet-stream') return false;
+  return !NOT_INVOICE_EXT.test(String(name ?? '').trim());
 }
 
 /**

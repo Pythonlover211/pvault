@@ -150,7 +150,17 @@
 // 而浏览器只认 `sw.js` 这个文件的字节变没变——不 +1 就永远不触发 install，已经装着 v25 的设备
 // 在线也一直吃旧缓存，这一批修补等于没上线（其中一条就是「NaN 不许上屏」）。
 // v25 已在设备上服役过，不复用它的名字（理由同上：服役过的缓存名里 addAll 中途失败会留下半新半旧的一份）。
-const CACHE = 'pvault-v26';
+// v27：真机验收抓到的 OFD 无法导入。改的是**已经在清单里**的两个文件的内容：
+//  · `app/ui/invoice-editor.js`（相册入口的 `accept` 补上 `application/octet-stream`——安卓的
+//    MimeTypeMap 没有 OFD 的登记，选择器交给页面的 .ofd 类型就是 octet-stream，原来的 accept 里
+//    没有它，OFD 在系统选择器里被**置灰、选不中**且不报错；同时 `pickFile` 补一道
+//    `isSupportedFile` 闸门，因为 accept 一放宽，系统就不再替我们挡 xlsx / docx 这类文件了）；
+//  · `app/file-info.js`（新增导出的 `isSupportedFile` 就是这个闸门的判据）。
+// **这一版同样没有任何新的 ASSETS**（两个文件早就在清单里）。+1 的依据还是开头那条**通则**：
+// 改的不是 `sw.js` 自己（例外不适用），浏览器只认 `sw.js` 这个文件的字节变没变——不 +1 就永远
+// 不触发 install，装着 v26 的设备在线也一直吃旧缓存，这次修复等于没上线。
+// v26 已在设备上服役过，不复用它的名字（理由同上：服役过的缓存名里 addAll 中途失败会留下半新半旧的一份）。
+const CACHE = 'pvault-v27';
 
 // 只列应用真正运行需要的资源。docs/（设计规格）、tests/、scripts/、package.json
 // 都不该被缓存，也不该被发布出去。
